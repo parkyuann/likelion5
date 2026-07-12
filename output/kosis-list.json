@@ -1,0 +1,68 @@
+[
+  {
+    "LIST_NM": "인구총조사",
+    "LIST_ID": "A_4",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "주민등록인구현황",
+    "LIST_ID": "A_7",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "인구동향조사",
+    "LIST_ID": "A_3",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "장래인구추계",
+    "LIST_ID": "A_6",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "국내인구이동통계",
+    "LIST_ID": "A_1",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "출입국자및체류외국인통계",
+    "LIST_ID": "A_9",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "지방자치단체외국인주민현황",
+    "LIST_ID": "A_8",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "장래가구추계",
+    "LIST_ID": "A_5",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "국제인구이동통계",
+    "LIST_ID": "A_2",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "고령친화용품제조업실태조사",
+    "LIST_ID": "A_001",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  },
+  {
+    "LIST_NM": "인구동태패널통계",
+    "LIST_ID": "A_002",
+    "VW_NM": "국내통계 주제별",
+    "VW_CD": "MT_ZTITLE"
+  }
+]

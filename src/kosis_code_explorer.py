@@ -7,8 +7,8 @@ Open API는 분류코드(objL1 등)와 항목코드(itmId)를 '코드값'으로 
 그 표에 쓰이는 코드값을 fancytree 위젯의 노드 데이터(.data.itmId)로 들고 있어서,
 Selenium으로 그 화면을 열어 코드값을 읽어내는 방식으로 우회한다.
 
-사용 예:
-    python kosis_code_explorer.py 101 DT_1EA1019
+사용 예 (레포 루트에서):
+    venv/Scripts/python.exe src/kosis_code_explorer.py 101 DT_1EA1019
 """
 import sys
 import time

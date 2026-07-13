@@ -2,5 +2,5 @@
 venv/
 __pycache__/
 *.pyc
-.csv
+*.csv
 docs/

@@ -1,9 +1,9 @@
 """
-실전1 ② 뉴스 주장 탐지·추출 — 정제된 뉴스 2,706건 전체에 규칙 기반으로 적용.
+실전1 ② 뉴스 주장 탐지·추출 — 정제된 뉴스 2,706건 전체에 완화 필터 적용.
 
 claim_extraction_schema.md에서 정한 "핵심 스키마 필드"(2-1절: value/unit/change_type/
-time_ref/source_org_raw 등)를 스키마로 삼아, 기사에서 수치·비교 문장을 찾고 정규식으로
-분해한다. claim_class/source_scope/verifiability_prefilter(2-2절, KOSIS 대조 전 필터링용)는
+time_ref/source_org_raw 등)를 스키마로 삼아, 기사에서 값·단위 쌍이 있는 문장을 찾고
+정규식으로 분해한다. claim_class/source_scope/verifiability_prefilter(2-2절, KOSIS 대조 전 필터링용)는
 지금까지 사람이 37건을 수동으로 읽고 판단한 항목이라 규칙만으로 안정적으로 자동화하기
 어렵다고 보고 이번 1차 전체 추출에서는 대상에서 제외했다 — 구조적 요소(무엇을, 얼마나,
 언제, 어디서 인용했는지)만 기계적으로 뽑아내고, 사람이 봐야 하는 판단(claim_class 등)은
@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from news_preprocessor import split_sentences_fast  # noqa: E402
 
 INPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "news_preprocessed.csv"
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_candidates_full.csv"
+# 기존 7,043건 결과(claim_candidates_full.csv)는 비교 기준선으로 보존한다.
+OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_candidates_relaxed.csv"
 
 NUMBER_RE = re.compile(r"\d")
 COMPARISON_RE = re.compile(
@@ -72,16 +73,12 @@ def classify_change_type(sentence: str, units: list[str]) -> str:
 
 
 def extract_from_sentence(sentence: str) -> dict | None:
-    if not NUMBER_RE.search(sentence):
-        return None
-    if not COMPARISON_RE.search(sentence):
-        return None  # 후보 문장 기준(eda_report.md 4장과 동일: 숫자 + 비교/증감 표현)
-
     value_unit_pairs = VALUE_UNIT_RE.findall(sentence)
     if not value_unit_pairs:
-        return None
+        return None  # 완화 기준: 숫자+비교어가 아니라 값·단위 쌍이 1개 이상
     values = [v.strip() for v, u in value_unit_pairs]
     units = [u.strip() for v, u in value_unit_pairs]
+    passes_old_filter = bool(NUMBER_RE.search(sentence) and COMPARISON_RE.search(sentence))
 
     time_matches = TIME_RE.findall(sentence)
     time_ref = time_matches[0] if time_matches else None
@@ -101,6 +98,9 @@ def extract_from_sentence(sentence: str) -> dict | None:
         "is_index": bool(INDEX_RE.search(sentence)),
         "source_mentioned": source_org_raw is not None,
         "source_org_raw": source_org_raw,
+        "passes_old_filter": passes_old_filter,
+        "passes_relaxed_filter": True,
+        "candidate_origin": "both" if passes_old_filter else "relaxed_only",
     }
 
 
@@ -133,6 +133,7 @@ def main():
     print(f"기사 {len(df)}건 중 {n_articles_with_claims}건에서 후보 문장 {len(result)}개 추출")
     print(f"레이블별 후보 문장 수:\n{result.groupby('검색_구분_레이블').size()}")
     print(f"change_type 분포:\n{result['change_type'].value_counts()}")
+    print(f"candidate_origin 분포:\n{result['candidate_origin'].value_counts()}")
     print(f"저장 위치: {OUTPUT_PATH}")
 
 

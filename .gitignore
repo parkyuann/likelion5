@@ -1,4 +1,22 @@
 .env
+.env.*
+!.env.example
+.venv/
 .ipynb_checkpoints/
+
+# 원본 데이터와 생성 결과
+data/
+output/
 *.csv
+*.jsonl
+*.parquet
+*.xlsx
+
+# 학습 모델 및 대용량 바이너리
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
 

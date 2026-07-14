@@ -9,6 +9,31 @@ API_KEY = os.environ["KOSIS_API_KEY"]
 LIST_URL = "https://kosis.kr/openapi/statisticsList.do"
 DATA_URL = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
 META_URL = "https://kosis.kr/openapi/statisticsData.do"
+SEARCH_URL = "https://kosis.kr/openapi/statisticsSearch.do"
+
+
+def search_tables(keyword: str, result_count: int = 10) -> list[dict]:
+    """키워드로 통계표를 직접 검색한다 (statisticsSearch.do).
+
+    list_tables()/kosis_tree_crawler.py는 대분류부터 트리를 내려가며 표를 찾는
+    방식(BFS)이라 "이 키워드를 다루는 표가 있는가"를 확인하려면 트리 전체를
+    돌아야 했다. 이 엔드포인트는 관련도(RANK)순으로 바로 검색해준다 — 뉴스에서
+    뽑은 지표명으로 후보 표를 즉시 좁힐 때(벡터DB 색인 전 1차 후보 확보, 또는
+    벡터DB 없이도 쓸 수 있는 대안) 유용하다. 단, 트리 크롤링과 달리 상위
+    카테고리 경로(path)는 응답에 없다.
+    """
+    params = {
+        "method": "getList", "apiKey": API_KEY,
+        "searchNm": keyword, "sort": "RANK",
+        "startCount": 1, "resultCount": result_count,
+        "format": "json", "jsonVD": "Y",
+    }
+    res = requests.get(SEARCH_URL, params=params, timeout=10)
+    res.raise_for_status()
+    data = res.json()
+    if isinstance(data, dict) and "err" in data:
+        raise RuntimeError(f"KOSIS API 오류: {data}")
+    return data
 
 
 def list_tables(vw_cd: str = "MT_ZTITLE", parent_id: str = "A") -> list[dict]:

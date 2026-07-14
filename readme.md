@@ -81,6 +81,42 @@
 
 
 
+# 진행 현황 (2026-07-14 기준)
+
+## 코드 파이프라인 (코어)
+
+| 모듈 | 파일 | 상태 |
+| --- | --- | --- |
+| 뉴스 전처리 | `src/news_preprocessor.py` | 완료 — 헤더/푸터 잔재 제거·표현 정규화 |
+| 주장 추출(정규식 후보) | `src/claim_extractor.py` | 완료 |
+| 주장 추출(LLM/HCX) | `src/llm_claim_extractor.py` | 완료 — HCX-DASH 프롬프트 기반 |
+| 표현 정규화 | `src/claim_normalizer.py` | 완료 — 증감/배수/최고·최저/행정구역 |
+| KOSIS API 클라이언트 | `src/kosis_client.py` | 완료 |
+| KOSIS 스키마 | `src/kosis_schema.py` | 완료 |
+| KOSIS 통계표 트리 수집 | `src/kosis_tree_crawler.py` | 완료 — 산출물 `data/kosis_table_tree.json` |
+| 출처 범위 분석 | `src/source_scope_analysis.py` | 완료 — 출처를 KOSIS 정식 기관 목록(`data/kosis_org_names.json`)과 대조 |
+| HCX 임베딩 클라이언트 | `src/hcx_embedding_client.py` | 완료 |
+
+## 라벨링 파일럿 (gold 기준 데이터)
+
+- 완화 필터(relaxed) 표본에 대해 **집계통계 주장 gold 라벨** 작성
+  - 기사 단위: `data/labeling/article_labeling_pilot_relaxed(_team2).csv`
+  - 후보 단위: `data/labeling/candidate_labeling_pilot_relaxed(_team2).csv`
+- 판정 기준: **모집단 단위 집계통계만 인정**, 개인·순위·시장 시세·전망·정책 목표·제도 기준·개별 기업/기금 실적·UI 노이즈는 제외
+- team1·team2를 동일 기준으로 라벨링 → 어노테이터 간 일치도(IAA) 및 모델 성능(confusion matrix) 검증에 활용
+
+## 단계별 로드맵 대비
+
+- **실전1 (주장 구조화·사전 필터링)**: 스키마 확정, 추출·정규화·출처 분류 코드 완료, 라벨 파일럿 진행
+- **실전2 (통계표 매핑)**: KOSIS 통계표 트리 수집 완료, 임베딩+리랭커 매핑 진행 중
+- **최종 (판정·설명 생성)**: 미착수
+
+## 저장소 / 데이터 공유
+
+- **GitHub**: 코드(`src/`), `requirements.txt`, `readme.md`, 소형 참조 데이터 `data/kosis_org_names.json`
+- **구글 드라이브**: 대용량 데이터 — `kosis_table_tree.json`(약 95MB), 전처리·원천 CSV, 후보 CSV, 라벨링 CSV, PDF 매뉴얼
+- 팀원은 Drive에서 받은 파일을 `data/` 폴더에 그대로 넣으면 코드가 상대경로로 인식(경로 수정 불필요)
+
 # 데이터 특성
 
 ## 뉴스 데이터
@@ -98,9 +134,9 @@
    “물가” 하나가 소비자물가조사/생산자물가조사/농가판매및구입가격조사/산지쌀값조사 등으로 세분화. 뉴스가 “쌀값”이라고만 쓰면 산지가격인지 소비자가격인지부터 판단해야 표를 특정할 수 있음  
 3. **트리 깊이가 일정하지 않음**  
    어떤 경로는 2단계 만에 조회 가능한 표가 나오고, 어떤 경로는 4\~5단계까지 내려가야 함. API 응답에 TBL\_ID가 있으면 조회 가능. LIST\_ID만 있으면 더 내려가야 함.  
-4. **표 이름이 시기별로 갈라짐**
+4. 표 이름이 시기별로 갈라짐  
    산지쌀값조사 안에 산정 방식이 다른 두 표가 공존 \- 뉴스 시점에 맞는 버전을 골라야 함  
-5. **KOSIS 밖 판단불가**
+5. KOSIS 밖 판단불가  
    “정부조직 개편(19부→6처)” 주장이 혹시 놓친 표가 있는지 “정부·재정” 대분류 22개 하위 항목을 전부 확인했으나 없음 \- 국세·병무·국가채무·공무원인사 통계는 있어도 “정부 조직 구조” 자체를 다루는 표는 없음. 법령(정부조직법) 영역이지, 통계청 집계 대상이 아님을 확인
 
 ### **뉴스 주장 추출 스키마**

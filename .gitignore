@@ -1,0 +1,28 @@
+# 비밀·환경
+.env
+
+# 파이썬
+venv/
+__pycache__/
+*.pyc
+
+# 대용량/데이터 → 구글 드라이브로 공유
+*.csv
+*.xlsx
+*.pdf
+data/**/*.json
+!data/kosis_org_names.json
+data/*.bak
+
+# 로컬 전용 문서·도구 설정
+docs/
+AGENTS.md
+CLAUDE.md
+claude.md
+.claude/
+.codex/
+.agents/
+
+# 의미 없는/빈 노트북 (공유 제외)
+eda.ipynb
+scholar.ipynb

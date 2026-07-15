@@ -21,7 +21,7 @@ time_ref/source_org_raw 등)를 스키마로 삼아, 기사에서 값·단위 �
 언제, 어디서 인용했는지)만 기계적으로 뽑아내고, 사람이 봐야 하는 판단(claim_class 등)은
 그대로 남겨둔다.
 
-[통합 내역 — claim_value_time_matcher.py(팀원A) + claim_listform_resolver.py(팀원B) + 이 파일(추출)]
+[통합 내역]
 - 팀원A에서 채택: 행 분리 엔진 3종 — ① "X에서 Y로" 전환 반복(_expand_transitions)
   ② "A는 v1, B는 v2" 개체 나열(_expand_entity_single) ③ "7~9월 월별" 시점 범위 분배
   (_expand_time_range). claim_candidates_full.csv 7,543행 전수 검증으로 가드가 확정된
@@ -36,12 +36,6 @@ time_ref/source_org_raw 등)를 스키마로 삼아, 기사에서 값·단위 �
 한계(설계상 알고 있는 것):
 - population(모집단)은 규칙화가 특히 어려워 이번 1차에서는 추출하지 않는다(수동 검증만).
 - change_type/source_org_raw는 문장 단위 휴리스틱이라 오탐/누락 있을 수 있음 — 사람 검증 필요.
-
-[컬럼 정리] passes_old_filter/passes_relaxed_filter/candidate_origin 3개 컬럼을 제거했다.
-이 셋은 "완화 필터가 옛날(숫자+비교어 필수) 필터 대비 실제로 쓸만한 후보를 더 잡아내는지"
-검증하려고 임시로 붙였던 것으로, 그 검증은 이미 끝났고 결론은 relaxed_filter_analysis.md에
-남아 있다(완화 필터로만 잡힌 신규 행이 전체의 59%, 그중 73%가 실제로 유용한 claim이었음을
-확인). KOSIS 비교·판정 로직(실전2/tolerance_judge)이 참조하는 컬럼이 아니라서 정리했다.
 
 상태값(모든 행에 부여):
   ALIGNED         자동 분리 성공 — alignment_method에 방식(transition/entity/time_range) 기록

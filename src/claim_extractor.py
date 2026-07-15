@@ -1,11 +1,27 @@
 """
-나열형 문장 후처리 — 값-시점/값-개체 대응, 2인 통합본(2026-07-14).
+실전1 ② 뉴스 주장 탐지·추출 + 나열형 후처리 — 3인 통합, 단일 파일본(2026-07-14).
 
-claim_extractor.py가 뽑은 후보 행(문장 1개=1행, 값 여러 개는 ";"로 병합)을 입력받아,
-나열 구조가 명시적으로 확인되는 행만 값 단위로 쪼개고(1값=1행), 나머지는 원본 행을
-보존한 채 검토 상태만 표시한다.
+news_preprocessed.csv(정제된 뉴스 2,706건)에서 값·단위 쌍이 있는 문장을 뽑고(추출),
+나열형 문장(idx=2655류)은 값 단위로 행을 분리(나열형 후처리)까지 한 번에 실행한다.
+원래 claim_extractor.py(추출)와 claim_listform_resolver.py(나열형 후처리) 2개 파일로
+나뉘어 있었으나, git 업로드 편의를 위해 이 파일 하나로 합쳤다 — 후처리 파일이 추출 파일의
+함수를 import해서 쓰는 구조였는데, 두 파일을 하나로 합치면서 그 import를 없애고 함수를
+그대로 이 파일 안에 담았다(자기 자신을 import하는 모순을 피하기 위함).
 
-[통합 내역 — claim_value_time_matcher.py(팀원A) + claim_listform_resolver.py(팀원B)]
+[결과 파일 1개로 정리] 추출 중간 산출물(claim_candidates_relaxed.csv)은 더 이상 디스크에
+저장하지 않는다 — 추출 결과는 메모리(all_rows)에만 두고 곧바로 나열형 후처리로 넘겨,
+input: news_preprocessed.csv -> output: claim_listform.csv 파일 하나만 남긴다
+(기존 파일명 claim_candidates_listform.csv에서 claim_listform.csv로 변경).
+
+claim_extraction_schema.md에서 정한 "핵심 스키마 필드"(2-1절: value/unit/change_type/
+time_ref/source_org_raw 등)를 스키마로 삼아, 기사에서 값·단위 쌍이 있는 문장을 찾고
+정규식으로 분해한다. claim_class/source_scope/verifiability_prefilter(2-2절, KOSIS 대조 전 필터링용)는
+지금까지 사람이 37건을 수동으로 읽고 판단한 항목이라 규칙만으로 안정적으로 자동화하기
+어렵다고 보고 이번 1차 전체 추출에서는 대상에서 제외했다 — 구조적 요소(무엇을, 얼마나,
+언제, 어디서 인용했는지)만 기계적으로 뽑아내고, 사람이 봐야 하는 판단(claim_class 등)은
+그대로 남겨둔다.
+
+[통합 내역 — claim_value_time_matcher.py(팀원A) + claim_listform_resolver.py(팀원B) + 이 파일(추출)]
 - 팀원A에서 채택: 행 분리 엔진 3종 — ① "X에서 Y로" 전환 반복(_expand_transitions)
   ② "A는 v1, B는 v2" 개체 나열(_expand_entity_single) ③ "7~9월 월별" 시점 범위 분배
   (_expand_time_range). claim_candidates_full.csv 7,543행 전수 검증으로 가드가 확정된
@@ -14,14 +30,18 @@ claim_extractor.py가 뽑은 후보 행(문장 1개=1행, 값 여러 개는 ";"�
   오탐 제거) + "분기(1~3월)" 괄호 보조 표현 제외 가드 + 사람 검토 라우팅 상태값
   (list_alignment_status — 자동 처리 못 한 행을 COUNT_MISMATCH/LOW_CONFIDENCE로 표시해
   사람 검토 대상을 필터 한 번으로 골라낼 수 있게 함).
-- 중복이라 하나만 남긴 것:
-  * 연도 노이즈 필터 — 양쪽에 같은 로직(4자리 19xx/20xx + 단위 "년" 제외)이 있었음 → 1개로.
-  * 시점 범위 정렬 — 같은 목적의 규칙이 양쪽에 있었음. 팀원A 버전이 요구 조건(명시적
-    분배어 + 콤마로 인접한 동일 단위 리스트)이 더 촘촘하고, 팀원B 버전의 가드 2종
-    (단위 동일성, 값 간 간격 5자 이내)을 사실상 포함하므로 팀원A 버전 채택.
-  * 출력 방식 — 열 추가(팀원B: time_ref_list) vs 행 분리(팀원A) 중 **행 분리** 채택.
-    뒷단(실전2 KOSIS 조회, tolerance_judge)은 "값 1개+시점 1개" 단위로 동작하므로
-    행 분리가 바로 물릴 수 있는 형태다. time_ref_list 열은 행 분리로 대체되어 제거.
+- 출력 방식은 행 분리(팀원A 방식) 채택 — 뒷단(실전2 KOSIS 조회, tolerance_judge)이
+  "값 1개+시점 1개" 단위로 동작하므로 행 분리가 바로 물릴 수 있는 형태다.
+
+한계(설계상 알고 있는 것):
+- population(모집단)은 규칙화가 특히 어려워 이번 1차에서는 추출하지 않는다(수동 검증만).
+- change_type/source_org_raw는 문장 단위 휴리스틱이라 오탐/누락 있을 수 있음 — 사람 검증 필요.
+
+[컬럼 정리] passes_old_filter/passes_relaxed_filter/candidate_origin 3개 컬럼을 제거했다.
+이 셋은 "완화 필터가 옛날(숫자+비교어 필수) 필터 대비 실제로 쓸만한 후보를 더 잡아내는지"
+검증하려고 임시로 붙였던 것으로, 그 검증은 이미 끝났고 결론은 relaxed_filter_analysis.md에
+남아 있다(완화 필터로만 잡힌 신규 행이 전체의 59%, 그중 73%가 실제로 유용한 claim이었음을
+확인). KOSIS 비교·판정 로직(실전2/tolerance_judge)이 참조하는 컬럼이 아니라서 정리했다.
 
 상태값(모든 행에 부여):
   ALIGNED         자동 분리 성공 — alignment_method에 방식(transition/entity/time_range) 기록
@@ -30,18 +50,8 @@ claim_extractor.py가 뽑은 후보 행(문장 1개=1행, 값 여러 개는 ";"�
   NOT_LIST_FORM   나열 구조 없음(원본 그대로)
   SINGLE_VALUE    노이즈 정제 후 값 1개 이하(나열형 대상 아님)
 
-[2026-07-14 claim_extractor.py 연결] news_preprocessed.csv -> claim_extractor.extract_from_article
-(추출) -> resolve_row(나열형 후처리)를 이 파일 한 번 실행으로 잇는다. claim_extractor.py 함수를
-그대로 가져다 쓰며(원본 파일 단독 실행도 계속 가능), 중간 산출물 claim_candidates_relaxed.csv도
-같이 저장한다. listform.csv 컬럼 구성 = 추출 컬럼 14개 + list_alignment_status/alignment_method.
-
-[2026-07-14 컬럼 정리] claim_extractor.py에서 passes_old_filter/passes_relaxed_filter/
-candidate_origin 3개 컬럼을 제거했다(완화 필터 검증용 임시 컬럼, 검증 완료·결론은
-relaxed_filter_analysis.md에 기록됨 — KOSIS 비교 로직에는 쓰이지 않아 정리). 이 파일은 해당
-컬럼을 별도로 다루지 않으므로 추가 수정은 없고, 입력 컬럼 수만 17개 -> 14개로 줄어든다.
-
 사용 예 (레포 루트에서):
-    python src/claim_listform_resolver.py
+    python src/claim_extractor.py
 """
 import re
 import sys
@@ -50,14 +60,144 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claim_extractor import extract_from_article  # noqa: E402
+from news_preprocessor import split_sentences_fast  # noqa: E402
 
 RAW_INPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "news_preprocessed.csv"
-RELAXED_OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_candidates_relaxed.csv"
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_candidates_listform.csv"
+OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_listform.csv"
 
 # ---------------------------------------------------------------------------
-# 노이즈 필터 (연도: 양쪽 공통 로직 통합 / 분기 라벨: 팀원B)
+# ① 추출 (문장에서 값·단위 쌍 찾기)
+# ---------------------------------------------------------------------------
+COMPARISON_RE = re.compile(
+    r"(증가|감소|상승|하락|늘어|줄어|올랐|내렸|대비|전년|전월|전분기|동월|동기|"
+    r"작년|지난해|최고|최다|최대|최소|최저|배|포인트|%p)"
+)
+
+# 단위 목록: news_preprocessed.csv 전체에서 "숫자 뒤 1~2글자 한글" 빈도를 직접 스캔해
+# 기존 목록에 없는 흔한 단위(대/개/회/곳/시간/분 등)를 추가했다. "대"는 "1012대"(기기 세는
+# 단위) 같은 진짜 값도 잡지만 "30대"(연령대) 같은 문장에서도 걸릴 수 있음 — 이런 다의성은
+# 이 정규식 단계에서 해소하지 않고, 뒷단(claim_class 필터링)에서 걸러지도록 남겨둔다.
+_UNIT_ALT = (
+    r"%p|%|원|달러|천\s?명|만\s?명|명|건|가구|톤|ha|kg|g|포인트|세|개월|년|분기|위"
+    r"|대|개|채|척|마리|그루|병|잔|회|차례|편|곳|층|배|시간|분|초|도|점"
+)
+
+VALUE_UNIT_RE = re.compile(
+    rf"(?P<value>\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?(?:\s?\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)*)"
+    rf"\s*(?P<unit>{_UNIT_ALT})"
+)
+
+# "1950~1960년대", "3~4%대"처럼 범위 표현의 앞쪽 숫자엔 단위가 안 붙고 뒤쪽에만 붙는
+# 한국어 생략 구조 전용 규칙 — 이게 없으면 VALUE_UNIT_RE는 뒤쪽 값만 잡고 앞쪽은 놓친다
+# (단위가 바로 뒤에 없는 위치에서는 애초에 매치가 성립하지 않기 때문).
+RANGE_RE = re.compile(
+    rf"(?P<start>\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)\s*[~\-]\s*"
+    rf"(?P<end>\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)\s*(?P<unit>{_UNIT_ALT})"
+)
+
+
+def extract_value_unit_pairs(sentence: str) -> list[tuple[str, str]]:
+    """VALUE_UNIT_RE 단독으로는 "A~B단위" 범위의 앞쪽 값(A)을 놓치므로, RANGE_RE로 먼저
+    범위 표현을 찾아 양쪽 값을 다 뽑고, 그 구간과 겹치는 VALUE_UNIT_RE 매치(뒤쪽 값 B가
+    중복으로 잡힘)는 건너뛴다."""
+    pairs: list[tuple[str, str]] = []
+    consumed_spans: list[tuple[int, int]] = []
+    for m in RANGE_RE.finditer(sentence):
+        pairs.append((m.group("start"), m.group("unit")))
+        pairs.append((m.group("end"), m.group("unit")))
+        consumed_spans.append(m.span())
+
+    for m in VALUE_UNIT_RE.finditer(sentence):
+        if any(start <= m.start() and m.end() <= end for start, end in consumed_spans):
+            continue
+        pairs.append((m.group("value"), m.group("unit")))
+    return pairs
+
+
+TIME_RE = re.compile(
+    r"(지난달|이번\s?달|이달|올해|금년|작년|지난해|전년\s?동월|전년|전월|전분기|동월|동기|"
+    r"지난\s?\d+월|\d{4}년(?:\s?\d+월)?|\d+분기)"
+)
+
+SOURCE_ORG_RE = re.compile(
+    r"([가-힣A-Za-z0-9·()]{2,20})(?:에\s?따르면|가\s?\d*일?\s?발표한|은\s?\d*일?\s?발표에서)"
+)
+
+INDEX_RE = re.compile(r"지수|=\s?100|=100")
+
+RANK_KEYWORDS = ("최고", "최다", "최대", "최소", "최저", "1위", "2위", "3위", "꼴찌")
+COMPARE_KEYWORDS = ("보다", "대비", "반면")
+PCT_POINT_KEYWORDS = ("%p", "포인트")
+
+
+def classify_change_type(sentence: str, units: list[str]) -> str:
+    """문장 단위 휴리스틱 — 우선순위: 순위 > 증감폭(%p) > 비교 > 증감률(%) > 단순수치."""
+    if any(k in sentence for k in RANK_KEYWORDS):
+        return "순위"
+    if "%p" in units or any(k in sentence for k in PCT_POINT_KEYWORDS):
+        return "증감폭"
+    if any(k in sentence for k in COMPARE_KEYWORDS):
+        return "비교"
+    if "%" in units or COMPARISON_RE.search(sentence):
+        return "증감률"
+    return "단순수치"
+
+
+def extract_from_sentence(sentence: str) -> dict | None:
+    value_unit_pairs = extract_value_unit_pairs(sentence)
+    if not value_unit_pairs:
+        return None  # 완화 기준: 숫자+비교어가 아니라 값·단위 쌍이 1개 이상
+    values = [v.strip() for v, u in value_unit_pairs]
+    units = [u.strip() for v, u in value_unit_pairs]
+
+    time_matches = TIME_RE.findall(sentence)
+    time_ref = time_matches[0] if time_matches else None
+    time_compare = next((t for t in time_matches[1:] if t != time_ref), None)
+
+    source_match = SOURCE_ORG_RE.search(sentence)
+    source_org_raw = source_match.group(1) if source_match else None
+
+    return {
+        "claim_text": sentence,
+        "value_list": ";".join(values),
+        "unit_list": ";".join(units),
+        "value_count": len(values),
+        "change_type": classify_change_type(sentence, units),
+        "time_ref": time_ref,
+        "time_compare": time_compare,
+        "is_index": bool(INDEX_RE.search(sentence)),
+        "source_mentioned": source_org_raw is not None,
+        "source_org_raw": source_org_raw,
+    }
+
+
+def extract_from_article(idx: int, title: str, date: str, label, text: str) -> list[dict]:
+    rows = []
+    for sent in split_sentences_fast(text):
+        extracted = extract_from_sentence(sent)
+        if extracted is None:
+            continue
+        extracted.update({"article_idx": idx, "기사제목": title, "작성일": date, "검색_구분_레이블": label})
+        rows.append(extracted)
+    return rows
+
+
+def extract_all_rows(raw_path: Path) -> list[dict]:
+    """news_preprocessed.csv 전체 기사에 extract_from_article을 적용해 후보 행 리스트를 만든다."""
+    df = pd.read_csv(raw_path)
+    all_rows = []
+    for idx, row in df.iterrows():
+        text = row.get("본문_정제")
+        if not isinstance(text, str) or not text:
+            continue
+        all_rows.extend(
+            extract_from_article(idx, row["기사제목"], row["작성일"], row["검색 구분 레이블"], text)
+        )
+    return all_rows
+
+
+# ---------------------------------------------------------------------------
+# ② 나열형 후처리 (값-시점/값-개체 대응)
 # ---------------------------------------------------------------------------
 _YEAR_TOKEN_RE = re.compile(r"^(19|20)\d{2}$")
 
@@ -87,9 +227,6 @@ def _clean_pairs(values: list[str], units: list[str]) -> tuple[list[str], list[s
     return clean_v, clean_u
 
 
-# ---------------------------------------------------------------------------
-# 행 분리 엔진 (팀원A — 7,543행 전수 검증으로 확정된 규칙)
-# ---------------------------------------------------------------------------
 RANGE_TIME_RE = re.compile(r"(\d{1,2})\s*[~\-]\s*(\d{1,2})\s*(월|분기)")
 DISTRIBUTIVE_RE = re.compile(r"월별|분기별|매월|각각")
 
@@ -186,9 +323,6 @@ def _expand_time_range(sentence: str, values: list[str], units: list[str], base:
     return rows
 
 
-# ---------------------------------------------------------------------------
-# 상태 판정용 보조 (팀원B — 자동 분리에 실패한 행을 사람 검토로 라우팅)
-# ---------------------------------------------------------------------------
 MONTH_RANGE_RE = re.compile(r"(\d{1,2})\s?~\s?(\d{1,2})\s?월")
 
 
@@ -207,9 +341,6 @@ def expand_month_range(sentence: str) -> list[str]:
     return labels
 
 
-# ---------------------------------------------------------------------------
-# 행 단위 통합 처리
-# ---------------------------------------------------------------------------
 def resolve_row(row: dict) -> list[dict]:
     """행 하나를 받아 (분리된 행들 | 원본 행)을 상태값과 함께 돌려준다.
     원본 행을 삭제하거나 값을 지우지 않는다 — 애매하면 항상 원본을 보존한다."""
@@ -255,32 +386,18 @@ def postprocess_rows(rows: list[dict]) -> list[dict]:
     return out
 
 
-def extract_all_rows(raw_path: Path) -> list[dict]:
-    """news_preprocessed.csv 전체 기사에 claim_extractor.extract_from_article을 적용해
-    후보 행 리스트를 만든다(claim_extractor.py의 main()과 동일한 순회 로직)."""
-    df = pd.read_csv(raw_path)
-    all_rows = []
-    for idx, row in df.iterrows():
-        text = row.get("본문_정제")
-        if not isinstance(text, str) or not text:
-            continue
-        all_rows.extend(
-            extract_from_article(idx, row["기사제목"], row["작성일"], row["검색 구분 레이블"], text)
-        )
-    return all_rows
-
-
+# ---------------------------------------------------------------------------
+# 실행
+# ---------------------------------------------------------------------------
 def main():
     all_rows = extract_all_rows(RAW_INPUT_PATH)
-    relaxed = pd.DataFrame(all_rows)
-    relaxed.to_csv(RELAXED_OUTPUT_PATH, index=False, encoding="utf-8-sig")
-    print(f"[추출] 후보 문장 {len(relaxed)}행 -> {RELAXED_OUTPUT_PATH}")
+    print(f"[추출] 후보 문장 {len(all_rows)}행")
 
     result = pd.DataFrame(postprocess_rows(all_rows))
     result.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
 
-    print(f"[나열형 후처리] 입력 {len(relaxed)}행 -> 출력 {len(result)}행 "
-          f"(증가분 {len(result) - len(relaxed)}행은 나열형 분리)")
+    print(f"[나열형 후처리] 입력 {len(all_rows)}행 -> 출력 {len(result)}행 "
+          f"(증가분 {len(result) - len(all_rows)}행은 나열형 분리)")
     print(f"상태 분포:\n{result['list_alignment_status'].value_counts()}")
     aligned = result[result["list_alignment_status"] == "ALIGNED"]
     if len(aligned):

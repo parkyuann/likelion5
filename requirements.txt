@@ -1,0 +1,15 @@
+# Project runtime dependencies only.
+# Do not paste the full output of `pip freeze` here.
+# Add a package only when project code or shared notebooks import it directly.
+#
+# Setup:
+#   python -m venv venv
+#   .\venv\Scripts\activate
+#   python -m pip install -r requirements.txt
+
+pandas>=3.0,<4
+requests>=2.34,<3
+python-dotenv>=1.2,<2
+kss>=6.0,<7
+openpyxl>=3.1,<4
+ipykernel>=7.3,<8

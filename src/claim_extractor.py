@@ -8,6 +8,11 @@ news_preprocessed.csv(정제된 뉴스 2,706건)에서 값·단위 쌍이 있는
 함수를 import해서 쓰는 구조였는데, 두 파일을 하나로 합치면서 그 import를 없애고 함수를
 그대로 이 파일 안에 담았다(자기 자신을 import하는 모순을 피하기 위함).
 
+[결과 파일 1개로 정리] 추출 중간 산출물(claim_candidates_relaxed.csv)은 더 이상 디스크에
+저장하지 않는다 — 추출 결과는 메모리(all_rows)에만 두고 곧바로 나열형 후처리로 넘겨,
+input: news_preprocessed.csv -> output: claim_listform.csv 파일 하나만 남긴다
+(기존 파일명 claim_candidates_listform.csv에서 claim_listform.csv로 변경).
+
 claim_extraction_schema.md에서 정한 "핵심 스키마 필드"(2-1절: value/unit/change_type/
 time_ref/source_org_raw 등)를 스키마로 삼아, 기사에서 값·단위 쌍이 있는 문장을 찾고
 정규식으로 분해한다. claim_class/source_scope/verifiability_prefilter(2-2절, KOSIS 대조 전 필터링용)는
@@ -58,8 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from news_preprocessor import split_sentences_fast  # noqa: E402
 
 RAW_INPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "news_preprocessed.csv"
-RELAXED_OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_candidates_relaxed.csv"
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_candidates_listform.csv"
+OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_listform.csv"
 
 # ---------------------------------------------------------------------------
 # ① 추출 (문장에서 값·단위 쌍 찾기)
@@ -387,15 +391,13 @@ def postprocess_rows(rows: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 def main():
     all_rows = extract_all_rows(RAW_INPUT_PATH)
-    relaxed = pd.DataFrame(all_rows)
-    relaxed.to_csv(RELAXED_OUTPUT_PATH, index=False, encoding="utf-8-sig")
-    print(f"[추출] 후보 문장 {len(relaxed)}행 -> {RELAXED_OUTPUT_PATH}")
+    print(f"[추출] 후보 문장 {len(all_rows)}행")
 
     result = pd.DataFrame(postprocess_rows(all_rows))
     result.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
 
-    print(f"[나열형 후처리] 입력 {len(relaxed)}행 -> 출력 {len(result)}행 "
-          f"(증가분 {len(result) - len(relaxed)}행은 나열형 분리)")
+    print(f"[나열형 후처리] 입력 {len(all_rows)}행 -> 출력 {len(result)}행 "
+          f"(증가분 {len(result) - len(all_rows)}행은 나열형 분리)")
     print(f"상태 분포:\n{result['list_alignment_status'].value_counts()}")
     aligned = result[result["list_alignment_status"] == "ALIGNED"]
     if len(aligned):

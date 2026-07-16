@@ -48,6 +48,19 @@
 | `data/retrieval_eval_claims_v0_manifest.json` | 평가셋 샘플링·split manifest |
 | `data/labeling/` | Claude/Codex/team2 라벨링 및 통합 검토 파일 |
 
+### 테스트 평가셋: `data/evaluation/`
+
+`src/create_evaluation_sets.py`가 `retrieval_eval_claims_v0_codex.csv`에서 생성한다. 세 파일은 서로 다른 `article_idx`를 사용해 기사 단위 중복을 막는다.
+
+| 파일 | 용도 | 구성 |
+|---|---|---|
+| `pilot120.csv` | 1차 파일럿 | HCX 실행 오류·출력 형식 확인, 120건 |
+| `validation300.csv` | 2차 검증셋 | `list_alignment_status`·`gold_claim_class`·`gold_source_scope` 조합 층화, 300건 |
+| `final500.csv` | 최종 평가셋 | 사람 검토 gold label 및 Precision/Recall/F1·필드별 Exact Match 산출, 500건 |
+| `evaluation_sets_manifest.json` | 생성 조건·분포·검증 결과 | seed, 행 수, 클래스/상태/기관 범위 분포 |
+
+평가셋에는 HCX 실행 기록용 `hcx_*` 컬럼과 사람 검토용 `human_*` 컬럼이 포함되어 있다. `final500.csv`는 전체 500건 조건을 만족하며, 데이터 자체가 30건 미만인 희소 클래스는 manifest의 `class_shortfalls`에 기록한다.
+
 ## 보관한 항목
 
 `archive/2026-07-15/` 아래로 이동한 파일은 삭제하지 않은 이전 실험·임시 산출물이다.
@@ -64,5 +77,6 @@
 - `claims_v1.jsonl`: `src/convert_claim_listform_to_schema.py`로 재생성
 - `retrieval_eval_claims_v0.csv`: `src/create_retrieval_eval_set.py`로 재생성
 - `retrieval_eval_claims_v0_codex.csv`: `src/label_retrieval_eval_codex.py`로 재생성
+- `data/evaluation/*.csv`: `src/create_evaluation_sets.py`로 재생성
 
 CSV·JSONL·대용량 원천 데이터는 `.gitignore` 정책상 Git에 포함하지 않고 로컬 또는 공유 저장소에서 관리한다.

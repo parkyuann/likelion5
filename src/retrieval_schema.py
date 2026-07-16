@@ -38,6 +38,27 @@ class Attribution:
 
 
 @dataclass
+class ClaimObservation:
+    """A single value within a claim, preserving its relationship to peers."""
+
+    observation_id: str
+    claim_id: str
+    value_raw: str | None = None
+    value_num: float | None = None
+    unit_raw: str | None = None
+    unit_norm: str | None = None
+    period_raw: str | None = None
+    period_start: str | None = None
+    period_end: str | None = None
+    period_type: str | None = None
+    time_compare_raw: str | None = None
+    dimension_json: dict[str, Any] = field(default_factory=dict)
+    relation_type: str = "untyped"
+    comparison_group: str | None = None
+    sequence: int = 0
+
+
+@dataclass
 class Claim:
     """표 매핑에 필요한 원자적 claim 1개."""
 
@@ -74,6 +95,7 @@ class Claim:
     approximation_qualifier: str | None = None
     raw_value_list: list[str] = field(default_factory=list)
     raw_unit_list: list[str] = field(default_factory=list)
+    observations: list[ClaimObservation] = field(default_factory=list)
 
     attributions: list[Attribution] = field(default_factory=list)
     claim_class: str | None = None
@@ -164,6 +186,15 @@ def validate_claim(claim: Claim) -> list[str]:
     for attribution in claim.attributions:
         if attribution.role not in SOURCE_ROLES:
             errors.append(f"invalid source role: {attribution.role}")
+    observation_ids = set()
+    for observation in claim.observations:
+        if observation.claim_id != claim.claim_id:
+            errors.append("observation.claim_id must match claim.claim_id")
+        if observation.observation_id in observation_ids:
+            errors.append("observation_id must be unique within a claim")
+        observation_ids.add(observation.observation_id)
+        if observation.value_num is not None and not observation.unit_norm:
+            errors.append("observation.unit_norm is required when value_num is present")
     if claim.value_num is not None and not claim.unit_norm:
         errors.append("unit_norm is required when value_num is present")
     if claim.time_start and claim.time_end and claim.time_start > claim.time_end:

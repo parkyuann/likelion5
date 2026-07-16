@@ -194,9 +194,12 @@ def call_hcx(
         body.update({
             "repetitionPenalty": 1.1,
             "maxCompletionTokens": max_tokens,
-            "responseFormat": {"type": "json", "schema": CLAIM_SCHEMA},
         })
+        # structured output(responseFormat)은 HCX-007만 지원한다.
+        # HCX-005/HCX-DASH-002 등에 보내면 40001(Invalid parameter)로 거부되므로
+        # 007에서만 붙이고, 나머지는 프롬프트 지시 + parse_content 텍스트 추출로 처리한다.
         if model == "HCX-007":
+            body["responseFormat"] = {"type": "json", "schema": CLAIM_SCHEMA}
             body["thinking"] = {"effort": "none"}
     started = time.perf_counter()
     response = requests.post(url, headers=headers, json=body, timeout=timeout)

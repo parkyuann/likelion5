@@ -22,14 +22,17 @@ import requests
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT = ROOT / "data" / "retrieval_eval_claims_v0_codex.csv"
+DEFAULT_INPUT = ROOT / "data" / "evaluation" / "pilot120.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "hcx_experiments"
 DEFAULT_METRICS_LOG = ROOT / "data" / "hcx_experiment_metrics.jsonl"
-MODEL_DEFAULT = "HCX-007"
+DEFAULT_SUMMARY_FILE = ROOT / "data" / "hcx_experiment_summary.csv"
+MODEL_DEFAULT = "HCX-003"
 MODEL_ALIASES = {
     "HCX-BASH-001": "HCX-DASH-001",
     "HCX-BASH-002": "HCX-DASH-002",
 }
+V1_MODELS = {"HCX-003", "HCX-DASH-001"}
+RESPONSE_FORMAT_MODELS = {"HCX-007"}
 
 CLAIM_SCHEMA = {
     "type": "object",
@@ -97,7 +100,7 @@ def clean(value: Any) -> str:
 
 
 def load_project_env() -> None:
-    """Load project-root .env without printing or exposing secret values."""
+    """Load API keys from the project-root .env without printing secrets."""
     env_path = ROOT / ".env"
     if not env_path.is_file():
         return
@@ -106,7 +109,10 @@ def load_project_env() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and value:
+            os.environ.setdefault(key, value)
 
 
 def env_api_key() -> str:
@@ -120,15 +126,12 @@ def normalize_model_name(model: str) -> str:
 
 
 def infer_api_version(model: str) -> str:
-    """Return the documented API family for a model.
+    return "v1" if model in V1_MODELS else "v3"
 
-    HCX-003 and HCX-DASH-001 use Chat Completions v1. HCX-005/007 and
-    HCX-DASH-002 use the v3 family. ``--api-version`` can override this when
-    the user's CLOVA Studio deployment differs.
-    """
-    if model in {"HCX-003", "HCX-DASH-001"}:
-        return "v1"
-    return "v3"
+
+def effective_temperature(temperature: float, version: str) -> float:
+    # v1 rejects an exact zero temperature; v3 accepts it.
+    return 0.1 if version == "v1" and temperature <= 0 else temperature
 
 
 def experiment_id(model: str, temperature: float, top_p: float, max_tokens: int, prompt_version: str) -> str:
@@ -184,19 +187,17 @@ def call_hcx(
             {"role": "system", "content": prompt},
             {"role": "user", "content": f"후보 claim 문장:\n{claim_text}"},
         ],
-        "temperature": temperature,
+        "temperature": effective_temperature(temperature, version),
         "topP": top_p,
         "topK": 0,
     }
     if version == "v1":
-        body.update({"maxTokens": max_tokens, "repeatPenalty": 1.1, "stopBefore": []})
+        body.update({"maxTokens": max_tokens, "repetitionPenalty": 1.1, "stop": []})
     else:
-        body.update({
-            "repetitionPenalty": 1.1,
-            "maxCompletionTokens": max_tokens,
-            "responseFormat": {"type": "json", "schema": CLAIM_SCHEMA},
-        })
-        if model == "HCX-007":
+        body.update({"repetitionPenalty": 1.1, "maxCompletionTokens": max_tokens})
+        # DASH-002 and HCX-005 reject responseFormat; HCX-007 supports it.
+        if model in RESPONSE_FORMAT_MODELS:
+            body["responseFormat"] = {"type": "json", "schema": CLAIM_SCHEMA}
             body["thinking"] = {"effort": "none"}
     started = time.perf_counter()
     response = requests.post(url, headers=headers, json=body, timeout=timeout)
@@ -291,10 +292,28 @@ def calculate_metrics(rows: list[dict]) -> dict:
     }
 
 
+def update_experiment_summary(metrics: dict, summary_path: Path) -> None:
+    """Upsert one flattened metrics row per experiment for easy comparison."""
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {}
+    for key, value in metrics.items():
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                row[f"{key}_{child_key}"] = child_value
+        else:
+            row[key] = value
+    current = pd.read_csv(summary_path, keep_default_na=False) if summary_path.exists() else pd.DataFrame()
+    if not current.empty and "experiment_id" in current.columns:
+        current = current[current["experiment_id"] != row["experiment_id"]]
+    combined = pd.concat([current, pd.DataFrame([row])], ignore_index=True, sort=False)
+    combined.to_csv(summary_path, index=False, encoding="utf-8-sig")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--summary-file", type=Path, default=DEFAULT_SUMMARY_FILE)
     parser.add_argument("--metrics-log", type=Path, default=DEFAULT_METRICS_LOG)
     parser.add_argument("--model", default=MODEL_DEFAULT)
     parser.add_argument("--api-version", choices=["auto", "v1", "v3"], default="auto")
@@ -334,8 +353,8 @@ def main() -> None:
     with cache_path.open("a", encoding="utf-8") as cache_file:
         for _, source in df.iterrows():
             claim_id = clean(source.get("eval_claim_id"))
-            # 성공한 결과만 재사용한다. 이전 실행에서 오류로 저장된 행은
-            # 요청 body/API 설정을 수정한 뒤 다시 호출할 수 있어야 한다.
+            # Reuse successful results only. Failed rows must be retried after
+            # fixing credentials, request parameters, or transient API errors.
             if claim_id in cache and cache[claim_id].get("status") == "ok":
                 result = cache[claim_id]
             else:
@@ -392,13 +411,25 @@ def main() -> None:
 
     output_df = pd.DataFrame(rows)
     output_df.to_csv(result_path, index=False, encoding="utf-8-sig")
+    experiment_metadata = {
+        "experiment_id": exp_id,
+        "model": args.model,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "max_tokens": args.max_tokens,
+        "prompt_version": args.prompt_version,
+        "input_file": str(args.input),
+        "seed": args.seed,
+    }
     metrics = calculate_metrics(rows)
-    metrics.update({"experiment_id": exp_id, "model": args.model, "api_version": args.api_version, "resolved_api_version": infer_api_version(args.model) if args.api_version == "auto" else args.api_version, "temperature": args.temperature, "top_p": args.top_p, "max_tokens": args.max_tokens, "prompt_version": args.prompt_version, "input": str(args.input), "seed": args.seed, "input_cost_per_1m": args.input_cost_per_1m, "output_cost_per_1m": args.output_cost_per_1m})
+    resolved_version = infer_api_version(args.model) if args.api_version == "auto" else args.api_version
+    metrics.update({**experiment_metadata, "api_version": args.api_version, "resolved_api_version": resolved_version, "effective_temperature": effective_temperature(args.temperature, resolved_version), "input": str(args.input), "input_cost_per_1m": args.input_cost_per_1m, "output_cost_per_1m": args.output_cost_per_1m})
+    update_experiment_summary(metrics, args.summary_file)
     metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     args.metrics_log.parent.mkdir(parents=True, exist_ok=True)
     with args.metrics_log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(metrics, ensure_ascii=False) + "\n")
-    print(json.dumps({"experiment_id": exp_id, "predictions": str(result_path), "metrics": str(metrics_path), **metrics}, ensure_ascii=False))
+    print(json.dumps({"experiment_id": exp_id, "predictions": str(result_path), "summary_file": str(args.summary_file), "metrics": str(metrics_path), **metrics}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

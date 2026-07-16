@@ -20,7 +20,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from retrieval_schema import Attribution, Claim, ClaimTableMapping, validate_claim, validate_mapping
+from retrieval_schema import (
+    Attribution,
+    Claim,
+    ClaimObservation,
+    ClaimTableMapping,
+    validate_claim,
+    validate_mapping,
+)
 from claim_normalizer import resolve_relative_time
 
 
@@ -105,6 +112,20 @@ def bool_value(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes"}
 
 
+def infer_relation_type(claim_text: str, values: list[str], time_ref: str, time_compare: str) -> str:
+    """Infer only a conservative relation hint; HCX remains the authority."""
+    text = clean(claim_text)
+    if "~" in "".join(values) or "부터" in text and "까지" in text:
+        return "range"
+    if time_compare or any(token in text for token in ("전년", "전월", "대비", "보다", "증가", "감소", "상승", "하락")):
+        return "comparison_pair"
+    if len(values) > 1 and any(token in text for token in ("년", "분기", "월", "상반기", "하반기")):
+        return "time_series"
+    if len(values) > 1 and any(token in text for token in ("중", "비중", "구성", "각각", "남성", "여성")):
+        return "cross_section"
+    return "untyped"
+
+
 def make_claim(row: pd.Series, row_number: int) -> Claim:
     values = split_list(row.get("value_list"))
     units = split_list(row.get("unit_list"))
@@ -118,6 +139,9 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
     value_num, unit_norm = normalize_value(value_raw, unit_raw)
     time_start_raw, time_start, period_type = normalize_time(clean(row.get("time_ref")), published_at)
     _, time_compare, _ = normalize_time(clean(row.get("time_compare")), published_at)
+    relation_type = infer_relation_type(
+        str(row.get("claim_text", "")), values, clean(row.get("time_ref")), clean(row.get("time_compare"))
+    )
 
     def field(name: str, fallback: str | None = None) -> str | None:
         return clean(row.get(name)) or fallback
@@ -160,6 +184,7 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
         is_index=bool_value(row.get("is_index")),
         raw_value_list=values,
         raw_unit_list=units,
+        observations=[],
         attributions=attributions,
         claim_class=field("gold_claim_class"),
         source_scope=field("gold_source_scope"),
@@ -168,6 +193,28 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
         extraction_method="claim_extractor_listform",
         review_status=field("review_status", "pending") or "pending",
     )
+    for index, value_raw_item in enumerate(values):
+        unit_raw_item = units[index] if index < len(units) else (units[0] if len(units) == 1 else None)
+        value_num_item, unit_norm_item = normalize_value(value_raw_item, unit_raw_item)
+        observation_period = clean(row.get("time_ref")) if index == 0 else None
+        claim.observations.append(
+            ClaimObservation(
+                observation_id=f"{claim_id}_obs_{index + 1:03d}",
+                claim_id=claim_id,
+                value_raw=value_raw_item,
+                value_num=value_num_item,
+                unit_raw=unit_raw_item,
+                unit_norm=unit_norm_item,
+                period_raw=observation_period,
+                period_start=time_start if index == 0 else None,
+                period_end=time_start if index == 0 else None,
+                period_type=period_type if index == 0 else None,
+                time_compare_raw=clean(row.get("time_compare")) if index == 0 else None,
+                relation_type=relation_type,
+                comparison_group=claim_id,
+                sequence=index,
+            )
+        )
     return claim
 
 
@@ -237,4 +284,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -82,6 +82,42 @@ CLAIM_SCHEMA = {
     "required": ["claims"],
 }
 
+_CLAIM_ITEM_SCHEMA = CLAIM_SCHEMA["properties"]["claims"]["items"]
+_CLAIM_ITEM_SCHEMA["properties"].update(
+    {
+        "is_claim": {"type": "boolean", "description": "KOSIS 검증 대상 주장인지 여부"},
+        "claim_class": {"type": "string", "description": "주장 유형"},
+        "observations": {
+            "type": "array",
+            "description": "한 claim 안의 모든 수치 관측값과 값 사이의 관계",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": ["string", "null"]},
+                    "unit": {"type": ["string", "null"]},
+                    "period": {"type": ["string", "null"]},
+                    "time_compare": {"type": ["string", "null"]},
+                    "dimension": {"type": "object"},
+                    "relation_type": {"type": "string"},
+                    "comparison_group": {"type": ["string", "null"]},
+                    "sequence": {"type": "integer"},
+                },
+                "required": ["value", "unit", "period", "relation_type", "comparison_group", "sequence"],
+            },
+        },
+    }
+)
+_CLAIM_ITEM_SCHEMA["required"] = [
+    "is_claim",
+    "claim_class",
+    "claim_text",
+    "indicator_raw",
+    "population",
+    "observations",
+    "source_org_raw",
+    "evidence_quote",
+]
+
 SYSTEM_PROMPT = """
 당신은 뉴스 기사에서 KOSIS(국가데이터처) 공식 통계표와 대조해 검증할 수 있는
 집계통계 주장만 추출하는 분석가입니다. 목적은 "이 문장이 사실인지 KOSIS
@@ -126,6 +162,18 @@ SYSTEM_PROMPT = """
 4. claim_text는 앞 문맥 없이도 이해 가능한 문장으로 작성합니다.
 5. 위 기준을 통과하는 주장이 하나도 없으면 claims를 빈 배열로 반환합니다.
 6. 값을 모르면 null을 쓰고 임의로 채우지 않습니다.
+"""
+
+
+SYSTEM_PROMPT += """
+
+추가 출력 규칙:
+- `is_claim=false`이면 `observations=[]`로 반환하고, 숫자가 있어도 억지로 claim으로 만들지 마세요.
+- 하나의 문장에 수치가 여러 개 있으면 claim을 여러 행으로 쪼개지 말고 하나의 claim 아래 `observations` 배열에 모두 넣으세요.
+- 각 observation에는 value, unit, period, dimension, relation_type, comparison_group, sequence를 기록하세요.
+- 관계 유형은 `time_series`, `comparison_pair`, `cross_section`, `part_whole`, `numerator_denominator`, `multi_indicator`, `ranked_list`, `range`, `untyped` 중 하나를 사용하세요.
+- 기간·집단·항목이 불명확하면 null 또는 빈 객체로 두고 추정하지 마세요.
+- 기존 value/unit/time_ref 필드는 하위 호환용으로 첫 번째 observation 값을 복사할 수 있지만, 다중 값의 정답은 observations 배열입니다.
 """
 
 

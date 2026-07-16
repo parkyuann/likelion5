@@ -26,6 +26,10 @@ DEFAULT_INPUT = ROOT / "data" / "retrieval_eval_claims_v0_codex.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "hcx_experiments"
 DEFAULT_METRICS_LOG = ROOT / "data" / "hcx_experiment_metrics.jsonl"
 MODEL_DEFAULT = "HCX-007"
+MODEL_ALIASES = {
+    "HCX-BASH-001": "HCX-DASH-001",
+    "HCX-BASH-002": "HCX-DASH-002",
+}
 
 CLAIM_SCHEMA = {
     "type": "object",
@@ -92,8 +96,39 @@ def clean(value: Any) -> str:
     return "" if text.lower() in {"nan", "none", "nat"} else text
 
 
+def load_project_env() -> None:
+    """Load project-root .env without printing or exposing secret values."""
+    env_path = ROOT / ".env"
+    if not env_path.is_file():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
 def env_api_key() -> str:
+    load_project_env()
     return (os.getenv("HCX_API_KEY") or os.getenv("NCP_CLOVASTUDIO_API_KEY") or "").strip()
+
+
+def normalize_model_name(model: str) -> str:
+    name = model.strip().upper()
+    return MODEL_ALIASES.get(name, name)
+
+
+def infer_api_version(model: str) -> str:
+    """Return the documented API family for a model.
+
+    HCX-003 and HCX-DASH-001 use Chat Completions v1. HCX-005/007 and
+    HCX-DASH-002 use the v3 family. ``--api-version`` can override this when
+    the user's CLOVA Studio deployment differs.
+    """
+    if model in {"HCX-003", "HCX-DASH-001"}:
+        return "v1"
+    return "v3"
 
 
 def experiment_id(model: str, temperature: float, top_p: float, max_tokens: int, prompt_version: str) -> str:
@@ -130,9 +165,14 @@ def call_hcx(
     top_p: float,
     max_tokens: int,
     prompt: str,
+    api_version: str = "auto",
     timeout: int = 120,
 ) -> tuple[dict, dict, float]:
-    url = f"https://clovastudio.stream.ntruss.com/v3/chat-completions/{model}"
+    model = normalize_model_name(model)
+    version = infer_api_version(model) if api_version == "auto" else api_version
+    if version not in {"v1", "v3"}:
+        raise ValueError("api_version must be auto, v1, or v3")
+    url = f"https://clovastudio.stream.ntruss.com/{version}/chat-completions/{model}"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-NCP-CLOVASTUDIO-REQUEST-ID": str(uuid.uuid4()),
@@ -147,13 +187,25 @@ def call_hcx(
         "temperature": temperature,
         "topP": top_p,
         "topK": 0,
-        "maxTokens": max_tokens,
-        "responseFormat": {"type": "json", "schema": CLAIM_SCHEMA},
     }
+    if version == "v1":
+        body.update({"maxTokens": max_tokens, "repeatPenalty": 1.1, "stopBefore": []})
+    else:
+        body.update({
+            "repetitionPenalty": 1.1,
+            "maxCompletionTokens": max_tokens,
+            "responseFormat": {"type": "json", "schema": CLAIM_SCHEMA},
+        })
+        if model == "HCX-007":
+            body["thinking"] = {"effort": "none"}
     started = time.perf_counter()
     response = requests.post(url, headers=headers, json=body, timeout=timeout)
     latency_ms = (time.perf_counter() - started) * 1000
-    response.raise_for_status()
+    if response.status_code >= 400:
+        detail = response.text.strip().replace("\n", " ")[:1000]
+        raise RuntimeError(
+            f"HCX request failed ({response.status_code}) url={url} body={detail}"
+        )
     parsed, usage = parse_content(response.json())
     return parsed, usage, latency_ms
 
@@ -245,6 +297,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--metrics-log", type=Path, default=DEFAULT_METRICS_LOG)
     parser.add_argument("--model", default=MODEL_DEFAULT)
+    parser.add_argument("--api-version", choices=["auto", "v1", "v3"], default="auto")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=0.8)
     parser.add_argument("--max-tokens", type=int, default=1800)
@@ -259,6 +312,7 @@ def main() -> None:
     args = parser.parse_args()
 
     prompt = args.system_prompt_file.read_text(encoding="utf-8") if args.system_prompt_file else SYSTEM_PROMPT
+    args.model = normalize_model_name(args.model)
     exp_id = experiment_id(args.model, args.temperature, args.top_p, args.max_tokens, args.prompt_version)
     output_dir = args.output_dir / exp_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -280,7 +334,9 @@ def main() -> None:
     with cache_path.open("a", encoding="utf-8") as cache_file:
         for _, source in df.iterrows():
             claim_id = clean(source.get("eval_claim_id"))
-            if claim_id in cache:
+            # 성공한 결과만 재사용한다. 이전 실행에서 오류로 저장된 행은
+            # 요청 body/API 설정을 수정한 뒤 다시 호출할 수 있어야 한다.
+            if claim_id in cache and cache[claim_id].get("status") == "ok":
                 result = cache[claim_id]
             else:
                 started = time.perf_counter()
@@ -292,7 +348,7 @@ def main() -> None:
                             raise RuntimeError("HCX_API_KEY 또는 NCP_CLOVASTUDIO_API_KEY가 필요합니다.")
                         prediction, usage, latency_ms = call_hcx(
                             clean(source.get("claim_text")), api_key, args.model,
-                            args.temperature, args.top_p, args.max_tokens, prompt,
+                            args.temperature, args.top_p, args.max_tokens, prompt, args.api_version,
                         )
                     prompt_tokens = usage_value(usage, "promptTokens", "prompt_tokens", "inputTokens", "input_tokens")
                     completion_tokens = usage_value(usage, "completionTokens", "completion_tokens", "outputTokens", "output_tokens")
@@ -337,7 +393,7 @@ def main() -> None:
     output_df = pd.DataFrame(rows)
     output_df.to_csv(result_path, index=False, encoding="utf-8-sig")
     metrics = calculate_metrics(rows)
-    metrics.update({"experiment_id": exp_id, "model": args.model, "temperature": args.temperature, "top_p": args.top_p, "max_tokens": args.max_tokens, "prompt_version": args.prompt_version, "input": str(args.input), "seed": args.seed, "input_cost_per_1m": args.input_cost_per_1m, "output_cost_per_1m": args.output_cost_per_1m})
+    metrics.update({"experiment_id": exp_id, "model": args.model, "api_version": args.api_version, "resolved_api_version": infer_api_version(args.model) if args.api_version == "auto" else args.api_version, "temperature": args.temperature, "top_p": args.top_p, "max_tokens": args.max_tokens, "prompt_version": args.prompt_version, "input": str(args.input), "seed": args.seed, "input_cost_per_1m": args.input_cost_per_1m, "output_cost_per_1m": args.output_cost_per_1m})
     metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     args.metrics_log.parent.mkdir(parents=True, exist_ok=True)
     with args.metrics_log.open("a", encoding="utf-8") as handle:

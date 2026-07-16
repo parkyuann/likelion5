@@ -79,4 +79,15 @@
 - `retrieval_eval_claims_v0_codex.csv`: `src/label_retrieval_eval_codex.py`로 재생성
 - `data/evaluation/*.csv`: `src/create_evaluation_sets.py`로 재생성
 
+## 2026-07-16 정리 메모
+
+현재 실행 경로에서 사용하는 최신 entry point는 다음과 같다.
+
+- `src/hcx_claim_experiment.py`: HCX claim 실험
+- `src/create_evaluation_sets.py`: pilot120/validation300/final500 생성
+- `src/build_kosis_catalog.py`: KOSIS catalog 정규화
+- `src/retrieval_harness.py`: 오프라인 후보 검색 baseline
+
+구형 `fewshot_claim_extractor.py`, `llm_claim_extractor.py`, `kosis_claim_matcher.py`, `kosis_schema.py`와 초기 분석·멘토링·실험 문서는 `archive/2026-07-16/`로 이동했다. 과거 결과를 확인해야 할 때만 archive에서 읽고, 신규 실행은 최신 entry point를 사용한다.
+
 CSV·JSONL·대용량 원천 데이터는 `.gitignore` 정책상 Git에 포함하지 않고 로컬 또는 공유 저장소에서 관리한다.

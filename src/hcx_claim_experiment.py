@@ -92,7 +92,21 @@ def clean(value: Any) -> str:
     return "" if text.lower() in {"nan", "none", "nat"} else text
 
 
+def load_project_env() -> None:
+    """Load project-root .env without printing or exposing secret values."""
+    env_path = ROOT / ".env"
+    if not env_path.is_file():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
 def env_api_key() -> str:
+    load_project_env()
     return (os.getenv("HCX_API_KEY") or os.getenv("NCP_CLOVASTUDIO_API_KEY") or "").strip()
 
 

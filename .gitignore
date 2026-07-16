@@ -20,6 +20,7 @@ data/*.jsonl
 # 로컬 전용 문서·도구 설정
 docs/
 archive/
+deprecated/
 output/
 AGENTS.md
 CLAUDE.md

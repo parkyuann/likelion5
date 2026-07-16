@@ -1,0 +1,15 @@
+{
+  "input": "data/evaluation/pilot120.csv",
+  "models": ["HCX-003", "HCX-005", "HCX-007", "HCX-DASH-001", "HCX-DASH-002"],
+  "common": {
+    "limit": 1,
+    "temperature": 0.0,
+    "top_p": 0.8,
+    "prompt_version": "claim-observation-v1",
+    "input_cost_per_1m": 0,
+    "output_cost_per_1m": 0
+  },
+  "model_overrides": {
+    "HCX-007": {"prompt_version": "claim-observation-v1"}
+  }
+}

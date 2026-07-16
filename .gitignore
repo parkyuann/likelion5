@@ -11,11 +11,13 @@ __pycache__/
 *.xlsx
 *.pdf
 data/**/*.json
+data/**/*.jsonl
 !data/kosis_org_names.json
 data/*.bak
 
 # 로컬 전용 문서·도구 설정
 docs/
+archive/
 AGENTS.md
 CLAUDE.md
 claude.md

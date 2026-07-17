@@ -14,6 +14,8 @@ data/**/*.json
 data/**/*.jsonl
 !data/kosis_org_names.json
 data/*.bak
+.json
+.jsonl
 
 # 로컬 전용 문서·도구 설정
 docs/

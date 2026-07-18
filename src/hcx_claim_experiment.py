@@ -22,10 +22,19 @@ import requests
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT = ROOT / "data" / "retrieval_eval_claims_v0_codex.csv"
+DEFAULT_INPUT = ROOT / "data" / "evaluation" / "pilot120.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "hcx_experiments"
 DEFAULT_METRICS_LOG = ROOT / "data" / "hcx_experiment_metrics.jsonl"
-MODEL_DEFAULT = "HCX-007"
+DEFAULT_SUMMARY_FILE = ROOT / "data" / "hcx_experiment_summary.csv"
+MODEL_DEFAULT = "HCX-003"
+RLT_LATENCY_REF_MS_DEFAULT = 6112.722
+RLT_TOKENS_REF_DEFAULT = 412.746
+MODEL_ALIASES = {
+    "HCX-BASH-001": "HCX-DASH-001",
+    "HCX-BASH-002": "HCX-DASH-002",
+}
+V1_MODELS = {"HCX-003", "HCX-DASH-001"}
+RESPONSE_FORMAT_MODELS = {"HCX-007"}
 
 CLAIM_SCHEMA = {
     "type": "object",
@@ -92,8 +101,39 @@ def clean(value: Any) -> str:
     return "" if text.lower() in {"nan", "none", "nat"} else text
 
 
+def load_project_env() -> None:
+    """Load API keys from the project-root .env without printing secrets."""
+    env_path = ROOT / ".env"
+    if not env_path.is_file():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and value:
+            os.environ.setdefault(key, value)
+
+
 def env_api_key() -> str:
+    load_project_env()
     return (os.getenv("HCX_API_KEY") or os.getenv("NCP_CLOVASTUDIO_API_KEY") or "").strip()
+
+
+def normalize_model_name(model: str) -> str:
+    name = model.strip().upper()
+    return MODEL_ALIASES.get(name, name)
+
+
+def infer_api_version(model: str) -> str:
+    return "v1" if model in V1_MODELS else "v3"
+
+
+def effective_temperature(temperature: float, version: str) -> float:
+    # v1 rejects an exact zero temperature; v3 accepts it.
+    return 0.1 if version == "v1" and temperature <= 0 else temperature
 
 
 def experiment_id(model: str, temperature: float, top_p: float, max_tokens: int, prompt_version: str) -> str:
@@ -122,6 +162,33 @@ def parse_content(payload: dict) -> tuple[dict, dict]:
     return parsed, result.get("usage", {}) or payload.get("usage", {}) or {}
 
 
+def tokenize_messages(
+    api_key: str,
+    model: str,
+    api_version: str,
+    messages: list[dict],
+    timeout: int = 30,
+) -> tuple[int, float]:
+    """Count message tokens through the official CLOVA tokenizer API."""
+    url = f"https://clovastudio.stream.ntruss.com/{api_version}/api-tools/chat-tokenize/{model}"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-NCP-CLOVASTUDIO-REQUEST-ID": str(uuid.uuid4()),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    started = time.perf_counter()
+    response = requests.post(url, headers=headers, json={"messages": messages}, timeout=timeout)
+    latency_ms = (time.perf_counter() - started) * 1000
+    if response.status_code >= 400:
+        detail = response.text.strip().replace("\n", " ")[:500]
+        raise RuntimeError(f"HCX tokenizer failed ({response.status_code}) body={detail}")
+    payload = response.json()
+    counted = payload.get("result", {}).get("messages", [])
+    total = sum(int(item.get("count", 0)) for item in counted if isinstance(item, dict))
+    return total, latency_ms
+
+
 def call_hcx(
     claim_text: str,
     api_key: str,
@@ -130,9 +197,14 @@ def call_hcx(
     top_p: float,
     max_tokens: int,
     prompt: str,
+    api_version: str = "auto",
     timeout: int = 120,
 ) -> tuple[dict, dict, float]:
-    url = f"https://clovastudio.stream.ntruss.com/v3/chat-completions/{model}"
+    model = normalize_model_name(model)
+    version = infer_api_version(model) if api_version == "auto" else api_version
+    if version not in {"v1", "v3"}:
+        raise ValueError("api_version must be auto, v1, or v3")
+    url = f"https://clovastudio.stream.ntruss.com/{version}/chat-completions/{model}"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-NCP-CLOVASTUDIO-REQUEST-ID": str(uuid.uuid4()),
@@ -144,16 +216,26 @@ def call_hcx(
             {"role": "system", "content": prompt},
             {"role": "user", "content": f"후보 claim 문장:\n{claim_text}"},
         ],
-        "temperature": temperature,
+        "temperature": effective_temperature(temperature, version),
         "topP": top_p,
         "topK": 0,
-        "maxTokens": max_tokens,
-        "responseFormat": {"type": "json", "schema": CLAIM_SCHEMA},
     }
+    if version == "v1":
+        body.update({"maxTokens": max_tokens, "repetitionPenalty": 1.1, "stop": []})
+    else:
+        body.update({"repetitionPenalty": 1.1, "maxCompletionTokens": max_tokens})
+        # DASH-002 and HCX-005 reject responseFormat; HCX-007 supports it.
+        if model in RESPONSE_FORMAT_MODELS:
+            body["responseFormat"] = {"type": "json", "schema": CLAIM_SCHEMA}
+            body["thinking"] = {"effort": "none"}
     started = time.perf_counter()
     response = requests.post(url, headers=headers, json=body, timeout=timeout)
     latency_ms = (time.perf_counter() - started) * 1000
-    response.raise_for_status()
+    if response.status_code >= 400:
+        detail = response.text.strip().replace("\n", " ")[:1000]
+        raise RuntimeError(
+            f"HCX request failed ({response.status_code}) url={url} body={detail}"
+        )
     parsed, usage = parse_content(response.json())
     return parsed, usage, latency_ms
 
@@ -232,19 +314,66 @@ def calculate_metrics(rows: list[dict]) -> dict:
         ),
         "total_latency_ms": round(sum(row.get("latency_ms", 0.0) for row in rows), 3),
         "mean_latency_ms_ok": round(sum(row.get("latency_ms", 0.0) for row in usable) / len(usable), 3) if usable else 0.0,
+        "total_inference_latency_ms": round(sum(row.get("inference_latency_ms", row.get("latency_ms", 0.0)) for row in rows), 3),
+        "total_tokenizer_latency_ms": round(sum(row.get("tokenizer_latency_ms", 0.0) for row in rows), 3),
+        "mean_inference_latency_ms_ok": round(sum(row.get("inference_latency_ms", row.get("latency_ms", 0.0)) for row in usable) / len(usable), 3) if usable else 0.0,
         "prompt_tokens": sum(row.get("prompt_tokens", 0) for row in rows),
         "completion_tokens": sum(row.get("completion_tokens", 0) for row in rows),
         "total_tokens": sum(row.get("total_tokens", 0) for row in rows),
+        "mean_total_tokens_ok": round(sum(row.get("total_tokens", 0) for row in usable) / len(usable), 3) if usable else 0.0,
         "estimated_cost": round(sum(row.get("estimated_cost", 0.0) for row in rows), 8),
     }
+
+
+def calculate_rlt_score(
+    metrics: dict,
+    latency_ref_ms: float,
+    tokens_ref: float,
+    recall_weight: float,
+    latency_weight: float,
+    tokens_weight: float,
+) -> float | None:
+    """Calculate the supplementary Recall-Latency-Token trade-off score."""
+    recall = metrics["claim_detection"]["recall"]
+    latency = metrics["mean_inference_latency_ms_ok"]
+    tokens = metrics["mean_total_tokens_ok"]
+    if latency <= 0 or tokens <= 0 or latency_ref_ms <= 0 or tokens_ref <= 0:
+        return None
+    latency_efficiency = 1 / (1 + latency / latency_ref_ms)
+    token_efficiency = 1 / (1 + tokens / tokens_ref)
+    score = (
+        recall ** recall_weight
+        * latency_efficiency ** latency_weight
+        * token_efficiency ** tokens_weight
+    )
+    return round(score, 6)
+
+
+def update_experiment_summary(metrics: dict, summary_path: Path) -> None:
+    """Upsert one flattened metrics row per experiment for easy comparison."""
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {}
+    for key, value in metrics.items():
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                row[f"{key}_{child_key}"] = child_value
+        else:
+            row[key] = value
+    current = pd.read_csv(summary_path, keep_default_na=False) if summary_path.exists() else pd.DataFrame()
+    if not current.empty and "experiment_id" in current.columns:
+        current = current[current["experiment_id"] != row["experiment_id"]]
+    combined = pd.concat([current, pd.DataFrame([row])], ignore_index=True, sort=False)
+    combined.to_csv(summary_path, index=False, encoding="utf-8-sig")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--summary-file", type=Path, default=DEFAULT_SUMMARY_FILE)
     parser.add_argument("--metrics-log", type=Path, default=DEFAULT_METRICS_LOG)
     parser.add_argument("--model", default=MODEL_DEFAULT)
+    parser.add_argument("--api-version", choices=["auto", "v1", "v3"], default="auto")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=0.8)
     parser.add_argument("--max-tokens", type=int, default=1800)
@@ -255,10 +384,17 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20260716)
     parser.add_argument("--input-cost-per-1m", type=float, default=0.0)
     parser.add_argument("--output-cost-per-1m", type=float, default=0.0)
+    parser.add_argument("--skip-tokenizer", action="store_true", help="Skip tokenizer API fallback when usage is absent")
+    parser.add_argument("--latency-ref-ms", type=float, default=RLT_LATENCY_REF_MS_DEFAULT)
+    parser.add_argument("--tokens-ref", type=float, default=RLT_TOKENS_REF_DEFAULT)
+    parser.add_argument("--rlt-recall-weight", type=float, default=0.6)
+    parser.add_argument("--rlt-latency-weight", type=float, default=0.2)
+    parser.add_argument("--rlt-tokens-weight", type=float, default=0.2)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     prompt = args.system_prompt_file.read_text(encoding="utf-8") if args.system_prompt_file else SYSTEM_PROMPT
+    args.model = normalize_model_name(args.model)
     exp_id = experiment_id(args.model, args.temperature, args.top_p, args.max_tokens, args.prompt_version)
     output_dir = args.output_dir / exp_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -280,7 +416,9 @@ def main() -> None:
     with cache_path.open("a", encoding="utf-8") as cache_file:
         for _, source in df.iterrows():
             claim_id = clean(source.get("eval_claim_id"))
-            if claim_id in cache:
+            # Reuse successful results only. Failed rows must be retried after
+            # fixing credentials, request parameters, or transient API errors.
+            if claim_id in cache and cache[claim_id].get("status") == "ok":
                 result = cache[claim_id]
             else:
                 started = time.perf_counter()
@@ -292,24 +430,49 @@ def main() -> None:
                             raise RuntimeError("HCX_API_KEY 또는 NCP_CLOVASTUDIO_API_KEY가 필요합니다.")
                         prediction, usage, latency_ms = call_hcx(
                             clean(source.get("claim_text")), api_key, args.model,
-                            args.temperature, args.top_p, args.max_tokens, prompt,
+                            args.temperature, args.top_p, args.max_tokens, prompt, args.api_version,
                         )
+                    inference_latency_ms = latency_ms
                     prompt_tokens = usage_value(usage, "promptTokens", "prompt_tokens", "inputTokens", "input_tokens")
                     completion_tokens = usage_value(usage, "completionTokens", "completion_tokens", "outputTokens", "output_tokens")
                     total_tokens = usage_value(usage, "totalTokens", "total_tokens") or prompt_tokens + completion_tokens
+                    tokenizer_latency_ms = 0.0
+                    token_source = "api_usage" if total_tokens > 0 else "unavailable"
+                    if not args.dry_run and not args.skip_tokenizer and total_tokens <= 0:
+                        try:
+                            version = infer_api_version(args.model) if args.api_version == "auto" else args.api_version
+                            prompt_messages = [
+                                {"role": "system", "content": prompt},
+                                {"role": "user", "content": f"후보 claim 문장:\n{clean(source.get('claim_text'))}"},
+                            ]
+                            assistant_message = {"role": "assistant", "content": json.dumps(prediction, ensure_ascii=False)}
+                            prompt_count, prompt_tokenizer_latency = tokenize_messages(api_key, args.model, version, prompt_messages)
+                            total_count, completion_tokenizer_latency = tokenize_messages(api_key, args.model, version, prompt_messages + [assistant_message])
+                            prompt_tokens = prompt_count
+                            total_tokens = total_count
+                            completion_tokens = max(0, total_count - prompt_count)
+                            tokenizer_latency_ms = prompt_tokenizer_latency + completion_tokenizer_latency
+                            token_source = "tokenizer_api"
+                        except Exception:
+                            # Token measurement must not turn a successful
+                            # inference into a failed prediction.
+                            token_source = "unavailable"
                     estimated_cost = prompt_tokens / 1_000_000 * args.input_cost_per_1m + completion_tokens / 1_000_000 * args.output_cost_per_1m
                     result = {
                         "eval_claim_id": claim_id,
                         "status": "ok",
                         "prediction": prediction,
-                        "latency_ms": round(latency_ms or (time.perf_counter() - started) * 1000, 3),
+                        "latency_ms": round(inference_latency_ms or (time.perf_counter() - started) * 1000, 3),
+                        "inference_latency_ms": round(inference_latency_ms, 3),
+                        "tokenizer_latency_ms": round(tokenizer_latency_ms, 3),
+                        "token_source": token_source,
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens,
                         "estimated_cost": estimated_cost,
                     }
                 except Exception as error:  # keep batch progress and record failures
-                    result = {"eval_claim_id": claim_id, "status": "error", "error": str(error), "latency_ms": (time.perf_counter() - started) * 1000, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "estimated_cost": 0.0, "prediction": {}}
+                    result = {"eval_claim_id": claim_id, "status": "error", "error": str(error), "latency_ms": (time.perf_counter() - started) * 1000, "inference_latency_ms": (time.perf_counter() - started) * 1000, "tokenizer_latency_ms": 0.0, "token_source": "unavailable", "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "estimated_cost": 0.0, "prediction": {}}
                 cache_file.write(json.dumps(result, ensure_ascii=False) + "\n")
                 cache_file.flush()
 
@@ -336,13 +499,28 @@ def main() -> None:
 
     output_df = pd.DataFrame(rows)
     output_df.to_csv(result_path, index=False, encoding="utf-8-sig")
+    experiment_metadata = {
+        "experiment_id": exp_id,
+        "model": args.model,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "max_tokens": args.max_tokens,
+        "prompt_version": args.prompt_version,
+        "input_file": str(args.input),
+        "seed": args.seed,
+    }
     metrics = calculate_metrics(rows)
-    metrics.update({"experiment_id": exp_id, "model": args.model, "temperature": args.temperature, "top_p": args.top_p, "max_tokens": args.max_tokens, "prompt_version": args.prompt_version, "input": str(args.input), "seed": args.seed, "input_cost_per_1m": args.input_cost_per_1m, "output_cost_per_1m": args.output_cost_per_1m})
+    resolved_version = infer_api_version(args.model) if args.api_version == "auto" else args.api_version
+    rlt_weight_total = args.rlt_recall_weight + args.rlt_latency_weight + args.rlt_tokens_weight
+    if abs(rlt_weight_total - 1.0) > 1e-9:
+        raise ValueError("RLT weights must sum to 1.0")
+    metrics.update({**experiment_metadata, "api_version": args.api_version, "resolved_api_version": resolved_version, "effective_temperature": effective_temperature(args.temperature, resolved_version), "latency_ref_ms": args.latency_ref_ms, "tokens_ref": args.tokens_ref, "rlt_recall_weight": args.rlt_recall_weight, "rlt_latency_weight": args.rlt_latency_weight, "rlt_tokens_weight": args.rlt_tokens_weight, "rlt_score": calculate_rlt_score(metrics, args.latency_ref_ms, args.tokens_ref, args.rlt_recall_weight, args.rlt_latency_weight, args.rlt_tokens_weight), "input": str(args.input), "input_cost_per_1m": args.input_cost_per_1m, "output_cost_per_1m": args.output_cost_per_1m})
+    update_experiment_summary(metrics, args.summary_file)
     metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     args.metrics_log.parent.mkdir(parents=True, exist_ok=True)
     with args.metrics_log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(metrics, ensure_ascii=False) + "\n")
-    print(json.dumps({"experiment_id": exp_id, "predictions": str(result_path), "metrics": str(metrics_path), **metrics}, ensure_ascii=False))
+    print(json.dumps({"experiment_id": exp_id, "predictions": str(result_path), "summary_file": str(args.summary_file), "metrics": str(metrics_path), **metrics}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

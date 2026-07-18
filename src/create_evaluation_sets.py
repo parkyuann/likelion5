@@ -1,4 +1,10 @@
-"""Create pilot, validation, and final evaluation sets after claim labeling."""
+"""Create the three evaluation sets used after claim labeling.
+
+Outputs are claim-row CSVs with article-level disjointness:
+  1) pilot120: HCX execution/error and output-format checks
+  2) validation300: status/class/source-scope stratified comparison set
+  3) final500: human gold-label set with at least 30 rows per claim class
+"""
 
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ HCX_COLUMNS = {
     "hcx_latency_ms": "",
     "hcx_notes": "",
 }
+
 REVIEW_COLUMNS = {
     "selected_version": "",
     "selection_notes": "",
@@ -31,43 +38,60 @@ REVIEW_COLUMNS = {
 
 
 def choose_one_per_article(frame: pd.DataFrame, n: int, seed: int) -> pd.DataFrame:
+    if n <= 0 or frame.empty:
+        return frame.iloc[0:0].copy()
     shuffled = frame.sample(frac=1, random_state=seed)
     return shuffled.drop_duplicates("article_idx").head(n)
 
 
+def allocate_proportional(frame: pd.DataFrame, n: int, group_col: str) -> dict[str, int]:
+    counts = frame[group_col].value_counts().to_dict()
+    raw = {key: n * count / max(len(frame), 1) for key, count in counts.items()}
+    quotas = {key: int(value) for key, value in raw.items()}
+    remainder = n - sum(quotas.values())
+    order = sorted(raw, key=lambda key: raw[key] - quotas[key], reverse=True)
+    for key in order[:remainder]:
+        quotas[key] += 1
+    return quotas
+
+
 def stratified_validation(frame: pd.DataFrame, n: int, seed: int) -> pd.DataFrame:
     work = frame.copy()
-    work["_stratum"] = (
+    work["validation_stratum"] = (
         work["list_alignment_status"].fillna("UNKNOWN").astype(str)
-        + "|" + work["gold_claim_class"].fillna("UNKNOWN").astype(str)
-        + "|" + work["gold_source_scope"].fillna("UNKNOWN").astype(str)
+        + "|"
+        + work["gold_claim_class"].fillna("UNKNOWN").astype(str)
+        + "|"
+        + work["gold_source_scope"].fillna("UNKNOWN").astype(str)
     )
-    selected_parts = []
-    used_articles: set[int] = set()
-    for offset, (_, group) in enumerate(work.groupby("_stratum", sort=True)):
-        group = group[~group["article_idx"].astype(int).isin(used_articles)]
+    # First take one row from each stratum in shuffled order, then fill the remainder.
+    first = []
+    for offset, (_, group) in enumerate(work.groupby("validation_stratum", sort=True)):
+        group = group[~group["article_idx"].astype(int).isin(
+            set(pd.concat(first, ignore_index=False)["article_idx"].astype(int)) if first else set()
+        )]
         picked = choose_one_per_article(group, 1, seed + offset)
         if not picked.empty:
-            selected_parts.append(picked)
-            used_articles.update(picked["article_idx"].astype(int))
-    selected = pd.concat(selected_parts, ignore_index=False) if selected_parts else work.iloc[0:0]
-    remaining = work[~work["article_idx"].astype(int).isin(used_articles)]
+            first.append(picked)
+    selected = pd.concat(first, ignore_index=False) if first else work.iloc[0:0]
+    selected_articles = set(selected["article_idx"].astype(int))
+    remaining = work[~work["article_idx"].astype(int).isin(selected_articles)]
     if len(selected) < n:
         selected = pd.concat(
             [selected, choose_one_per_article(remaining, n - len(selected), seed + 10000)],
             ignore_index=False,
         )
-    return selected.head(n).drop(columns="_stratum")
+    return selected.head(n).drop(columns=["validation_stratum"], errors="ignore")
 
 
-def final_gold(frame: pd.DataFrame, n: int, minimum: int, seed: int) -> pd.DataFrame:
+def final_gold(frame: pd.DataFrame, n: int, min_per_class: int, seed: int) -> pd.DataFrame:
+    classes = sorted(frame["gold_claim_class"].fillna("UNKNOWN").unique())
     selected_parts = []
     used_articles: set[int] = set()
-    classes = sorted(frame["gold_claim_class"].fillna("UNKNOWN").unique())
     for offset, claim_class in enumerate(classes):
         group = frame[frame["gold_claim_class"].fillna("UNKNOWN") == claim_class]
         group = group[~group["article_idx"].astype(int).isin(used_articles)]
-        picked = choose_one_per_article(group, minimum, seed + offset)
+        picked = choose_one_per_article(group, min_per_class, seed + offset)
         selected_parts.append(picked)
         used_articles.update(picked["article_idx"].astype(int))
     selected = pd.concat(selected_parts, ignore_index=False) if selected_parts else frame.iloc[0:0]
@@ -80,12 +104,14 @@ def final_gold(frame: pd.DataFrame, n: int, minimum: int, seed: int) -> pd.DataF
     return selected.head(n)
 
 
-def prepare(frame: pd.DataFrame, name: str) -> pd.DataFrame:
-    result = frame.reset_index(drop=True).copy()
-    result.insert(0, "evaluation_id", [f"{name}_{i:04d}" for i in range(1, len(result) + 1)])
-    for column, default in {**HCX_COLUMNS, **REVIEW_COLUMNS}.items():
+def prepare(frame: pd.DataFrame, kind: str) -> pd.DataFrame:
+    result = frame.copy().reset_index(drop=True)
+    result.insert(0, "evaluation_id", [f"{kind}_{i:04d}" for i in range(1, len(result) + 1)])
+    for column, default in HCX_COLUMNS.items():
         result[column] = default
-    result["evaluation_set"] = name
+    for column, default in REVIEW_COLUMNS.items():
+        result[column] = default
+    result["evaluation_set"] = kind
     return result
 
 
@@ -125,26 +151,24 @@ def main() -> None:
     for name, result in sets.items():
         path = args.output_dir / f"{name}.csv"
         result.to_csv(path, index=False, encoding="utf-8-sig")
-        class_counts = result["gold_claim_class"].value_counts().to_dict()
-        details = {
+        manifest["sets"][name] = {
             "output": str(path.relative_to(ROOT)),
             "rows": len(result),
             "articles": int(result["article_idx"].nunique()),
-            "class_counts": class_counts,
+            "class_counts": result["gold_claim_class"].value_counts().to_dict(),
             "status_counts": result["list_alignment_status"].value_counts().to_dict(),
             "source_scope_counts": result["gold_source_scope"].value_counts().to_dict(),
         }
         if name == "final500":
-            details["min_per_class_target"] = args.min_per_class
-            details["class_shortfalls"] = {
+            class_counts = result["gold_claim_class"].value_counts().to_dict()
+            manifest["sets"][name]["min_per_class_target"] = args.min_per_class
+            manifest["sets"][name]["class_shortfalls"] = {
                 key: args.min_per_class - value
                 for key, value in class_counts.items()
                 if value < args.min_per_class
             }
-        manifest["sets"][name] = details
-    (args.output_dir / "evaluation_sets_manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    manifest_path = args.output_dir / "evaluation_sets_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(manifest, ensure_ascii=False))
 
 

@@ -11,13 +11,16 @@ __pycache__/
 *.xlsx
 *.pdf
 data/**/*.json
-data/**/*.jsonl
 !data/kosis_org_names.json
 data/*.bak
+data/**/*.jsonl
+data/*.json
+data/*.jsonl
 
 # 로컬 전용 문서·도구 설정
 docs/
 archive/
+output/
 AGENTS.md
 CLAUDE.md
 claude.md
@@ -26,5 +29,5 @@ claude.md
 .agents/
 
 # 의미 없는/빈 노트북 (공유 제외)
-eda.ipynb
+workroom.ipynb
 scholar.ipynb

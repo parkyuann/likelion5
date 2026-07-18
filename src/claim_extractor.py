@@ -55,6 +55,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from news_preprocessor import split_sentences_fast  # noqa: E402
+from claim_normalizer import (  # noqa: E402
+    normalize_time_ref,
+    parse_korean_number,
+    time_span_type,
+)
 
 RAW_INPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "news_preprocessed.csv"
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_listform.csv"
@@ -71,13 +76,31 @@ COMPARISON_RE = re.compile(
 # 기존 목록에 없는 흔한 단위(대/개/회/곳/시간/분 등)를 추가했다. "대"는 "1012대"(기기 세는
 # 단위) 같은 진짜 값도 잡지만 "30대"(연령대) 같은 문장에서도 걸릴 수 있음 — 이런 다의성은
 # 이 정규식 단계에서 해소하지 않고, 뒷단(claim_class 필터링)에서 걸러지도록 남겨둔다.
+# 다의어 교정(실측 스캔 근거):
+#  - 멀티글자 단위(위안·배럴)를 단일글자(위·배)보다 alternation 앞에 둬서 잘림 방지
+#    ('92억위안'이 값 92억+단위 '위'로, '6배럴'이 '배'로 잘리던 것 교정).
+#  - '세대'(가구/세대)는 수치 주장 단위가 아니라 '세(?!대)'로 연령 '세'만 남기고 제외.
+#  - '분기'는 시점 개념이라 값-단위에서 제거(시점은 TIME_RE가 담당) — '1분기'가 값 '1'로
+#    잡히던 오탐 제거. '분(?!의)'로 분수('3분의 1'), '초(?!반)'로 범위 표현('90 초반') 제외.
+# '%포인트'(증감폭)는 '%'(증감률)보다 앞에 둬서 '0.4%포인트'가 '0.4%'+버려진 '포인트'로
+# 잘리지 않게 한다(실측 603건). '분위'(소득 5분위 등 구간 라벨)는 분(minute) 오탐이라 제외.
 _UNIT_ALT = (
-    r"%p|%|원|달러|천\s?명|만\s?명|명|건|가구|톤|ha|kg|g|포인트|세|개월|년|분기|위"
-    r"|대|개|채|척|마리|그루|병|잔|회|차례|편|곳|층|배|시간|분|초|도|점"
+    r"%\s?포인트|%p|%|원|위안|달러|배럴|천\s?명|만\s?명|명|건|가구|톤|ha|kg|g|포인트"
+    r"|세(?!대)|개월|년|위|대|개|채|척|마리|그루|병|잔|회|차례|편|곳|층|배"
+    r"|시간|분(?!의|기|위)|초(?!반)|도|점"
 )
 
+# 표현 정규화: 잡힌 단위 표기를 기준 단위로 통일한다('%포인트'/'% 포인트' -> '%p').
+_UNIT_CANON = {"%포인트": "%p", "%p": "%p"}
+
+
+def canon_unit(u: str) -> str:
+    return _UNIT_CANON.get(u.replace(" ", ""), u)
+
+# 값 앞의 음수 부호(-/−)를 값에 포함한다 — '자동차부품(-7.6%)'처럼 감소를 나타내는 부호가
+# 유실되면 증감 방향이 사라지므로(값이 전부 양수화됨) 부호까지 캡처한다.
 VALUE_UNIT_RE = re.compile(
-    rf"(?P<value>\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?(?:\s?\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)*)"
+    rf"(?P<value>[-−]?\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?(?:\s?\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)*)"
     rf"\s*(?P<unit>{_UNIT_ALT})"
 )
 
@@ -97,14 +120,20 @@ def extract_value_unit_pairs(sentence: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     consumed_spans: list[tuple[int, int]] = []
     for m in RANGE_RE.finditer(sentence):
-        pairs.append((m.group("start"), m.group("unit")))
-        pairs.append((m.group("end"), m.group("unit")))
+        u = canon_unit(m.group("unit"))
+        pairs.append((m.group("start"), u))
+        pairs.append((m.group("end"), u))
         consumed_spans.append(m.span())
 
     for m in VALUE_UNIT_RE.finditer(sentence):
         if any(start <= m.start() and m.end() <= end for start, end in consumed_spans):
             continue
-        pairs.append((m.group("value"), m.group("unit")))
+        v, u = m.group("value"), canon_unit(m.group("unit"))
+        # 달력 연도('2023년')는 시점이지 값이 아님 — 값-단위 추출 단계에서 바로 제외해
+        # value_count/change_type가 처음부터 노이즈 없이 계산되게 한다.
+        if _is_year_noise(v, u):
+            continue
+        pairs.append((v, u))
     return pairs
 
 
@@ -165,6 +194,32 @@ def extract_from_sentence(sentence: str) -> dict | None:
     }
 
 
+def _fmt_num(x) -> str:
+    """정규화 수치를 문자열로. 정수면 소수점 없이(9200000000), 아니면 그대로(100.4)."""
+    if x is None:
+        return ""
+    return str(int(x)) if float(x).is_integer() else str(x)
+
+
+def enrich_normalization(row: dict, published_at) -> dict:
+    """추출된 행에 정규화 필드를 추가한다(원본 필드는 보존).
+
+    - value_norm_list: value_list의 각 값을 조/억/만/천 전개한 실수(기준단위 기준)
+    - time_ref_abs / time_compare_abs: 발행일 기준 절대 시점
+    - time_span_type: 월/분기/연/부분기간/특정일/불명확
+    """
+    values = [v for v in str(row.get("value_list") or "").split(";") if v]
+    norm = []
+    for v in values:
+        n = parse_korean_number(v)
+        norm.append(_fmt_num(n) if n is not None else v)
+    row["value_norm_list"] = ";".join(norm)
+    row["time_ref_abs"] = normalize_time_ref(row.get("time_ref"), published_at)
+    row["time_compare_abs"] = normalize_time_ref(row.get("time_compare"), published_at)
+    row["time_span_type"] = time_span_type(row.get("time_ref"))
+    return row
+
+
 def extract_from_article(idx: int, title: str, date: str, label, text: str) -> list[dict]:
     rows = []
     for sent in split_sentences_fast(text):
@@ -172,6 +227,7 @@ def extract_from_article(idx: int, title: str, date: str, label, text: str) -> l
         if extracted is None:
             continue
         extracted.update({"article_idx": idx, "기사제목": title, "작성일": date, "검색_구분_레이블": label})
+        enrich_normalization(extracted, date)
         rows.append(extracted)
     return rows
 
@@ -377,6 +433,9 @@ def postprocess_rows(rows: list[dict]) -> list[dict]:
     out = []
     for row in rows:
         out.extend(resolve_row(row))
+    # 나열형 분리로 value_list/time_ref가 바뀐 행은 정규화를 다시 계산한다.
+    for r in out:
+        enrich_normalization(r, r.get("작성일"))
     return out
 
 

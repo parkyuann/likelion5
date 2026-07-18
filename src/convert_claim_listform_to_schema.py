@@ -28,20 +28,21 @@ from retrieval_schema import (
     validate_claim,
     validate_mapping,
 )
-from claim_normalizer import resolve_relative_time
+from claim_normalizer import parse_korean_number, resolve_relative_time
 
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = ROOT / "data" / "claim_listform.csv"
 DEFAULT_OUTPUT = ROOT / "data" / "claims_v1.jsonl"
 
-NUMBER_TOKEN_RE = re.compile(r"(?P<number>\d[\d,]*(?:\.\d+)?)(?P<scale>조|억|만|천)?")
 YEAR_MONTH_RE = re.compile(r"(?P<year>19\d{2}|20\d{2})[년.\-/ ]+(?P<month>\d{1,2})월?")
 YEAR_RE = re.compile(r"(?P<year>19\d{2}|20\d{2})년?")
 QUARTER_RE = re.compile(r"(?P<quarter>[1-4])분기")
 DATE_RE = re.compile(r"(?P<year>19\d{2}|20\d{2})년\s*(?P<month>\d{1,2})월\s*(?P<day>\d{1,2})일")
 
-SCALE = {"천": 1_000, "만": 10_000, "억": 100_000_000, "조": 1_000_000_000_000, "": 1}
+# 수사 전개(조/억/만/천, 중첩 계수, 음수 부호)는 claim_normalizer.parse_korean_number로 통일한다.
+# 그 함수는 '62조9천444억5700만'(중첩)·'-7.6'(감소 부호)까지 처리하고, 범위('19~20')는 None을
+# 돌려주므로 관측값(observation) 수치의 정확도·부호가 그대로 보존된다.
 UNIT_MAP = {
     "천명": ("명", 1_000), "만명": ("명", 10_000),
     "천원": ("원", 1_000), "만원": ("원", 10_000),
@@ -59,28 +60,13 @@ def split_list(value) -> list[str]:
     return [part.strip() for part in text.split(";")] if text else []
 
 
-def parse_korean_number(raw: str | None) -> float | None:
-    """856만8000, 1조1000억, 3.2 등을 수치로 바꾼다."""
-    text = clean(raw)
-    if not text or re.search(r"[~\-]", text):
-        return None
-    compact = text.replace(",", "").replace(" ", "")
-    matches = list(NUMBER_TOKEN_RE.finditer(compact))
-    if not matches or "".join(m.group(0) for m in matches) != compact:
-        return None
-    total = 0.0
-    for match in matches:
-        total += float(match.group("number")) * SCALE[match.group("scale") or ""]
-    return total
-
-
 def normalize_value(raw_value: str | None, raw_unit: str | None) -> tuple[float | None, str | None]:
     unit = clean(raw_unit)
     if not unit:
         return None, None
     unit = unit.replace(" ", "")
     canonical_unit, unit_multiplier = UNIT_MAP.get(unit, (unit, 1))
-    number = parse_korean_number(raw_value)
+    number = parse_korean_number(clean(raw_value))
     return (number * unit_multiplier if number is not None else None), canonical_unit
 
 

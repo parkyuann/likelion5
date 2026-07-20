@@ -198,6 +198,7 @@ def call_hcx(
     max_tokens: int,
     prompt: str,
     api_version: str = "auto",
+    use_response_format: bool = False,
     timeout: int = 120,
 ) -> tuple[dict, dict, float]:
     model = normalize_model_name(model)
@@ -226,8 +227,11 @@ def call_hcx(
         body.update({"repetitionPenalty": 1.1, "maxCompletionTokens": max_tokens})
         # DASH-002 and HCX-005 reject responseFormat; HCX-007 supports it.
         if model in RESPONSE_FORMAT_MODELS:
-            body["responseFormat"] = {"type": "json", "schema": CLAIM_SCHEMA}
+            # Disable model-specific reasoning so the comparison measures the
+            # same direct extraction task as the non-reasoning HCX models.
             body["thinking"] = {"effort": "none"}
+            if use_response_format:
+                body["responseFormat"] = {"type": "json", "schema": CLAIM_SCHEMA}
     started = time.perf_counter()
     response = requests.post(url, headers=headers, json=body, timeout=timeout)
     latency_ms = (time.perf_counter() - started) * 1000
@@ -374,6 +378,11 @@ def main() -> None:
     parser.add_argument("--metrics-log", type=Path, default=DEFAULT_METRICS_LOG)
     parser.add_argument("--model", default=MODEL_DEFAULT)
     parser.add_argument("--api-version", choices=["auto", "v1", "v3"], default="auto")
+    parser.add_argument(
+        "--use-response-format",
+        action="store_true",
+        help="지원 모델에만 JSON Schema responseFormat을 적용합니다. 모델 공정 비교에서는 사용하지 않습니다.",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=0.8)
     parser.add_argument("--max-tokens", type=int, default=1800)
@@ -431,6 +440,7 @@ def main() -> None:
                         prediction, usage, latency_ms = call_hcx(
                             clean(source.get("claim_text")), api_key, args.model,
                             args.temperature, args.top_p, args.max_tokens, prompt, args.api_version,
+                            args.use_response_format,
                         )
                     inference_latency_ms = latency_ms
                     prompt_tokens = usage_value(usage, "promptTokens", "prompt_tokens", "inputTokens", "input_tokens")
@@ -506,6 +516,7 @@ def main() -> None:
         "top_p": args.top_p,
         "max_tokens": args.max_tokens,
         "prompt_version": args.prompt_version,
+        "use_response_format": args.use_response_format,
         "input_file": str(args.input),
         "seed": args.seed,
     }

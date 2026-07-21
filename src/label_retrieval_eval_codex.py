@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from retrieval_schema import compute_verifiability_prefilter  # noqa: E402  3값 게이트 정본
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -195,16 +199,23 @@ def main() -> None:
     for _, row in df.iterrows():
         text = clean(row.get("claim_text"))
         org_raw = clean(row.get("source_org_raw"))
-        claim_class = classify_claim(text)
+        # 노이즈는 claim_class 11번째가 아니라 is_claim=False 축으로 분리한다(신 스키마).
+        raw_class = classify_claim(text)
+        if raw_class == "노이즈":
+            is_claim = False
+            claim_class = ""
+            noise_reason = "기타"  # 규칙 silver는 노이즈 세부 사유를 구분 못하므로 기타
+        else:
+            is_claim = True
+            claim_class = raw_class
+            noise_reason = ""
+        # source_scope는 pred와 독립적으로 유지(순환 회피): 자체 classify_scope 사용.
         scope = classify_scope(org_raw, text, org_names)
-        is_noise = claim_class == "노이즈"
-        verifiable = claim_class == "집계통계" and scope == "KOSIS등재"
+        prefilter, _ = compute_verifiability_prefilter(is_claim, claim_class, scope)
+        verifiable = prefilter == "검증시도"
         org_id, org_name = find_org(org_raw, text, org_names)
         period_type, period = infer_period(row.get("time_ref"))
-        if is_noise or not verifiable:
-            match_status = "NO_KOSIS_MATCH"
-        else:
-            match_status = "NEEDS_REVIEW"
+        match_status = "NEEDS_REVIEW" if verifiable else "NO_KOSIS_MATCH"
         note = (
             "Codex 실버 라벨; KOSIS 조회 대상이 아니거나 범위 밖인 주장"
             if match_status == "NO_KOSIS_MATCH"
@@ -212,9 +223,11 @@ def main() -> None:
         )
         labels.append(
             {
+                "gold_is_claim": is_claim,
                 "gold_claim_class": claim_class,
+                "gold_noise_reason": noise_reason,
                 "gold_source_scope": scope,
-                "gold_verifiability_prefilter": "검증시도" if verifiable else "판단불가(범위밖)",
+                "gold_verifiability_prefilter": prefilter,
                 "gold_org_id": org_id,
                 "gold_org_name": org_name,
                 "gold_source_role": "data_producer" if (org_raw or org_id) else "",

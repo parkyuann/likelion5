@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +20,17 @@ from typing import Any
 
 import pandas as pd
 import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from retrieval_schema import (  # noqa: E402  통제 어휘·게이트 정본
+    CLAIM_CLASSES,
+    NOISE_REASONS,
+    compute_verifiability_prefilter,
+)
+from source_scope_classifier import (  # noqa: E402  source_scope는 LLM이 아니라 사전으로 결정
+    classify_source_scope,
+    load_kosis_org_catalog,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,11 +48,56 @@ MODEL_ALIASES = {
 V1_MODELS = {"HCX-003", "HCX-DASH-001"}
 RESPONSE_FORMAT_MODELS = {"HCX-007"}
 
+# relation_type 통제 어휘 — retrieval_schema.RELATION_TYPES와 동일해야 한다.
+# 프롬프트 유도만으로는 모델이 어휘 밖 값(예: current_value)을 지어내므로
+# (a) responseFormat enum, (b) 파싱 후 clamp 두 겹으로 방어한다.
+RELATION_TYPES = ("primary", "comparison_base", "component", "total", "rank_peer", "untyped")
+
+# claim_class 통제 어휘 — 정본은 retrieval_schema.CLAIM_CLASSES. 아래는 프롬프트 제시용
+# 순서·정의이며, 집합이 정본과 어긋나면 로드 시점에 즉시 실패한다(단일 출처 보증).
+# 노이즈·비주장은 별도 claim_class가 아니라 is_claim=false + claim_class="" 로 처리한다.
+CLAIM_CLASS_DEFINITIONS = (
+    ("집계통계", "인구·고용·물가·무역·복지·교육 등 집단/기간을 집계한 관측 통계(공식 통계표로 확인 가능). KOSIS 대조 대상."),
+    ("개별사례", "개별 기업·개인·사건 1건의 수치(매출·투자·주가·지분 등)."),
+    ("전망예측", "미래 전망·예측치."),
+    ("목표계획", "정책·기업의 목표·계획 수치(아직 실현되지 않음)."),
+    ("법령제도", "법령·제도가 정한 기준값(세율·최저임금·벌금 등)."),
+    ("해석수사", "정확한 통계값 없이 수사적으로 비교·강조하는 서술."),
+    ("사고대응임시통계", "재난·사고 대응 중 발표되는 임시 집계(예: 화재 복구율)."),
+    ("여론조사", "지지율·경선 반영비율 등 여론조사 수치."),
+    ("통계조사안내", "통계조사의 실시·발표 일정 등 조사 자체 안내(결과값 아님)."),
+    ("정정보도", "앞선 보도의 오류를 바로잡는 정정 공지(검증 대상 아님)."),
+)
+CLAIM_CLASS_ORDER = [name for name, _ in CLAIM_CLASS_DEFINITIONS]
+assert set(CLAIM_CLASS_ORDER) == set(CLAIM_CLASSES), (
+    f"claim_class 어휘가 retrieval_schema.CLAIM_CLASSES와 불일치: "
+    f"{set(CLAIM_CLASS_ORDER) ^ set(CLAIM_CLASSES)}"
+)
+_CLAIM_CLASS_BLOCK = "\n".join(f"   - {name}: {desc}" for name, desc in CLAIM_CLASS_DEFINITIONS)
+
+# noise_reason 통제 어휘 — 정본은 retrieval_schema.NOISE_REASONS. is_claim=False 진단축.
+NOISE_REASON_DEFINITIONS = (
+    ("광고", "광고·홍보·판촉 문구"),
+    ("의견", "검증 가능한 수치가 아닌 개인 의견·논평"),
+    ("질문", "의문문·질의"),
+    ("불완전문", "추출 오류로 잘린 문장 조각·비문"),
+    ("인용맥락", "다른 화자 발언의 인용 맥락이라 수치 주장으로 귀속 불가"),
+    ("UI잡음", "재생목록·메뉴·캡션 등 UI/비기사 텍스트"),
+    ("기타", "위에 해당하지 않는 비주장"),
+)
+NOISE_REASON_ORDER = [name for name, _ in NOISE_REASON_DEFINITIONS]
+assert set(NOISE_REASON_ORDER) == set(NOISE_REASONS), (
+    f"noise_reason 어휘가 retrieval_schema.NOISE_REASONS와 불일치: "
+    f"{set(NOISE_REASON_ORDER) ^ set(NOISE_REASONS)}"
+)
+_NOISE_REASON_BLOCK = "\n".join(f"     - {name}: {desc}" for name, desc in NOISE_REASON_DEFINITIONS)
+
 CLAIM_SCHEMA = {
     "type": "object",
     "properties": {
         "is_claim": {"type": "boolean"},
-        "claim_class": {"type": "string"},
+        "claim_class": {"type": ["string", "null"], "enum": CLAIM_CLASS_ORDER + [None]},
+        "noise_reason": {"type": ["string", "null"], "enum": NOISE_REASON_ORDER + [None]},
         "indicator_raw": {"type": ["string", "null"]},
         "population": {"type": ["string", "null"]},
         "observations": {
@@ -53,7 +110,7 @@ CLAIM_SCHEMA = {
                     "period": {"type": ["string", "null"]},
                     "time_compare": {"type": ["string", "null"]},
                     "dimension": {"type": "object"},
-                    "relation_type": {"type": "string"},
+                    "relation_type": {"type": "string", "enum": list(RELATION_TYPES)},
                     "comparison_group": {"type": ["string", "null"]},
                     "sequence": {"type": "integer"},
                 },
@@ -61,7 +118,6 @@ CLAIM_SCHEMA = {
             },
         },
         "source_org_raw": {"type": ["string", "null"]},
-        "source_scope": {"type": ["string", "null"]},
         "source_role": {"type": ["string", "null"]},
         "evidence_quote": {"type": "string"},
     },
@@ -72,23 +128,30 @@ CLAIM_SCHEMA = {
         "population",
         "observations",
         "source_org_raw",
-        "source_scope",
         "source_role",
         "evidence_quote",
     ],
 }
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = f"""
 당신은 규칙 기반으로 추출된 후보 문장을 구조화하는 통계 claim 분석기입니다.
 입력 문장만 근거로 판단하고, 근거가 없으면 null 또는 빈 배열을 사용합니다.
 
-1. 실제 검증 가능한 주장인지 is_claim으로 판단합니다.
-2. 주장이라면 claim_class, indicator_raw, population을 추출합니다.
+1. 먼저 검증 가능한 수치 주장인지 is_claim(true/false)으로 판정합니다. 판정 결과에 따라 두 필드를 조건부로 채웁니다.
+   - is_claim=false이면(광고·의견·질문·불완전문·인용맥락·UI잡음 등 검증 대상이 아닌 경우) claim_class는 null로 두고, noise_reason을 아래 목록에서 정확히 하나 고릅니다:
+{_NOISE_REASON_BLOCK}
+   - is_claim=true이면 noise_reason은 null로 두고, claim_class를 아래 10종에서 정확히 하나만 고릅니다(목록 밖의 값을 새로 만들지 않습니다). 애매하면 노이즈로 버리지 말고 가장 가까운 유형을 고릅니다:
+{_CLAIM_CLASS_BLOCK}
+   집계통계만 KOSIS 대조 대상입니다.
+2. is_claim=true이면 indicator_raw, population을 추출합니다.
 3. 한 문장에 수치가 여러 개 있으면 claims를 여러 행으로 나누지 말고 observations 배열에 모두 기록합니다.
 4. 각 observation은 value, unit, period, time_compare, dimension, relation_type, comparison_group, sequence를 가집니다.
-5. relation_type은 time_series, comparison_pair, cross_section, part_whole,
-   numerator_denominator, multi_indicator, ranked_list, range, untyped 중 하나입니다.
-6. source_org_raw/source_scope/source_role은 문장에 근거가 있을 때만 기록합니다.
+5. relation_type은 관측값이 주장 안에서 갖는 역할이며 primary, comparison_base,
+   component, total, rank_peer, untyped 중 하나입니다. 비교(예: 올해 vs 작년)는
+   기준값(primary)과 비교대상값(comparison_base)을 같은 comparison_group으로 묶고
+   sequence로 순서를 매겨 표현합니다. 구성/합계는 component/total, 순위 목록의
+   동료 항목은 rank_peer, 역할이 불분명하면 untyped를 씁니다.
+6. source_org_raw와 source_role은 문장에 근거가 있을 때만 기록합니다. source_scope는 출력하지 않습니다(시스템이 기관 사전으로 결정론적으로 판정).
 7. evidence_quote는 입력 문장에서 직접 인용한 짧은 근거입니다.
 8. JSON 객체 하나만 출력합니다.
 """.strip()
@@ -160,6 +223,68 @@ def parse_content(payload: dict) -> tuple[dict, dict]:
     if not isinstance(parsed, dict):
         raise ValueError("HCX response JSON is not an object")
     return parsed, result.get("usage", {}) or payload.get("usage", {}) or {}
+
+
+def clamp_relation_types(prediction: dict) -> int:
+    """어휘 밖 relation_type을 untyped로 강등하고 강등 건수를 반환한다.
+
+    cache.jsonl에는 HCX 원본이 그대로 남고, 이 함수는 소비 지점에서 prediction을
+    제자리 수정해 predictions.csv·metrics만 정제한다. 원본 라벨은
+    relation_type_raw로 보존해 감사 가능하게 한다.
+    """
+    if not isinstance(prediction, dict):
+        return 0
+    clamped = 0
+    for observation in prediction.get("observations", []) or []:
+        if not isinstance(observation, dict):
+            continue
+        value = observation.get("relation_type")
+        if value not in RELATION_TYPES:
+            observation["relation_type_raw"] = value
+            observation["relation_type"] = "untyped"
+            clamped += 1
+    return clamped
+
+
+def normalize_label(prediction: dict) -> dict[str, int]:
+    """is_claim/claim_class/noise_reason 조건부 계층을 제자리에서 정합화한다.
+
+    규칙(retrieval_schema.validate_claim와 동일):
+      is_claim=True  ⇒ claim_class는 10종 중 하나(어휘 밖은 null로 강등), noise_reason=null
+      is_claim=False ⇒ claim_class=null, noise_reason은 통제 어휘(어휘 밖은 "기타")
+
+    프롬프트 조건부 지시가 1차 방어, 이 함수는 안전망이다. 강등된 원본은 *_raw로
+    보존해 감사 가능하게 하고, 강등 사유별 건수를 반환한다.
+    """
+    counts = {"claim_class_oov": 0, "noise_reason_oov": 0, "consistency_fix": 0}
+    if not isinstance(prediction, dict):
+        return counts
+    is_claim = bool(prediction.get("is_claim"))
+    claim_class = prediction.get("claim_class") or None
+    noise_reason = prediction.get("noise_reason") or None
+
+    if is_claim:
+        if noise_reason is not None:  # 주장인데 noise_reason이 있으면 모순
+            prediction["noise_reason_raw"] = noise_reason
+            noise_reason = None
+            counts["consistency_fix"] += 1
+        if claim_class is not None and claim_class not in CLAIM_CLASSES:
+            prediction["claim_class_raw"] = claim_class
+            claim_class = None
+            counts["claim_class_oov"] += 1
+    else:
+        if claim_class is not None:  # 비주장인데 claim_class가 있으면 모순
+            prediction["claim_class_raw"] = claim_class
+            claim_class = None
+            counts["consistency_fix"] += 1
+        if noise_reason is not None and noise_reason not in NOISE_REASONS:
+            prediction["noise_reason_raw"] = noise_reason
+            noise_reason = "기타"
+            counts["noise_reason_oov"] += 1
+
+    prediction["claim_class"] = claim_class
+    prediction["noise_reason"] = noise_reason
+    return counts
 
 
 def tokenize_messages(
@@ -266,6 +391,9 @@ def predicted_is_claim(prediction: dict) -> bool:
 
 
 def gold_is_claim(row: pd.Series) -> bool:
+    explicit = clean(row.get("gold_is_claim"))
+    if explicit:  # 신 스키마 평가셋: is_claim 축을 명시 컬럼에서 직접 읽는다.
+        return normalize_bool(explicit)
     claim_class = clean(row.get("gold_claim_class"))
     return claim_class not in {"", "노이즈", "통계조사안내"}
 
@@ -421,7 +549,13 @@ def main() -> None:
                 cache[item["eval_claim_id"]] = item
 
     api_key = env_api_key()
+    org_catalog = load_kosis_org_catalog(ROOT / "data" / "kosis_org_names.json")
     rows: list[dict] = []
+    oov_total = 0
+    class_oov_total = 0
+    noise_oov_total = 0
+    consistency_fix_total = 0
+    prefilter_counts: dict[str, int] = {"검증시도": 0, "강등": 0, "제외": 0}
     with cache_path.open("a", encoding="utf-8") as cache_file:
         for _, source in df.iterrows():
             claim_id = clean(source.get("eval_claim_id"))
@@ -487,6 +621,28 @@ def main() -> None:
                 cache_file.flush()
 
             prediction = result.get("prediction", {})
+            relation_type_oov = clamp_relation_types(prediction)
+            label_counts = normalize_label(prediction)
+            pred_prefilter = ""
+            if isinstance(prediction, dict):
+                # source_scope는 LLM 산출을 무시하고 기관 사전으로 결정론 판정한다.
+                prediction["source_scope"] = classify_source_scope(
+                    prediction.get("source_org_raw"), org_catalog
+                ).scope
+                # 검색 앞단 디부스트 게이트(3값)를 결정론으로 계산한다.
+                pred_prefilter, prefilter_reason = compute_verifiability_prefilter(
+                    prediction.get("is_claim"),
+                    prediction.get("claim_class"),
+                    prediction.get("source_scope"),
+                )
+                prediction["verifiability_prefilter"] = pred_prefilter
+                prediction["verifiability_prefilter_reason"] = prefilter_reason
+                prefilter_counts[pred_prefilter] += 1
+            class_oov = label_counts["claim_class_oov"]
+            oov_total += relation_type_oov
+            class_oov_total += class_oov
+            noise_oov_total += label_counts["noise_reason_oov"]
+            consistency_fix_total += label_counts["consistency_fix"]
             observations = prediction.get("observations", []) if isinstance(prediction, dict) else []
             pred_unit = ";".join(clean(item.get("unit")) for item in observations if clean(item.get("unit")))
             row_result = {
@@ -502,6 +658,12 @@ def main() -> None:
                 "pred_source_role": clean(prediction.get("source_role")),
                 "gold_unit": clean(source.get("gold_unit")),
                 "pred_unit": pred_unit,
+                "pred_noise_reason": clean(prediction.get("noise_reason")),
+                "pred_verifiability_prefilter": pred_prefilter,
+                "relation_type_oov": relation_type_oov,
+                "claim_class_oov": class_oov,
+                "noise_reason_oov": label_counts["noise_reason_oov"],
+                "consistency_fix": label_counts["consistency_fix"],
                 "prediction_json": json.dumps(prediction, ensure_ascii=False),
             }
             row_result.pop("prediction", None)
@@ -521,6 +683,11 @@ def main() -> None:
         "seed": args.seed,
     }
     metrics = calculate_metrics(rows)
+    metrics["relation_type_oov_total"] = oov_total
+    metrics["claim_class_oov_total"] = class_oov_total
+    metrics["noise_reason_oov_total"] = noise_oov_total
+    metrics["consistency_fix_total"] = consistency_fix_total
+    metrics["verifiability_prefilter_dist"] = prefilter_counts
     resolved_version = infer_api_version(args.model) if args.api_version == "auto" else args.api_version
     rlt_weight_total = args.rlt_recall_weight + args.rlt_latency_weight + args.rlt_tokens_weight
     if abs(rlt_weight_total - 1.0) > 1e-9:

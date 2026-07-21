@@ -13,7 +13,8 @@ __pycache__/
 data/**/*.json
 !data/kosis_org_names.json
 data/*.bak
-data/**/*.jsonl
+.json
+.jsonl
 data/*.json
 data/*.jsonl
 

@@ -20,6 +20,67 @@ import pandas as pd
 _MONTH_RE = re.compile(r"지난\s?(\d{1,2})월")
 
 
+# --- 한국어 수사(조/억/만/천) 전개 -----------------------------------------
+_KNUM_UNITS = (("조", 10 ** 12), ("억", 10 ** 8), ("만", 10 ** 4), ("천", 10 ** 3))
+
+
+def parse_korean_number(s: str):
+    """'1조8000억' -> 1.8e12, '92억' -> 9.2e9, '308만9300' -> 3089300, '100.4' -> 100.4.
+    '62조9천444억5700만'처럼 큰 자리 계수 안에 작은 자리(천)가 중첩된 경우도 처리한다.
+
+    조→억→만→천 순으로 큰 자리부터 순차 분해하되(뉴스 수치는 항상 내림차순 표기), 각 자리의
+    계수(head)에 다시 작은 단위가 섞여 있으면 재귀로 전개한다('9천444' -> 9,444). 음수 부호
+    ('-'/'−')와 콤마·공백은 허용. 파싱 불가하면 None."""
+    if s is None:
+        return None
+    rest = str(s).replace(",", "").replace(" ", "").replace("−", "-").strip()
+    if not rest:
+        return None
+    sign = 1.0
+    if rest[0] == "-":
+        sign, rest = -1.0, rest[1:]
+    total = 0.0
+    matched = False
+    for tok, mult in _KNUM_UNITS:
+        if tok in rest:
+            head, rest = rest.split(tok, 1)
+            head_val = parse_korean_number(head) if head else 1.0  # 중첩 계수(9천444 등) 재귀 전개
+            if head_val is None:
+                return None
+            total += head_val * mult
+            matched = True
+    if rest:
+        try:
+            total += float(rest)
+            matched = True
+        except ValueError:
+            if not matched:
+                return None
+    return sign * total if matched else None
+
+
+# --- 기준 시점 세분(time_span_type) ----------------------------------------
+_PARTIAL_DAY_RE = re.compile(r"\d{1,2}\s?~\s?\d{1,2}\s?일")
+
+
+def time_span_type(time_ref: str):
+    """time_ref 원문에서 시점 세분을 도출한다: 분기 / 월 / 연 / 부분기간 / 특정일 / 불명확."""
+    if not time_ref:
+        return "불명확"
+    t = str(time_ref)
+    if "분기" in t:
+        return "분기"
+    if _PARTIAL_DAY_RE.search(t):
+        return "부분기간"
+    if "월" in t or any(w in t for w in ("지난달", "이번달", "이번 달", "이달", "전월", "동월")):
+        return "월"
+    if "년" in t or any(w in t for w in ("작년", "지난해", "재작년", "올해", "금년", "전년", "전분기", "동기")):
+        return "연"
+    if "일" in t:
+        return "특정일"
+    return "불명확"
+
+
 def resolve_relative_time(text: str, published_at) -> str:
     """상대 시점 표현을 기사 발행일 기준 절대 시점으로 치환한다.
 
@@ -73,3 +134,45 @@ def convert_value(value: float, source_unit: str, target_unit: str) -> float:
     if source_unit not in UNIT_MULTIPLIER or target_unit not in UNIT_MULTIPLIER:
         raise ValueError(f"환산 규칙이 없는 단위입니다: {source_unit} -> {target_unit}")
     return value * UNIT_MULTIPLIER[source_unit] / UNIT_MULTIPLIER[target_unit]
+
+
+def normalize_value(value_str: str, unit: str):
+    """추출된 값 문자열(예: '92억')을 실수로 전개한다. 값-단위 접두(만/억/조)를 풀어
+    수치를 반환하되, 단위 자체는 추출 단계에서 이미 기준 단위(원/명/위안/% 등)이므로
+    그대로 둔다. 파싱 실패 시 None."""
+    return parse_korean_number(value_str)
+
+
+_QUARTER_RE = re.compile(r"(\d)\s?분기")
+_BARE_MONTH_RE = re.compile(r"(?<!\d)(\d{1,2})월")
+
+
+def normalize_time_ref(time_ref: str, published_at):
+    """time_ref 원문을 발행일 기준 절대 시점으로 만든다.
+
+    - '작년'/'올해' 등 상대어는 resolve_relative_time으로 연도 치환
+    - 연도 없는 'N분기'/'N월'은 발행일 기준 연도를 앞에 붙인다(그 시점이 발행월보다
+      뒤면 작년으로 판단 — _replace_month와 같은 규칙)
+    반환: 절대화된 문자열(없으면 None)."""
+    if not time_ref:
+        return None
+    published = pd.Timestamp(published_at)
+    t = resolve_relative_time(str(time_ref), published_at)
+
+    # 이미 연도가 붙었으면 그대로
+    if re.search(r"\d{4}", t):
+        return t
+
+    mq = _QUARTER_RE.search(t)
+    if mq:
+        q = int(mq.group(1))
+        pub_q = (published.month - 1) // 3 + 1
+        year = published.year if q <= pub_q else published.year - 1
+        return f"{year}년 {q}분기"
+
+    mm = _BARE_MONTH_RE.search(t)
+    if mm:
+        month = int(mm.group(1))
+        year = published.year if month <= published.month else published.year - 1
+        return f"{year}.{month:02d}"
+    return t

@@ -25,6 +25,7 @@ from retrieval_schema import (
     Claim,
     ClaimObservation,
     ClaimTableMapping,
+    classify_observation_verify_scope,
     validate_claim,
     validate_mapping,
 )
@@ -98,17 +99,18 @@ def bool_value(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes"}
 
 
-def infer_relation_type(claim_text: str, values: list[str], time_ref: str, time_compare: str) -> str:
-    """Infer only a conservative relation hint; HCX remains the authority."""
-    text = clean(claim_text)
-    if "~" in "".join(values) or "부터" in text and "까지" in text:
-        return "range"
-    if time_compare or any(token in text for token in ("전년", "전월", "대비", "보다", "증가", "감소", "상승", "하락")):
-        return "comparison_pair"
-    if len(values) > 1 and any(token in text for token in ("년", "분기", "월", "상반기", "하반기")):
-        return "time_series"
-    if len(values) > 1 and any(token in text for token in ("중", "비중", "구성", "각각", "남성", "여성")):
-        return "cross_section"
+def observation_relation_type(index: int, change_type: str | None) -> str:
+    """관측값별 relation_type을 보수적으로 부여한다(RELATION_TYPES 통제 어휘).
+
+    규칙 변환기는 어느 값이 비교 기준인지 신뢰성 있게 판별할 수 없으므로 선두
+    관측값만 primary로 두고 나머지는 미상(untyped)으로 둔다. 순위 주장은 나머지를
+    동료(rank_peer)로 표시한다. 정확한 역할(comparison_base/component/total)은
+    HCX 스키마화 단계가 최종 권위로 채운다.
+    """
+    if index == 0:
+        return "primary"
+    if change_type and "순위" in change_type:
+        return "rank_peer"
     return "untyped"
 
 
@@ -120,14 +122,9 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
     claim_id = f"article_{article_idx}_row_{row_number:06d}"
     published_at = clean(row.get("작성일"))
 
-    value_raw = values[0] if len(values) == 1 else None
-    unit_raw = units[0] if len(units) == 1 else None
-    value_num, unit_norm = normalize_value(value_raw, unit_raw)
-    time_start_raw, time_start, period_type = normalize_time(clean(row.get("time_ref")), published_at)
-    _, time_compare, _ = normalize_time(clean(row.get("time_compare")), published_at)
-    relation_type = infer_relation_type(
-        str(row.get("claim_text", "")), values, clean(row.get("time_ref")), clean(row.get("time_compare"))
-    )
+    _, time_start, period_type = normalize_time(clean(row.get("time_ref")), published_at)
+    change_type = clean(row.get("change_type"))
+    is_index = bool_value(row.get("is_index"))
 
     def field(name: str, fallback: str | None = None) -> str | None:
         return clean(row.get(name)) or fallback
@@ -155,19 +152,7 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
         evidence_quote=str(row.get("claim_text", "")),
         indicator_raw=field("gold_indicator_raw"),
         population_raw=field("gold_population"),
-        value_raw=value_raw,
-        value_num=value_num,
-        unit_raw=unit_raw,
-        unit_norm=unit_norm,
-        change_type=clean(row.get("change_type")),
-        time_ref_raw=clean(row.get("time_ref")),
-        time_start=time_start,
-        time_end=time_start,
-        period_type=period_type,
-        time_compare_raw=clean(row.get("time_compare")),
-        time_compare_start=time_compare,
-        time_compare_end=time_compare,
-        is_index=bool_value(row.get("is_index")),
+        change_type=change_type,
         raw_value_list=values,
         raw_unit_list=units,
         observations=[],
@@ -179,6 +164,7 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
         extraction_method="claim_extractor_listform",
         review_status=field("review_status", "pending") or "pending",
     )
+    claim_indicator_raw = field("gold_indicator_raw")
     for index, value_raw_item in enumerate(values):
         unit_raw_item = units[index] if index < len(units) else (units[0] if len(units) == 1 else None)
         value_num_item, unit_norm_item = normalize_value(value_raw_item, unit_raw_item)
@@ -187,6 +173,7 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
             ClaimObservation(
                 observation_id=f"{claim_id}_obs_{index + 1:03d}",
                 claim_id=claim_id,
+                indicator_raw=claim_indicator_raw if index == 0 else None,
                 value_raw=value_raw_item,
                 value_num=value_num_item,
                 unit_raw=unit_raw_item,
@@ -196,9 +183,11 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
                 period_end=time_start if index == 0 else None,
                 period_type=period_type if index == 0 else None,
                 time_compare_raw=clean(row.get("time_compare")) if index == 0 else None,
-                relation_type=relation_type,
+                is_index=is_index,
+                relation_type=observation_relation_type(index, change_type),
                 comparison_group=claim_id,
                 sequence=index,
+                verify_scope=classify_observation_verify_scope(unit_norm_item),
             )
         )
     return claim

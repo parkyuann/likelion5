@@ -1,4 +1,5 @@
 {
+  "_deprecated": "미사용(고아) 설정. 어떤 활성 코드도 이 파일을 로드하지 않으며(2026-07-21 확인), system_prompt·few_shot 포맷은 구 스키마(is_aggregate_claim, 노이즈 포함 8종, results/candidate 배치)라 신 스키마와 불일치. 정본 러너는 src/hcx_claim_experiment.py의 인라인 SYSTEM_PROMPT를 쓴다. few-shot을 정본 러너에 도입하려면 여기 예시를 is_claim/claim_class(10)/noise_reason/observations 포맷으로 갱신한 뒤 러너에 배선할 것(E 후속).",
   "model": "HCX-005",
   "hcx_url_template": "https://clovastudio.stream.ntruss.com/v3/chat-completions/{model}",
   "temperature": 0.0,

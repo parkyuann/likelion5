@@ -13,3 +13,5 @@ python-dotenv>=1.2,<2
 kss>=6.0,<7
 openpyxl>=3.1,<4
 ipykernel>=7.3,<8
+matplotlib>=3.10,<4
+seaborn>=0.13,<1

@@ -26,6 +26,7 @@ claude.md
 .claude/
 .codex/
 .agents/
+*.md
 
 # 의미 없는/빈 노트북 (공유 제외)
 workroom.ipynb

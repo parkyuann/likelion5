@@ -13,3 +13,6 @@ python-dotenv>=1.2,<2
 kss>=6.0,<7
 openpyxl>=3.1,<4
 ipykernel>=7.3,<8
+
+# 실전2 검색 DB(담당 C, T2-2): KOSIS 표를 Qdrant 벡터DB에 색인/검색하기 위한 클라이언트
+qdrant-client>=1.7,<2

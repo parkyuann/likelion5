@@ -3,6 +3,7 @@
 
 # 파이썬
 venv/
+.venv/
 __pycache__/
 *.pyc
 

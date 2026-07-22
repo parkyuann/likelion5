@@ -13,3 +13,7 @@ python-dotenv>=1.2,<2
 kss>=6.0,<7
 openpyxl>=3.1,<4
 ipykernel>=7.3,<8
+
+# 실전2 검색: Qdrant 벡터DB 색인/검색 (T2-2 kosis_indexer.py).
+# 로컬 임베디드 모드(QdrantClient(path=...))로 쓰므로 별도 서버·Docker 불필요.
+qdrant-client>=1.12,<2

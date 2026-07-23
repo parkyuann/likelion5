@@ -42,7 +42,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TREE = ROOT / "data" / "kosis_table_tree.json"
-DEFAULT_META = ROOT / "data" / "kosis_table_meta_enriched.jsonl"
+DEFAULT_META = ROOT / "data" / "kosis_table_meta_v2.jsonl"
 DEFAULT_ORG_NAMES = ROOT / "data" / "kosis_org_names.json"
 # 산출물 이름은 단계별 세부 Task 명세를 따른다 (T2-1: tree → kosis_catalog_v2.jsonl).
 DEFAULT_OUTPUT = ROOT / "data" / "kosis_catalog_v2.jsonl"
@@ -148,7 +148,7 @@ def build_records(leaves: list[dict], meta: dict[str, dict], org_names: dict[str
                 "tbl_name": normalize_text(leaf.get("tbl_nm")) or tbl_id,
                 "stat_id": normalize_text(leaf.get("stat_id")) or None,
                 "category_paths": [],
-                "source": "data/kosis_table_tree.json + data/kosis_table_meta_enriched.jsonl",
+                "source": "data/kosis_table_tree.json + data/kosis_table_meta_v2.jsonl",
                 "catalog_version": CATALOG_VERSION,
             },
         )

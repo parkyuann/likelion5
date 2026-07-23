@@ -44,10 +44,11 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TREE = ROOT / "data" / "kosis_table_tree.json"
 DEFAULT_META = ROOT / "data" / "kosis_table_meta_enriched.jsonl"
 DEFAULT_ORG_NAMES = ROOT / "data" / "kosis_org_names.json"
-DEFAULT_OUTPUT = ROOT / "data" / "kosis_catalog_enriched.jsonl"
-DEFAULT_MANIFEST = ROOT / "data" / "kosis_catalog_enriched_manifest.json"
+# 산출물 이름은 단계별 세부 Task 명세를 따른다 (T2-1: tree → kosis_catalog_v2.jsonl).
+DEFAULT_OUTPUT = ROOT / "data" / "kosis_catalog_v2.jsonl"
+DEFAULT_MANIFEST = ROOT / "data" / "kosis_catalog_v2_manifest.json"
 
-CATALOG_VERSION = "kosis-catalog-enriched"
+CATALOG_VERSION = "kosis-catalog-v2"
 
 # HCX 임베딩 v2 사양(공식 문서) + 실측 토큰 비율.
 # 비율은 임베딩 API가 돌려주는 result.inputTokens로 측정했다(1,000자 -> 709토큰).

@@ -1,4 +1,4 @@
-"""kosis_catalog_enriched.jsonl 을 Qdrant 벡터DB에 색인한다 (실전2 T2-2).
+"""kosis_catalog_v2.jsonl 을 Qdrant 벡터DB에 색인한다 (실전2 T2-2).
 
 표 하나를 세 갈래로 저장한다 — T2-1에서 필드를 나눈 이유가 여기서 쓰인다.
 
@@ -19,7 +19,7 @@ T2-3 검색기가 질의를 같은 방식으로 인코딩하려면 이 파일이
 항마다 값 1.0 을 주면 내적이 곧 BM25 점수 합이 된다.
 
 사용 예 (레포 루트에서):
-    # 표본(현재 kosis_catalog_enriched.jsonl) 색인
+    # 표본(현재 kosis_catalog_v2.jsonl) 색인
     venv/Scripts/python.exe src/kosis_indexer.py
 
     # 컬렉션을 지우고 처음부터 (벡터 설정을 바꿨을 때)
@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.hcx_embedding_client import embed  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CATALOG = ROOT / "data" / "kosis_catalog_enriched.jsonl"
+DEFAULT_CATALOG = ROOT / "data" / "kosis_catalog_v2.jsonl"
 DEFAULT_QDRANT_PATH = ROOT / "data" / "qdrant_kosis"
 DEFAULT_BM25_MODEL = ROOT / "data" / "kosis_bm25_model.json"
 DEFAULT_EMBED_CACHE = ROOT / "data" / "kosis_embedding_cache.jsonl"

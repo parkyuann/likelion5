@@ -1,0 +1,62 @@
+{
+  "run_date": "2026-07-23",
+  "catalog_version": "kosis-catalog-v2",
+  "sample_source": "C:\\Users\\82105\\Desktop\\likelion5\\data\\claims_v1.jsonl",
+  "sample_size": 300,
+  "sample_seed": 20260722,
+  "catalog_documents": 515,
+  "qdrant_points": 515,
+  "per_path_n": 20,
+  "top_n": 20,
+  "rrf_k": 60,
+  "resumed_claims": 0,
+  "hcx_cache_hits": 100,
+  "hcx_api_calls": 200,
+  "embedding_cache_hits": 221,
+  "embedding_api_calls": 379,
+  "claims_with_errors": 0,
+  "path_candidate_counts": {
+    "b2_doc_meta_bm25": {
+      "mean": 17.14,
+      "median": 20.0,
+      "min": 0.0,
+      "max": 20.0
+    },
+    "b4_doc_meta_bm25": {
+      "mean": 12.97,
+      "median": 20.0,
+      "min": 0.0,
+      "max": 20.0
+    },
+    "claim_dense": {
+      "mean": 20.0,
+      "median": 20.0,
+      "min": 20.0,
+      "max": 20.0
+    },
+    "hyde_dense": {
+      "mean": 20.0,
+      "median": 20.0,
+      "min": 20.0,
+      "max": 20.0
+    }
+  },
+  "pairwise_mean_jaccard": {
+    "b2_doc_meta_bm25__b4_doc_meta_bm25": 0.603283,
+    "b2_doc_meta_bm25__claim_dense": 0.080183,
+    "b2_doc_meta_bm25__hyde_dense": 0.040749,
+    "b4_doc_meta_bm25__claim_dense": 0.062531,
+    "b4_doc_meta_bm25__hyde_dense": 0.036268,
+    "claim_dense__hyde_dense": 0.135781
+  },
+  "final_support_path_count": {
+    "1": 1764,
+    "2": 3520,
+    "3": 540,
+    "4": 176
+  },
+  "elapsed_sec": 646.685,
+  "mean_ms_per_claim": 2155.617,
+  "recall": null,
+  "recall_reason": "gold table_key mappings were not provided"
+}

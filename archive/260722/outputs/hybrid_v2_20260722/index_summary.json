@@ -1,0 +1,18 @@
+{
+  "run_date": "2026-07-22",
+  "catalog_version": "kosis-catalog-v2",
+  "input": "C:\\Users\\82105\\Desktop\\likelion5\\data\\kosis_catalog_v2.jsonl",
+  "input_records": 515,
+  "collection": "kosis_tables_v2",
+  "db_path": "C:\\Users\\82105\\Desktop\\likelion5\\output\\kosis_qdrant_v2",
+  "qdrant_points": 515,
+  "vectors": {
+    "doc_meta_vector": "doc_meta_text",
+    "tbl_name_vector": "tbl_name",
+    "dimension": 1024
+  },
+  "cache_hits": 234,
+  "cache_misses": 798,
+  "embedding_api_calls": 798,
+  "elapsed_sec": 547.871
+}

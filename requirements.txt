@@ -1,3 +1,5 @@
 pandas
 requests
 python-dotenv
+qdrant-client>=1.14,<2
+kiwipiepy>=0.23,<0.24

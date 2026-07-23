@@ -46,7 +46,7 @@
 | `data/retrieval_eval_claims_v0.csv` | 80% retrieval silver labeling 입력셋 |
 | `data/retrieval_eval_claims_v0_codex.csv` | Codex silver pre-label 결과 |
 | `data/retrieval_eval_claims_v0_manifest.json` | 평가셋 샘플링·split manifest |
-| `data/labeling/` | Claude/Codex/team2 라벨링 및 통합 검토 파일 |
+| `data/labeling/` | 현행 공유 라벨링 시트(`labeling_sheet_v1.csv` = F-gold + 추출 audit)와 지침. 구 파일럿(Claude/Codex/team2 3자 라벨링)은 `archive/2026-07-22/labeling_legacy/`로 이관 |
 
 ### 테스트 평가셋: `data/evaluation/`
 

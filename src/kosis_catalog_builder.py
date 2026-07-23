@@ -24,10 +24,10 @@ v2는 이를 세 갈래로 나눈다.
 
 사용 예 (레포 루트에서):
     # 메타가 확보된 표만 (권장 — 부분 크롤링 상태에서 확인용)
-    venv/Scripts/python.exe src/build_kosis_catalog_v2.py --only-enriched
+    venv/Scripts/python.exe src/kosis_catalog_builder.py --only-enriched
 
     # 전체 표 (메타 없는 표는 doc_item_index가 빈 값)
-    venv/Scripts/python.exe src/build_kosis_catalog_v2.py
+    venv/Scripts/python.exe src/kosis_catalog_builder.py
 """
 
 from __future__ import annotations
@@ -42,12 +42,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TREE = ROOT / "data" / "kosis_table_tree.json"
-DEFAULT_META = ROOT / "data" / "kosis_table_meta.jsonl"
+DEFAULT_META = ROOT / "data" / "kosis_table_meta_enriched.jsonl"
 DEFAULT_ORG_NAMES = ROOT / "data" / "kosis_org_names.json"
-DEFAULT_OUTPUT = ROOT / "data" / "kosis_catalog_v2.jsonl"
-DEFAULT_MANIFEST = ROOT / "data" / "kosis_catalog_v2_manifest.json"
+DEFAULT_OUTPUT = ROOT / "data" / "kosis_catalog_enriched.jsonl"
+DEFAULT_MANIFEST = ROOT / "data" / "kosis_catalog_enriched_manifest.json"
 
-CATALOG_VERSION = "kosis-catalog-v2"
+CATALOG_VERSION = "kosis-catalog-enriched"
 
 # HCX 임베딩 v2 사양(공식 문서) + 실측 토큰 비율.
 # 비율은 임베딩 API가 돌려주는 result.inputTokens로 측정했다(1,000자 -> 709토큰).
@@ -80,7 +80,7 @@ def flatten_leaves(tree: dict) -> list[dict]:
 
 
 def load_meta(path: Path) -> dict[str, dict]:
-    """kosis_tree_crawler_v2.py가 만든 표별 메타를 table_key로 인덱싱한다.
+    """kosis_meta_enricher.py가 만든 표별 메타를 table_key로 인덱싱한다.
 
     같은 표가 여러 번 기록돼 있으면(재실행 중 중복 append) 마지막 성공 레코드를
     쓴다. status가 error인 레코드는 차원·항목이 없으므로 무시한다.
@@ -147,7 +147,7 @@ def build_records(leaves: list[dict], meta: dict[str, dict], org_names: dict[str
                 "tbl_name": normalize_text(leaf.get("tbl_nm")) or tbl_id,
                 "stat_id": normalize_text(leaf.get("stat_id")) or None,
                 "category_paths": [],
-                "source": "data/kosis_table_tree.json + data/kosis_table_meta.jsonl",
+                "source": "data/kosis_table_tree.json + data/kosis_table_meta_enriched.jsonl",
                 "catalog_version": CATALOG_VERSION,
             },
         )
@@ -256,11 +256,16 @@ def main() -> None:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def rel(p: Path) -> str:
+        # 상대경로로 넘어온 인자도 ROOT 밖으로 벗어나지 않게 안전 처리.
+        p = p.resolve()
+        return str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p)
+
     manifest = {
         "catalog_version": CATALOG_VERSION,
-        "tree": str(args.tree.relative_to(ROOT)),
-        "meta": str(args.meta.relative_to(ROOT)),
-        "output": str(args.output.relative_to(ROOT)),
+        "tree": rel(args.tree),
+        "meta": rel(args.meta),
+        "output": rel(args.output),
         "only_enriched": args.only_enriched,
         "written_rows": len(records),
         "source_leaf_rows": len(leaves),

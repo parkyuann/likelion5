@@ -61,6 +61,18 @@ def split_list(value) -> list[str]:
     return [part.strip() for part in text.split(";")] if text else []
 
 
+def json_object(value) -> dict:
+    """Parse extractor JSON without allowing malformed metadata to break rows."""
+    text = clean(value)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def normalize_value(raw_value: str | None, raw_unit: str | None) -> tuple[float | None, str | None]:
     unit = clean(raw_unit)
     if not unit:
@@ -97,6 +109,13 @@ def normalize_time(raw_time: str | None, published_at: str | None) -> tuple[str 
 
 def bool_value(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def optional_int(value) -> int | None:
+    text = clean(value)
+    if text is None:
+        return None
+    return int(float(text))
 
 
 def observation_relation_type(index: int, change_type: str | None) -> str:
@@ -142,16 +161,27 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
             status="explicit_same_sentence" if bool_value(row.get("source_mentioned")) else "ambiguous",
         ))
 
+    auto_indicator = field("indicator_raw")
+    auto_population = field("population_raw", field("population"))
+    auto_dimensions = json_object(row.get("dimension_json"))
+    gold_indicator = field("gold_indicator_raw")
+    gold_population = field("gold_population")
     claim = Claim(
         claim_id=claim_id,
         article_idx=article_idx,
         claim_text=str(row.get("claim_text", "")),
         source_row_number=row_number,
+        sentence_index=optional_int(row.get("sentence_index")),
+        sentence_char_start=optional_int(row.get("sentence_char_start")),
+        sentence_char_end=optional_int(row.get("sentence_char_end")),
         article_title=clean(row.get("기사제목")),
         published_at=published_at,
         evidence_quote=str(row.get("claim_text", "")),
-        indicator_raw=field("gold_indicator_raw"),
-        population_raw=field("gold_population"),
+        indicator_raw=gold_indicator or auto_indicator,
+        population_raw=gold_population or auto_population,
+        auto_indicator_raw=auto_indicator,
+        auto_population_raw=auto_population,
+        auto_dimension_json=auto_dimensions,
         change_type=change_type,
         raw_value_list=values,
         raw_unit_list=units,
@@ -164,7 +194,7 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
         extraction_method="claim_extractor_listform",
         review_status=field("review_status", "pending") or "pending",
     )
-    claim_indicator_raw = field("gold_indicator_raw")
+    claim_indicator_raw = gold_indicator or auto_indicator
     for index, value_raw_item in enumerate(values):
         unit_raw_item = units[index] if index < len(units) else (units[0] if len(units) == 1 else None)
         value_num_item, unit_norm_item = normalize_value(value_raw_item, unit_raw_item)
@@ -183,6 +213,7 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
                 period_end=time_start if index == 0 else None,
                 period_type=period_type if index == 0 else None,
                 time_compare_raw=clean(row.get("time_compare")) if index == 0 else None,
+                dimension_json=auto_dimensions,
                 is_index=is_index,
                 relation_type=observation_relation_type(index, change_type),
                 comparison_group=claim_id,

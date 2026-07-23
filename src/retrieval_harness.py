@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CLAIMS = ROOT / "data" / "retrieval_eval_claims_v0_codex.csv"
-DEFAULT_CATALOG = ROOT / "data" / "kosis_catalog_v1.jsonl"
+DEFAULT_CATALOG = ROOT / "data" / "kosis_catalog_v3.jsonl"
 DEFAULT_OUTPUT = ROOT / "data" / "retrieval_candidates_v0_codex.jsonl"
 
 TOKEN_RE = re.compile(r"[가-힣A-Za-z][가-힣A-Za-z0-9·_-]{1,}|\d+(?:\.\d+)?")

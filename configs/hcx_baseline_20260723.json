@@ -1,0 +1,29 @@
+{
+  "baseline_name": "hcx-007-structured-v1",
+  "selected_at": "2026-07-23",
+  "selection_basis": "validation300 highest RLT with zero execution errors",
+  "model": "HCX-007",
+  "experiment_variant": "hcx-007-structured",
+  "api_version": "v3",
+  "temperature": 0.1,
+  "top_p": 0.8,
+  "max_tokens": 1200,
+  "prompt_version": "claim-observation-v1-structured",
+  "use_response_format": true,
+  "validation_metrics": {
+    "claim_detection_f1": 0.876984,
+    "claim_class_macro_f1": 0.328677,
+    "source_scope_macro_f1": 0.40305,
+    "rlt_score": 0.536977,
+    "rows_error": 0
+  },
+  "final_metrics": {
+    "claim_detection_f1": 0.877817,
+    "claim_class_macro_f1": 0.266514,
+    "source_scope_macro_f1": 0.361087,
+    "rlt_score": 0.489925,
+    "rows_error": 0
+  },
+  "validation_experiment": "output/hcx_matrix_20260723/validation/hcx-007-structured/validation300_HCX-007_t0.1_p0.8_claim-observation-v1-structured_n300_hafb48a547c",
+  "final_experiment": "output/hcx_matrix_20260723/final/hcx-007-structured/final500_HCX-007_t0.1_p0.8_claim-observation-v1-structured_n500_h483d09c6c4"
+}

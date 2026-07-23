@@ -16,7 +16,7 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT = ROOT / "data" / "retrieval_eval_claims_v0_codex.csv"
+DEFAULT_INPUT = ROOT / "data" / "retrieval_eval_claims_v0.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "evaluation"
 SEED = 20260716
 
@@ -34,6 +34,27 @@ REVIEW_COLUMNS = {
     "selection_notes": "",
     "human_review_status": "pending",
     "human_reviewer": "",
+}
+
+GOLD_COLUMNS = {
+    "gold_is_claim": "",
+    "gold_noise_reason": "",
+    "gold_claim_class": "",
+    "gold_source_scope": "",
+    "gold_verifiability_prefilter": "",
+    "gold_org_id": "",
+    "gold_org_name": "",
+    "gold_source_role": "",
+    "gold_tbl_id": "",
+    "gold_tbl_name": "",
+    "gold_stat_id": "",
+    "gold_dimension_json": "",
+    "gold_item_id": "",
+    "gold_period_type": "",
+    "gold_period": "",
+    "gold_unit": "",
+    "gold_match_status": "",
+    "gold_notes": "",
 }
 
 
@@ -106,10 +127,19 @@ def final_gold(frame: pd.DataFrame, n: int, min_per_class: int, seed: int) -> pd
 
 def prepare(frame: pd.DataFrame, kind: str) -> pd.DataFrame:
     result = frame.copy().reset_index(drop=True)
+    result = result.drop(
+        columns=[column for column in result.columns
+                 if column.startswith("silver_") or column == "gold_label_source"],
+        errors="ignore",
+    )
     result.insert(0, "evaluation_id", [f"{kind}_{i:04d}" for i in range(1, len(result) + 1)])
     for column, default in HCX_COLUMNS.items():
         result[column] = default
     for column, default in REVIEW_COLUMNS.items():
+        result[column] = default
+    # Evaluation labels must never inherit silver/prelabel values from an
+    # upstream copy.  Only the gold_* schema remains, empty for annotation.
+    for column, default in GOLD_COLUMNS.items():
         result[column] = default
     result["evaluation_set"] = kind
     return result

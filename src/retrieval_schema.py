@@ -135,6 +135,10 @@ class Claim:
     article_idx: int
     claim_text: str
     source_row_number: int | None = None
+    # Position in cleaned article text; char_end is exclusive.
+    sentence_index: int | None = None
+    sentence_char_start: int | None = None
+    sentence_char_end: int | None = None
     article_title: str | None = None
     published_at: str | None = None
     evidence_quote: str | None = None
@@ -144,6 +148,10 @@ class Claim:
     indicator_norm: str | None = None
     population_raw: str | None = None
     population_norm: str | None = None
+    # Rule/HCX extraction is kept separately from human gold annotations.
+    auto_indicator_raw: str | None = None
+    auto_population_raw: str | None = None
+    auto_dimension_json: dict[str, Any] = field(default_factory=dict)
     # 검증 연산 종류(증감률/비교/순위 등)와 방향 — 값 자체는 observations에 있다.
     change_type: str | None = None
     direction: str | None = None
@@ -199,6 +207,11 @@ class KOSISTable:
     source_name: str | None = None
     version_status: str | None = None
     document_text: str | None = None
+    # v3 catalog keeps dense and sparse retrieval documents separate.
+    doc_meta_text: str | None = None
+    doc_item_index: str | None = None
+    catalog_version: str | None = None
+    value_parse_status: str | None = None
     embedding_model: str | None = None
     embedding_version: str | None = None
     document_version: str = "table-doc-v1"
@@ -261,6 +274,20 @@ def validate_claim(claim: Claim) -> list[str]:
         errors.append("article_idx must be int")
     if not claim.claim_text:
         errors.append("claim_text is required")
+    if claim.sentence_index is not None and (
+        not isinstance(claim.sentence_index, int) or claim.sentence_index < 0
+    ):
+        errors.append("sentence_index must be a non-negative int")
+    for name in ("sentence_char_start", "sentence_char_end"):
+        value = getattr(claim, name)
+        if value is not None and (not isinstance(value, int) or value < 0):
+            errors.append(f"{name} must be a non-negative int")
+    if (
+        claim.sentence_char_start is not None
+        and claim.sentence_char_end is not None
+        and claim.sentence_char_end < claim.sentence_char_start
+    ):
+        errors.append("sentence_char_end must be >= sentence_char_start")
     if claim.claim_class and claim.claim_class not in CLAIM_CLASSES:
         errors.append(f"invalid claim_class: {claim.claim_class}")
     # 조건부 계층 정합: is_claim=False ⇒ claim_class=null, is_claim=True ⇒ noise_reason=null

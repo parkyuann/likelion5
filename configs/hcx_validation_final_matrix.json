@@ -1,0 +1,29 @@
+{
+  "input_validation": "data/evaluation/validation300.csv",
+  "input_final": "data/evaluation/final500.csv",
+  "output_root": "output/hcx_matrix_20260723",
+  "summary_file": "output/hcx_matrix_20260723/model_comparison.csv",
+  "metrics_log": "data/hcx_model_comparison_20260723.jsonl",
+  "common": {
+    "temperature": 0.1,
+    "top_p": 0.8,
+    "max_tokens": 1200,
+    "prompt_version": "claim-observation-v1",
+    "system_prompt_file": null,
+    "use_response_format": false,
+    "api_version": "auto",
+    "skip_tokenizer": false,
+    "rlt_latency_ref_ms": 6112.722,
+    "rlt_tokens_ref": 412.746,
+    "rlt_recall_weight": 0.6,
+    "rlt_latency_weight": 0.2,
+    "rlt_tokens_weight": 0.2
+  },
+  "models": [
+    {"id": "hcx-003", "name": "HCX-003", "validation": {"prompt_version": "claim-observation-v1"}},
+    {"id": "hcx-dash-001", "name": "HCX-DASH-001", "validation": {"prompt_version": "claim-observation-v1"}},
+    {"id": "hcx-dash-002", "name": "HCX-DASH-002", "validation": {"prompt_version": "claim-observation-v1"}},
+    {"id": "hcx-007-structured", "name": "HCX-007", "validation": {"prompt_version": "claim-observation-v1-structured", "use_response_format": true}, "final": {"prompt_version": "claim-observation-v1-structured", "use_response_format": true}},
+    {"id": "hcx-007-plain-json", "name": "HCX-007", "validation": {"prompt_version": "claim-observation-v1-plain-json", "use_response_format": false}}
+  ]
+}

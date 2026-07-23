@@ -9,6 +9,7 @@ cost, raw prediction, and evaluation metrics.  No API call is made at import.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -199,11 +200,37 @@ def effective_temperature(temperature: float, version: str) -> float:
     return 0.1 if version == "v1" and temperature <= 0 else temperature
 
 
-def experiment_id(model: str, temperature: float, top_p: float, max_tokens: int, prompt_version: str) -> str:
-    raw = f"{model}|{temperature}|{top_p}|{max_tokens}|{prompt_version}"
+def experiment_id(
+    model: str,
+    temperature: float,
+    top_p: float,
+    max_tokens: int,
+    prompt_version: str,
+    input_path: Path | None = None,
+    row_count: int | None = None,
+    response_format: bool = False,
+    rlt_signature: tuple[float, float, float, float, float] | None = None,
+    label_signature: str | None = None,
+) -> str:
+    dataset = input_path.stem if input_path else "dataset"
+    safe_dataset = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in dataset)
+    safe_prompt = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in prompt_version)
+    raw = json.dumps({
+        "model": model,
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_tokens": max_tokens,
+        "prompt_version": prompt_version,
+        "input": str(input_path) if input_path else "",
+        "row_count": row_count,
+        "response_format": response_format,
+        "rlt_signature": rlt_signature,
+        "label_signature": label_signature,
+    }, sort_keys=True, ensure_ascii=False)
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
     safe_model = model.replace("/", "-").replace(" ", "-")
-    return f"{safe_model}_t{temperature:g}_p{top_p:g}_{prompt_version}_{digest}"
+    count_tag = f"n{row_count}" if row_count is not None else "nall"
+    return f"{safe_dataset}_{safe_model}_t{temperature:g}_p{top_p:g}_{safe_prompt}_{count_tag}_h{digest}"
 
 
 def parse_content(payload: dict) -> tuple[dict, dict]:
@@ -419,6 +446,18 @@ def macro_f1(y_true: list[str], y_pred: list[str]) -> float:
     return round(sum(scores) / len(scores), 6)
 
 
+def macro_prf(y_true: list[str], y_pred: list[str]) -> dict[str, float]:
+    labels = sorted(set(y_true) | set(y_pred))
+    if not labels:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    scores = [
+        f1_for_binary([x == label for x in y_true], [x == label for x in y_pred])
+        for label in labels
+    ]
+    return {key: round(sum(item[key] for item in scores) / len(scores), 6)
+            for key in ("precision", "recall", "f1")}
+
+
 def calculate_metrics(rows: list[dict]) -> dict:
     usable = [row for row in rows if row.get("status") == "ok"]
     gold_bool = [row["gold_is_claim"] for row in usable]
@@ -426,13 +465,23 @@ def calculate_metrics(rows: list[dict]) -> dict:
     gold_class = [row["gold_claim_class"] for row in usable]
     pred_class = [row["pred_claim_class"] for row in usable]
     class_accuracy = sum(a == b for a, b in zip(gold_class, pred_class)) / len(gold_class) if gold_class else 0.0
+    class_prf = macro_prf(gold_class, pred_class)
+    scope_prf = macro_prf(
+        [row["gold_source_scope"] for row in usable],
+        [row["pred_source_scope"] for row in usable],
+    )
     return {
         "rows_total": len(rows),
         "rows_ok": len(usable),
         "rows_error": len(rows) - len(usable),
         "claim_detection": f1_for_binary(gold_bool, pred_bool),
         "claim_class_accuracy": round(class_accuracy, 6),
-        "claim_class_macro_f1": macro_f1(gold_class, pred_class),
+        "claim_class_macro_precision": class_prf["precision"],
+        "claim_class_macro_recall": class_prf["recall"],
+        "claim_class_macro_f1": class_prf["f1"],
+        "source_scope_macro_precision": scope_prf["precision"],
+        "source_scope_macro_recall": scope_prf["recall"],
+        "source_scope_macro_f1": scope_prf["f1"],
         "source_scope_exact": round(
             sum(row["gold_source_scope"] == row["pred_source_scope"] for row in usable) / len(usable), 6
         ) if usable else 0.0,
@@ -467,6 +516,13 @@ def calculate_rlt_score(
 ) -> float | None:
     """Calculate the supplementary Recall-Latency-Token trade-off score."""
     recall = metrics["claim_detection"]["recall"]
+    # RLT recall is the mean recall across claim detection, claim class, and
+    # source scope so model selection reflects the requested target fields.
+    recall = sum([
+        metrics["claim_detection"]["recall"],
+        metrics["claim_class_macro_recall"],
+        metrics["source_scope_macro_recall"],
+    ]) / 3
     latency = metrics["mean_inference_latency_ms_ok"]
     tokens = metrics["mean_total_tokens_ok"]
     if latency <= 0 or tokens <= 0 or latency_ref_ms <= 0 or tokens_ref <= 0:
@@ -498,6 +554,60 @@ def update_experiment_summary(metrics: dict, summary_path: Path) -> None:
     combined.to_csv(summary_path, index=False, encoding="utf-8-sig")
 
 
+def write_progress(
+    path: Path,
+    *,
+    experiment_id: str,
+    model: str,
+    dataset: str,
+    completed: int,
+    total: int,
+    started_perf: float,
+    ok: int,
+    errors: int,
+    current_claim_id: str = "",
+    status: str = "running",
+) -> None:
+    """Persist resumable batch progress and an ETA for external monitoring."""
+    elapsed = max(0.0, time.perf_counter() - started_perf)
+    rate = completed / elapsed if completed and elapsed > 0 else 0.0
+    remaining = max(0, total - completed)
+    eta_seconds = remaining / rate if rate > 0 else None
+    eta = None
+    if eta_seconds is not None:
+        eta = datetime.now(timezone.utc).timestamp() + eta_seconds
+        eta = datetime.fromtimestamp(eta, timezone.utc).isoformat()
+    payload = {
+        "experiment_id": experiment_id,
+        "model": model,
+        "dataset": dataset,
+        "status": status,
+        "completed": completed,
+        "total": total,
+        "remaining": remaining,
+        "progress_percent": round(completed / total * 100, 2) if total else 100.0,
+        "elapsed_seconds": round(elapsed, 3),
+        "throughput_rows_per_second": round(rate, 6),
+        "estimated_remaining_seconds": round(eta_seconds, 3) if eta_seconds is not None else None,
+        "eta_utc": eta,
+        "ok": ok,
+        "errors": errors,
+        "current_claim_id": current_claim_id,
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if status == "running":
+        eta_text = eta or "계산 중"
+        eta_minutes = f"{eta_seconds / 60:.1f}분" if eta_seconds is not None else "계산 중"
+        print(
+            f"[진행률] {model} {dataset} {completed}/{total} "
+            f"({payload['progress_percent']:.2f}%) | "
+            f"경과 {elapsed / 60:.1f}분 | 잔여 약 "
+            f"{eta_minutes} | ETA {eta_text}",
+            flush=True,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
@@ -505,6 +615,7 @@ def main() -> None:
     parser.add_argument("--summary-file", type=Path, default=DEFAULT_SUMMARY_FILE)
     parser.add_argument("--metrics-log", type=Path, default=DEFAULT_METRICS_LOG)
     parser.add_argument("--model", default=MODEL_DEFAULT)
+    parser.add_argument("--experiment-variant", default="", help="Configuration variant identifier for comparison and final selection")
     parser.add_argument("--api-version", choices=["auto", "v1", "v3"], default="auto")
     parser.add_argument(
         "--use-response-format",
@@ -532,15 +643,73 @@ def main() -> None:
 
     prompt = args.system_prompt_file.read_text(encoding="utf-8") if args.system_prompt_file else SYSTEM_PROMPT
     args.model = normalize_model_name(args.model)
-    exp_id = experiment_id(args.model, args.temperature, args.top_p, args.max_tokens, args.prompt_version)
+    input_df = pd.read_csv(args.input, keep_default_na=False)
+    df = input_df.iloc[args.offset : args.offset + args.limit if args.limit else None].copy()
+    gold_columns = [column for column in df.columns if column.startswith("gold_")]
+    label_payload = df[gold_columns].astype(str).to_csv(index=False) if gold_columns else "no-gold-columns"
+    label_signature = hashlib.sha1(label_payload.encode("utf-8")).hexdigest()[:12]
+    rlt_signature = (
+        args.latency_ref_ms,
+        args.tokens_ref,
+        args.rlt_recall_weight,
+        args.rlt_latency_weight,
+        args.rlt_tokens_weight,
+    )
+    resolved_api_version = infer_api_version(args.model) if args.api_version == "auto" else args.api_version
+    exp_id = experiment_id(
+        args.model,
+        args.temperature,
+        args.top_p,
+        args.max_tokens,
+        args.prompt_version,
+        input_path=args.input,
+        row_count=len(df),
+        response_format=args.use_response_format,
+        rlt_signature=rlt_signature,
+        label_signature=label_signature,
+    )
     output_dir = args.output_dir / exp_id
     output_dir.mkdir(parents=True, exist_ok=True)
     cache_path = output_dir / "cache.jsonl"
     result_path = output_dir / "predictions.csv"
     metrics_path = output_dir / "metrics.json"
 
-    df = pd.read_csv(args.input, keep_default_na=False)
-    df = df.iloc[args.offset : args.offset + args.limit if args.limit else None].copy()
+    config = {
+        "experiment_id": exp_id,
+        "input": str(args.input),
+        "input_rows_total": len(input_df),
+        "input_rows_selected": len(df),
+        "offset": args.offset,
+        "limit": args.limit,
+        "model": args.model,
+        "experiment_variant": args.experiment_variant,
+        "api_version": args.api_version,
+        "resolved_api_version": resolved_api_version,
+        "use_response_format": args.use_response_format,
+        "temperature": args.temperature,
+        "effective_temperature": effective_temperature(args.temperature, resolved_api_version),
+        "top_p": args.top_p,
+        "max_tokens": args.max_tokens,
+        "prompt_version": args.prompt_version,
+        "system_prompt_file": str(args.system_prompt_file) if args.system_prompt_file else None,
+        "system_prompt_sha1": hashlib.sha1(prompt.encode("utf-8")).hexdigest(),
+        "label_signature": label_signature,
+        "seed": args.seed,
+        "skip_tokenizer": args.skip_tokenizer,
+        "input_cost_per_1m": args.input_cost_per_1m,
+        "output_cost_per_1m": args.output_cost_per_1m,
+        "rlt": {
+            "latency_ref_ms": args.latency_ref_ms,
+            "tokens_ref": args.tokens_ref,
+            "recall_weight": args.rlt_recall_weight,
+            "latency_weight": args.rlt_latency_weight,
+            "tokens_weight": args.rlt_tokens_weight,
+        },
+    }
+    (output_dir / "run_config.json").write_text(
+        json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "system_prompt.txt").write_text(prompt, encoding="utf-8")
     cache = {}
     if cache_path.exists():
         for line in cache_path.read_text(encoding="utf-8").splitlines():
@@ -551,6 +720,13 @@ def main() -> None:
     api_key = env_api_key()
     org_catalog = load_kosis_org_catalog(ROOT / "data" / "kosis_org_names.json")
     rows: list[dict] = []
+    batch_started_perf = time.perf_counter()
+    progress_path = output_dir / "progress.json"
+    write_progress(
+        progress_path, experiment_id=exp_id, model=args.model,
+        dataset=args.input.stem, completed=0, total=len(df),
+        started_perf=batch_started_perf, ok=0, errors=0, status="running",
+    )
     oov_total = 0
     class_oov_total = 0
     noise_oov_total = 0
@@ -668,12 +844,22 @@ def main() -> None:
             }
             row_result.pop("prediction", None)
             rows.append(row_result)
+            completed = len(rows)
+            ok_count = sum(item.get("status") == "ok" for item in rows)
+            error_count = completed - ok_count
+            write_progress(
+                progress_path, experiment_id=exp_id, model=args.model,
+                dataset=args.input.stem, completed=completed, total=len(df),
+                started_perf=batch_started_perf, ok=ok_count, errors=error_count,
+                current_claim_id=claim_id,
+            )
 
     output_df = pd.DataFrame(rows)
     output_df.to_csv(result_path, index=False, encoding="utf-8-sig")
     experiment_metadata = {
         "experiment_id": exp_id,
         "model": args.model,
+        "experiment_variant": args.experiment_variant,
         "temperature": args.temperature,
         "top_p": args.top_p,
         "max_tokens": args.max_tokens,
@@ -683,21 +869,35 @@ def main() -> None:
         "seed": args.seed,
     }
     metrics = calculate_metrics(rows)
+    metrics["wall_clock_seconds"] = round(time.perf_counter() - batch_started_perf, 3)
     metrics["relation_type_oov_total"] = oov_total
     metrics["claim_class_oov_total"] = class_oov_total
     metrics["noise_reason_oov_total"] = noise_oov_total
     metrics["consistency_fix_total"] = consistency_fix_total
     metrics["verifiability_prefilter_dist"] = prefilter_counts
-    resolved_version = infer_api_version(args.model) if args.api_version == "auto" else args.api_version
+    resolved_version = resolved_api_version
     rlt_weight_total = args.rlt_recall_weight + args.rlt_latency_weight + args.rlt_tokens_weight
     if abs(rlt_weight_total - 1.0) > 1e-9:
         raise ValueError("RLT weights must sum to 1.0")
     metrics.update({**experiment_metadata, "api_version": args.api_version, "resolved_api_version": resolved_version, "effective_temperature": effective_temperature(args.temperature, resolved_version), "latency_ref_ms": args.latency_ref_ms, "tokens_ref": args.tokens_ref, "rlt_recall_weight": args.rlt_recall_weight, "rlt_latency_weight": args.rlt_latency_weight, "rlt_tokens_weight": args.rlt_tokens_weight, "rlt_score": calculate_rlt_score(metrics, args.latency_ref_ms, args.tokens_ref, args.rlt_recall_weight, args.rlt_latency_weight, args.rlt_tokens_weight), "input": str(args.input), "input_cost_per_1m": args.input_cost_per_1m, "output_cost_per_1m": args.output_cost_per_1m})
+    metrics["rlt_recall"] = round((
+        metrics["claim_detection"]["recall"]
+        + metrics["claim_class_macro_recall"]
+        + metrics["source_scope_macro_recall"]
+    ) / 3, 6)
     update_experiment_summary(metrics, args.summary_file)
     metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     args.metrics_log.parent.mkdir(parents=True, exist_ok=True)
     with args.metrics_log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(metrics, ensure_ascii=False) + "\n")
+    write_progress(
+        progress_path, experiment_id=exp_id, model=args.model,
+        dataset=args.input.stem, completed=len(rows), total=len(df),
+        started_perf=batch_started_perf,
+        ok=sum(item.get("status") == "ok" for item in rows),
+        errors=sum(item.get("status") != "ok" for item in rows),
+        status="completed",
+    )
     print(json.dumps({"experiment_id": exp_id, "predictions": str(result_path), "summary_file": str(args.summary_file), "metrics": str(metrics_path), **metrics}, ensure_ascii=False))
 
 

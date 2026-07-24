@@ -1,0 +1,22 @@
+{
+  "experiment_name": "hybrid-v3-500",
+  "catalog": "data/kosis_catalog_v3.jsonl",
+  "claim_source": "data/claim_listform.csv",
+  "output_dir": "output/hybrid_v3_500_20260723",
+  "qdrant_path": "output/kosis_qdrant_v3",
+  "collection": "kosis_tables_v3",
+  "sample_size": 500,
+  "sample_seed": 20260723,
+  "per_path_n": 20,
+  "top_n": 20,
+  "rrf_k": 60,
+  "hyde_model": "HCX-007",
+  "paths": [
+    "b2_doc_meta_bm25",
+    "b4_doc_meta_bm25",
+    "claim_dense",
+    "hyde_dense"
+  ],
+  "sample_rule": "catalog_v3 doc_meta_text BM25 positive-match claims; stratify by top matched category path; fixed seed",
+  "catalog_version": "kosis-catalog-enriched"
+}

@@ -1,0 +1,9 @@
+{
+  "input": "output/hybrid_v3_500_20260723/retry_hyde_v3/hybrid_top20_500.jsonl",
+  "catalog": "data/kosis_catalog_v3.jsonl",
+  "output_dir": "output/hybrid_v3_500_20260723/ncp_rerank_reasoning_v1",
+  "rerank_top_n": 5,
+  "reasoning_max_tokens": 1024,
+  "reasoning_temperature": 0.1,
+  "run_date": "20260723"
+}

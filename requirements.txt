@@ -10,6 +10,8 @@
 pandas>=3.0,<4
 requests>=2.34,<3
 python-dotenv>=1.2,<2
+qdrant-client>=1.14,<2
+kiwipiepy>=0.23,<0.24
 kss>=6.0,<7
 openpyxl>=3.1,<4
 ipykernel>=7.3,<8

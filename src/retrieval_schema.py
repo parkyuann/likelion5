@@ -212,6 +212,9 @@ class KOSISTable:
     doc_item_index: str | None = None
     catalog_version: str | None = None
     value_parse_status: str | None = None
+    # v4 catalog provenance: category path availability and per-endpoint metadata state.
+    category_path_status: str | None = None
+    api_status: dict[str, str] = field(default_factory=dict)
     embedding_model: str | None = None
     embedding_version: str | None = None
     document_version: str = "table-doc-v1"

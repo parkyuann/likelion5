@@ -1,0 +1,5240 @@
+공유서비스KOSIS (OpenAPI)
+개발가이드
+\n목  차
+공유서비스 개요1. KOSIS (OpenAPI) ················································5
+제공 콘텐츠  1.1 ···························································································· 6
+   통계목록 1.1.1 ································································································································· 6
+통계자료    1.1.2 ································································································································· 7
+대용량 통계자료    1.1.3 ··················································································································· 8
+통계설명    1.1.4 ································································································································· 9
+메타자료    1.1.5 ······························································································································· 10
+통합검색    1.1.6 KOSIS ··················································································································· 11
+통계주요지표    1.1.7 ······················································································································· 12
+회원가입  1.2 ································································································ 13
+인증키 발급  1.3 ·························································································· 14
+    활용신청1.3.1 ······························································································································ 14
+    신청현황1.3.2 ······························································································································ 15
+에러메시지  1.4 ···························································································· 16
+    오류메시지 형식1.4.1 ················································································································ 16
+오류메시지 유형    1.4.2 ················································································································· 16
+공유서비스 주요기능 및 활용방법2. KOSIS (OpenAPI) ··············17
+통계목록  2.1 ································································································ 17
+   특징 2.1.1 ······································································································································ 17
+서비스활용    2.1.2 ··························································································································· 18
+생성      2.1.1.1 URL ······················································································································· 18
+활용방법    2.1.3 ······························································································································· 19
+      2.1.1.1 JSON ····························································································································· 19
+      2.1.1.1 SDMX(Category) ········································································································ 26
+통계자료  2.2 ································································································ 33
+    특징2.2.1 ······································································································································ 33
+서비스 활용    2.2.2 ························································································································· 33
+생성      2.2.2.1 URL ····················································································································· 33
+자료등록 생성      2.2.2.2 URL ··································································································· 35
+자료등록        2.2.2.2.1 ··············································································································· 35
+등록된 자료        2.2.2.2.2 ········································································································· 36
+생성        2.2.2.2.3 URL ··············································································································· 37
+활용방법    2.2.3 ······························································································································· 39
+      2.2.3.1 JSON ····························································································································· 39
+      2.2.3.2 SDMX(DSD) ················································································································· 54
+      2.2.3.3 SDMX(Generic) ··········································································································· 70\n      2.2.3.4 SDMX(StructureSpecific) ·························································································· 86
+대용량 통계자료  2.3 ··············································································· 102
+    특징2.3.1 ····································································································································102
+서비스활용    2.3.2 ························································································································· 102
+자료등록      2.3.2.1 ····················································································································· 102
+등록된자료      2.3.2.2 ················································································································· 103
+생성      2.3.2.3 URL ···················································································································104
+활용방법    2.3.3 ····························································································································· 106
+      2.3.3.1 SDMX(DSD) ··············································································································106
+      2.3.3.2 SDMX(Generic) ········································································································ 107
+      2.3.3.3 SDMX(StructureSpecific) ······················································································· 108
+      2.3.3.4 XLS ······························································································································ 109
+통계설명  2.4 ····························································································· 110
+   특징 2.4.1 ····································································································································110
+서비스활용    2.4.2 ························································································································· 111
+생성      2.4.2.1 URL ····················································································································· 111
+활용방법    2.4.3 ····························································································································· 112
+      2.4.3.1 JSON ·························································································································· 112
+      2.4.3.2 XML ····························································································································· 123
+메타자료  2.5 ····························································································· 137
+    특징2.5.1 ····································································································································137
+서비스활용    2.5.2 ························································································································· 137
+생성      2.5.2.1 URL ····················································································································· 137
+활용방법    2.5.3 ····························································································································· 138
+      통계표 명칭2.5.3.1 JSON( ) ··································································································· 138
+기관 명칭      2.5.3.2 JSON( ) ····································································································· 138
+수록정보      2.5.3.3 JSON( ) ······································································································· 139
+분류 항목      2.5.3.4 JSON( / ) ······································································································139
+주석      2.5.3.5 JSON( ) ··············································································································· 140
+단위      2.5.3.6 JSON( ) ··············································································································· 140
+출처      2.5.3.7 JSON( ) ··············································································································· 141
+가중치      2.5.3.8 JSON( ) ··········································································································· 141
+자료갱신일      2.5.3.9 JSON( ) ··································································································· 142
+통계표 명칭      2.5.3.10 XML( ) ··································································································142
+기관 명칭      2.5.3.11 XML( ) ······································································································143
+수록정보      2.5.3.12 XML( ) ········································································································143
+분류 항목      2.5.3.13 XML( / ) ······································································································144
+주석      2.5.3.14 XML( ) ················································································································144
+단위      2.5.3.15 XML( ) ················································································································145
+출처      2.5.3.16 XML( ) ················································································································145
+가중치      2.5.3.17 XML( ) ············································································································146\n자료갱신일      2.5.3.18 XML( ) ····································································································146
+통합검색  2.6 KOSIS ················································································· 147
+  특징  2.6.1 ····································································································································147
+서비스활용    2.6.2 ························································································································· 147
+생성      2.6.2.1 URL ····················································································································· 147
+활용방법    2.6.3 ····························································································································· 148
+       2.6.3.1 JSON ·························································································································· 148
+통계주요지표  2.7 ····················································································· 149
+    특징2.7.1 ····································································································································149
+서비스활용    2.7.2 ························································································································· 149
+생성      2.7.2.1 URL ····················································································································· 149
+활용방법    2.7.3 ····························································································································· 150
+       지표고유번호별 설명자료조회2.7.3.1 JSON,XML( ) ························································150
+지표명별 설명자료조회       2.7.3.2 JSON,XML( ) ·································································· 151
+목록별 지표조회       2.7.3.3 JSON,XML( ) ··············································································152
+지표명별 목록조회       2.7.3.4 JSON,XML( ) ·········································································· 153
+고유번호별 목록조회       2.7.3.5 JSON,XML( ) ······································································ 154
+고유번호별 지표 상세조회       2.7.3.6 JSON,XML( ) ···························································· 155
+수록주기별 목록조회       2.7.3.7 JSON,XML( ) ······································································ 156
+지표명별 상세조회       2.7.3.8 JSON,XML( ) ·········································································· 157
+     
+참고< >  SDMX ···················································································· 158\n공유서비스 개발가이드KOSIS  5
+공유서비스 개요1. KOSIS (OpenAPI) 
+ 공유서비스는 외부 기관 개인 에서 국가통계포털 의 통계정보를 서비스 또는 컨텐츠 개발에  KOSIS ( , ) (KOSIS)
+활용할 수 있도록 인터페이스 를 제공하는 서비스입니다 제공되는 정보는 아래와 같습니다(API) . .
+ 
+서비스 대상 제공 형태
+1) 통계목록 에서 서비스되고 있는 통계목록에 : KOSIS 대한 정보 및 관련 통계표 정보 
+   - 국내통계 주제별 국내통계 기관별 광복이전통계 대한민국통계연감, , (1908~1943), , 
+작성중지통계 지역통계 주제별 지역통계 기관별 지방지표 주제별 영문 , ( ), ( ), e- ( ), KOSIS 
+JSON, SDMX
+통계자료2) 에서 공개되어 서비스되고 있는 약 만여개 통계표에 대한 : KOSIS 7 수치  
+데이터 및 메타정보 분류 항목 단위 등              ( , , ) JSON, SDMX
+3) 대용량 통계자료  : 상기 통계자료와 동일한 정보를 제공하나 대량의 자료를2) 
+한                     번에 제공 XLS, SDMX
+통계설명4) 통계조사에 대한 상세 설명자료 : 
+   - 조사명 통계종류 계속여부 법적근거 조사목적 조사주기 조사체계 공표범위, , , , , , , , 
+공표주기 연락처     , 
+JSON, XML
+통계자료와 대용량 통계자료는 국제통계 등 라이선스 제약에 해당되는 자료는 서비스 제외 ＊ 
+공유서비스를 활용하려면 국가통계포털 회원으로 가입되어야 합니다 기존 국가통계포털에 KOSIS (KOSIS) . 
+회원으로 가입된 사용자는 그대로 사용하시면 됩니다.
+인증키는 회원 당 개 발급되며 개 인증키로 모든 서비스를 이용하실 수 있습니다1 , 1 . 
+활용신청을 하시면 모든 서비스를 이용하실 수 있습니다.
+활용신청에 대한 승인은 신청 후 자동 승인되어 바로 이용하실 수 있습니다.
+서비스 대상별로 이용절차는 다음과 같습니다.
+  
+\n공유서비스 개발가이드KOSIS  6
+제공 콘텐츠1.1 
+통계목록1.1.1 
+    ￭ 개요 
+통계표의 목록구성 정보 제공을 위한 입니다 통계목록 단위로 호출하고 서비스뷰 주제별OpenAPI . ( , 
+기관별 등 가지 별로 상위목록의 정보와 연결된 통계표명을 제공합니다 활용신청을 하면 자동으로 9 ) . 
+인증키가 발급되며 을 생성하여 자료를 활용할 수 있습니다URL .
+    ￭ 서비스 내용
+\n공유서비스 개발가이드KOSIS  7
+통계자료1.1.2 
+    ￭ 개요
+통계표의 수치자료 및 메타정보 수록정보 출처 단위 등 제공을 위한 입니다( , , ) OpenAPI . 
+메타정보는 수치자료와 같이 호출할 수도 있습니다 활용신청을 하면 자동으로 인증키가 발급되며 . 
+통계자료를 등록하여 활용하여야 합니다.
+    ￭ 서비스 내용
+시계열 자료 < >
+횡단면 자료 < >\n공유서비스 개발가이드KOSIS  8
+대용량 통계자료1.1.3 
+    ￭ 개요
+통계표의 수치자료 및 메타정보 제공을 위한 로 통계표 전체 분류 전체 일부 항목 OpenAPI , , ( ), 
+전체 일부 를 선택적으로 요청합니다 데이터량이 많은 특성 상 자료제공 형태가 외 가 ( ) . SDMX CSV
+추가되며, 활용신청을 하면 자동으로 인증키가 발급되며 대용량 통계자료를 등록하여 활용하여야 
+합니다.
+    ￭ 서비스 내용
+\n공유서비스 개발가이드KOSIS  9
+통계설명1.1.4 
+    ￭ 개요
+통계조사에 대한 설명자료 제공을 위한 입니다 통계표 또는 통계조사 단위로 호출하면 OpenAPI . 
+통계조사에 대한 설명자료 정보가 로 제공됩니다API .
+활용신청을 하면 자동으로 인증키가 발급되며 을 생성하여 자료를 활용할 수 있습니다URL .
+    ￭ 서비스 내용
+\n공유서비스 개발가이드KOSIS  10
+메타자료1.1.5 
+    ￭ 개요
+통계자료에 대한 메타자료 제공을 위한 입니다 통계자료에 대한 통계표 명칭 기관명칭OpenAPI . , , 
+수록정보 분류 항목 주석 단위 출처 가중치 자료갱신일에 대한 정보가 로 제공됩니다, / , , , , , API .
+    ￭ 서비스 내용
+통계표 명칭 < >
+기관 명칭 < >
+수록정보 < >
+분류 항목 < / >
+주석 < >
+단위 < >
+출처 < >\n공유서비스 개발가이드KOSIS  11
+통합검색1.1.6 KOSIS
+    ￭ 개요
+통계표의 목록구성 정보 제공을 위한 입니다 통계목록 단위로 호출하고 서비스뷰OpenAPI . 
+주제별 기관별 등 가지 별로 상위목록의 정보와 연결된 통계표명을 제공합니다( , 13 ) . 
+활용신청을 하면 자동으로 인증키가 발급되며 을 생성하여 자료를 활용할 수 있습니다URL .
+    ￭ 서비스 내용
+\n공유서비스 개발가이드KOSIS  12
+통계주요지표1.1.7 
+    ￭ 개요
+통계표의 목록구성 정보 제공을 위한 입니다 통계목록 단위로 호출하고 서비스뷰 주제별OpenAPI . ( , 
+기관별 등 가지 별로 상위목록의 정보와 연결된 통계표명을 제공합니다13 ) . 
+활용신청을 하면 자동으로 인증키가 발급되며 을 생성하여 자료를 활용할 수 있습니다URL .
+    ￭ 서비스 내용
+지표고유번호별 지표명별 설명자료조회 < / >
+지표명별 목록조회 < >
+고유번호별 목록조회 < >
+고유번호별 지표 상세조회 < >
+수록주기별 목록조회 < >
+지표명별 상세조회 < >
+\n공유서비스 개발가이드KOSIS  13
+회원가입1.2 
+    ￭ 를 활용하기 위해서는 회원이어야 합니다 회원가입 방법 및 절차는 아래와OpenAPI KOSIS . KOSIS  
+같습니다.
+    ￭ 페이지 상단의 회원가입 버튼을 클릭하면 회원가입페이지로KOSIS 이동하며 제공된 양식에 따라  
+회원가입을 진행 할 수 있습니다.\n공유서비스 개발가이드KOSIS  14
+인증키 발급 및 서비스 신청1.3 
+활용신청1.3.1 
+    ￭ 활용신청 양식을 활용용도와 사용목적 등을 작성한 뒤 ①등록버튼을 클릭합니다. 
+의 약관보기 를 클릭하면 통계정보 활용약관 팝업이 호출됩니다       [ ] .②
+ \n공유서비스 개발가이드KOSIS  15
+신청현황1.3.2 
+    ￭ 활용신청이 완료되면 신청현황 단계로 넘어가며 기본정보에서는 사용자 인증키가 발급된 것을 , 
+확인이 가능하고 서비스정보 활용정보를 확인 할 수 있습니다, , . ①신청정보 수정 을 누르면 신청
+정보 수정 단계로 넘어갑니다.
+              
+\n공유서비스 개발가이드KOSIS  16
+에러메시지1.4 
+    ￭ 에러 메시지는 아래와 같습니다KOSIS OpenAPI .
+오류메시지 형식1.4.1 
+오류메시지 유형1.4.2 
+오류코드 오류메시지 조치방법
+10 인증키 누락 인증키 확인
+11 인증키 기간만료 인증키 기간 연장
+20 필수요청변수 누락 필수요청변수 확인
+21 잘못된 요청변수 요청변수 확인
+30 조회결과 없음 조회조건 확인
+31 조회결과 초과 호출건수 조정
+40 호출가능건수 제한 관리자에게 문의
+41 호출가능 수 제한 ROW 관리자에게 문의
+42 사용자별 이용 제한 관리자에게 문의
+50 서버오류 관리자에게 문의\n공유서비스 개발가이드KOSIS  17
+주요기능 및 활용방법2. OpenAPI 
+통계목록2.1 
+    ￭ 통계표의 목록구성 정보 제공을 위한 입니다OpenAPI .
+특징2.1.1 
+    ￭ 통계표 서비스 목록으로서 레벨 형태로 구성
+    ￭ 자료 제공 형태 : SDMX, JSON\n공유서비스 개발가이드KOSIS  18
+서비스 활용2.1.2 
+생성2.1.2.1 URL
+    ￭ 개발가이드 통계목록 생성> > URL
+목록구분 목록조회 결과유형을 입력한 뒤 복사 결과값보기 중 원하는 서비스에 해당하, , ‘URL ’, ‘ ’ 
+는 버튼을 누르면 결과값을 제공받을 수 있습니다.
+\n공유서비스 개발가이드KOSIS  19
+활용방법2.1.3 
+2.1.3.1 JSON
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsList.do
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고
+apiKey String 발급된 인증키 필수 
+vwCd String
+서비스뷰 코드 
+주제별 통계· MT_ZTITLE : 
+기관별 통계· MT_OTITLE : 
+광복이전통계· MT_CHOSUN_TITLE : (1908~1943)
+대한민국통계연감· MT_HANKUK_TITLE : 
+작성중지통계· MT_STOP_TITLE : 
+지역통계 주제별· MT_ATITLE01 : ( )
+지역통계 기관별· MT_ATITLE02 : ( )
+지방지표 주제별· MT_GTITLE01 : e- ( )
+영문· MT_ETITLE : KOSIS
+필수 
+parentListId String 시작목록 ID 필수 
+format String 결과 유형(json, sdmx) 필수 
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+VW_CD 서비스뷰ID VARCHAR2(40)
+VW_NM 서비스뷰명 VARCHAR2(300)
+LIST_ID 목록ID VARCHAR2(40)
+LIST_NM 목록명 VARCHAR2(300)
+ORG_ID 기관코드 VARCHAR2(40)
+TBL_ID 통계표ID VARCHAR2(40)
+TBL_NM 통계표명 VARCHAR2(300)
+STAT_ID 통계조사ID VARCHAR2(40)
+SEND_DE 최종갱신일 VARCHAR2(8)
+REC_TBL_SE 추천 통계표 여부 VARCHAR2(10)\n공유서비스 개발가이드KOSIS  20
+    ￭ 예제 소스 결과
+     
+    ￭ 예제 소스(JSP)
+<!--
+를 이용하여 통계목록을 생성하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" 
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" 
+href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.css" />
+<link type="text/css" rel="stylesheet" media="all" 
+href="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide01/css/openTmp.css" />
+<script type="text/javascript" language="JavaScript" 
+src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide01/js/dojo.js" ></script>
+<script type="text/javascript" language="JavaScript" 
+src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide01/js/json.js" ></script>
+<script type="text/javascript" language="JavaScript" 
+src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide01/js/ajax.js"></script>
+<script type="text/javascript" language="JavaScript">
+var mapData;\n공유서비스 개발가이드KOSIS  21
+되었을때 실행 함수// window onload 
+dojo.addOnLoad ( function() {
+통계목록 리스트를 조회하기위해 함수를 호출한다// .
+getSubList("MT_ZTITLE", 0, "");
+});
+/****************************************************
+통계목록 리스트 조회 함수* 
+서비스뷰 코드 통계목록구분* parameter : vwcd - ( )
+목록 레벨* listLev - 
+시작목록 * parentId - Id
+****************************************************/
+function getSubList(vwcd, listLev, parentId) {
+통신을 위한 파라메터를 변수에 담는다// ajax .
+var paraObj = {
+임의의 페이지를 호출함으로써 제약을 우회할 수 있다 소스는 소스 하단에 // jsp cross domain . (devGuidePop.jsp 
+제공)
+개발자 홈페이지 url : "http://[
+주소]/devGuidePop.jsp?method=getList&key=ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=&vwcd=MT_Z
+TITLE&parentId=" + parentId + "&type=json",
+sync : true,
+load : function(resObj, a, b) { mapData = resObj; },
+error : function ( resObj, e ) { alert(dojo.toJson(resObj)); }
+}
+통신 호출 함수// ajax 
+sendPost( paraObj );
+통계목록 리스트를 화면에 출력하기 위한 함수// 
+makeNode( Number(listLev) + 1 );
+}
+/****************************************************
+통계목록 리스트를 화면에 출력하기 위한 함수* 
+목록 레벨* parameter : listLev - 
+****************************************************/
+function makeNode(listLev) {
+var nodeInfo="";
+nodeInfo = nodeInfo+"<ul>";\n공유서비스 개발가이드KOSIS  22
+for(var cnt=0; cnt<mapData.length; cnt++) {
+nodeInfo = nodeInfo + "<li>";
+if ( mapData[cnt].TBL_ID != null ) {
+nodeInfo = nodeInfo + "<img src='http://mgmk.kosis.kr/openapi_dev/devGuide/devGuide01/image/stats.gif'> <a 
+t a r g e t = ' _ b a l n k ' 
+href=\"http://kosis.kr/start.jsp?orgId="+mapData[cnt].ORG_ID+"&tblId="+mapData[cnt].TBL_ID+"&vw_cd="+map
+Data[cnt].VW_CD+"&up_id="+mapData[cnt].UP_ID+"\">"+mapData[cnt].TBL_NM+"</a>" ;
+} else {
+nodeInfo = nodeInfo + "<img src='http://mgmk.kosis.kr/openapi_dev/devGuide/devGuide01/image/folder.gif'> <a 
+href=\"javascript:getSubList('"+mapData[cnt].VW_CD+"', '" + listLev + "', 
+'"+mapData[cnt].LIST_ID+"');\">"+mapData[cnt].LIST_NM+"</a>" ;
+}
+nodeInfo = nodeInfo + "</li>";
+}
+nodeInfo = nodeInfo+"</ul>";
+var r_node = document.getElementById("content"); //
+var v_node = document.getElementById("depth"+listLev);
+if( (typeof(v_node)!="undefined") && v_node!=null) {
+v_node.innerHTML = nodeInfo;
+}
+else {
+v_node = document.createElement("div");
+v_node.setAttribute("id", "depth"+listLev);
+v_node.className = "category0"+listLev;
+v_node.innerHTML = nodeInfo;
+r_node.appendChild(v_node);
+}
+var nodeCount = document.getElementsByTagName("div").length;
+for( var cnt=(Number(listLev)+1); cnt< nodeCount; cnt++) {
+if(document.getElementById("depth"+cnt)!=null)
+r_node.removeChild(document.getElementById("depth"+cnt));
+}
+}
+</script>
+</head>
+<body>
+<div id="content" ></div>
+</body>
+</html>\n공유서비스 개발가이드KOSIS  23
+   
+    ￭ 예제 소스(R)
+제약을 우회하기 위한 // cross domain jsp (devGuidePop.jsp)
+<%@ page contentType="text/html; charset=utf-8" pageEncoding="utf-8" %>
+<%@ taglib prefix="c" uri="http://java.sun.com/jstl/core" %>
+<c:set var="method" ><%out.println(request.getParameter("method") == null ? "" : 
+(request.getParameter("method"))); %></c:set>
+<c:set var="key" ><%out.println(request.getParameter("key") == null ? "" : (request.getParameter("key"))); 
+%></c:set>
+<c:set var="vwcd" ><%out.println(request.getParameter("vwcd") == null ? "" : (request.getParameter("vwcd"))); 
+%></c:set>
+<c:set var="parentId"><%out.println(request.getParameter("parentId") == null ? "" : 
+(request.getParameter("parentId")));%></c:set>
+<c:set var="type" ><%out.println(request.getParameter("type") == null ? "" : (request.getParameter("type"))); 
+%></c:set>
+< c : i m p o r t 
+url="http://mgmk.kosis.kr/openapi_dev/Expt/statisticsList.do?method=${method}&apiKey=${key}&vwCd=${vwcd}&
+parentListId=${parentId}&format=${type}" charEncoding="utf-8"/>
+크롤링 등에 사용library(httr) # api,
+처리library(rvest) # HTML
+읽어올때 사용library(jsonlite) # JSON 
+모든변수 초기화rm(list=ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+baseurl <- 'https://kosis.kr/openapi/statisticsList.do'
+서비스뷰코드v_vwCd ='MT_ZTITLE'                  # 
+시작목록v_parentListId ='A'               # ID
+url_page <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'json',
+      vwCd = v_vwCd,
+      parentListId = v_parentListId,
+      jsonVD = 'Y',
+      apiKey = v_apiKey %>% I()
+    )
+  )\n공유서비스 개발가이드KOSIS  24
+    
+    ￭ 예제 소스(Python)
+url_page %>% content(as = 'text', encoding = 'UTF-8') %>% fromJSON() -> json
+서비스뷰 df_lists <- data.frame( = c(json$VW_CD))
+통계표가 연결된 목록과 중간목록을 구분하여 처리# 
+if (is.null(json$LIST_ID) == FALSE) {
+목록  df_lists <- cbind(df_lists,  ID = c(json$LIST_ID))
+목록명   df_lists <- cbind(df_lists,  = c(json$LIST_NM))
+  
+} else {
+기관코드   df_lists <- cbind(df_lists,  = c(json$ORG_ID))
+통계표  df_lists <- cbind(df_lists,  ID = c(json$TBL_ID))
+통계표명   df_lists <- cbind(df_lists,  = c(json$TBL_NM))
+}
+View(df_lists)
+import json
+버전에서 사용 버전이라면 from urllib.request import urlopen # python 3.x (2.x from urllib import urlopen)
+from PyQt5 import QtWidgets
+from PyQt5.QtWidgets import *
+import functools as fc
+import sys
+클릭한 목록에 대한 하위 목록 생성#
+class NewWindow(QtWidgets.QMainWindow):
+    def __init__(self, parent=None):
+        super(NewWindow, self).__init__(parent)
+        centralWidget = QWidget()
+        self.setCentralWidget(centralWidget)
+        self.setGeometry(300, 300, 500, 500)
+        Setting(self, List_Id)
+최상위 목록 생성#
+class MyWindow(QtWidgets.QMainWindow, QPushButton):
+    def __init__(self):
+        super(MyWindow, self).__init__()
+        centralWidget = QWidget()
+        self.setCentralWidget(centralWidget)
+        self.setGeometry(200, 200, 500, 500)
+        self.setStyleSheet("background-color: white")
+        Setting(self, 'A')
+        
+목록 셋팅 함수#
+def Setting(self, parentId):
+을 통해 데이터 가져오기    #url json 
+    with urlopen(
+            "https://kosis.kr/openapi/statisticsList.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj\n공유서비스 개발가이드KOSIS  25
+NjgxN2MzNDgwNmY=&vwCd=MT_ZTITLE&parentListId="+parentId+"&format=json&jsonVD=Y") as url:
+        json_file = url.read()
+    py_json = json.loads(json_file.decode('utf-8'))
+하위 목록이 있다면 하위 목록이 없다면 로 생성    # LinkButton, label
+    for i, v in enumerate(py_json):
+        if 'LIST_NM' in v:
+            btn = QCommandLinkButton(v['LIST_NM'], self)
+            btn.setStyleSheet("Text-align: left;"
+                             "border: none;"
+                             )
+            btn.setGeometry(100, 50 * i, 500, 40)
+            btn.clicked.connect(fc.partial(Action, self, v['LIST_ID']))
+        else:
+            lbl = QLabel(v['TBL_NM'], self)
+            lbl.setGeometry(100, 50 * i, 500, 40)
+def Action(self, check):
+    global List_Id
+    List_Id = check
+    NewWindow(self).show()
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    window = MyWindow()
+    window.show()
+    sys.exit(app.exec_())\n공유서비스 개발가이드KOSIS  26
+2.1.3.2 SDMX(Category)
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsList.do
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고
+apiKey String 발급된 인증키 필수 
+vwCd String
+서비스뷰 코드 
+주제별 통계· MT_ZTITLE : 
+기관별 통계· MT_OTITLE : 
+· MT_CHOSUN_TITLE : 
+광복이전통계(1908~1943)
+대한민국통계연감· MT_HANKUK_TITLE : 
+작성중지통계· MT_STOP_TITLE : 
+지역통계 주제별· MT_ATITLE01 : ( )
+지역통계 기관별· MT_ATITLE02 : ( )
+지방지표 주제별· MT_GTITLE01 : e- ( )
+영문· MT_ETITLE : KOSIS 
+필수 
+parentListId String 시작목록 ID 필수 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분
+생략시 
+구버전으로 
+데이터 출력
+항목명 영문( ) 항목설명
+Header 
+Id 서비스뷰ID 
+Name 서비스뷰명 
+Prepared 전송시간 
+Sender Id 전송기관 
+Name 전송기관명 
+Structures Category
+Schemes 
+Category
+Scheme 
+Id 상위목록 ID 
+Name 상위목록 명 
+Category Id 목록ID 
+Category Name 목록명칭 
+Description Description기관코드_
+통계표ID 
+StatId StatId 통계조사ID
+SendDe SendDe 최종갱신일
+RecTblSe RecTblSe 추천 통계표 여부\n공유서비스 개발가이드KOSIS  27
+    ￭ 예제 소스 결과
+    ￭ 예제 소스(JSP)
+<!--
+를 이용하여 통계목록을 생성하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" 
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" 
+href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.css" />
+<link type="text/css" rel="stylesheet" media="all" 
+href="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide01/css/openTmp.css" />
+<script type="text/javascript" language="JavaScript" 
+src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+var mapData;
+되었을때 실행 함수// window onload 
+$(document).ready(function(){\n공유서비스 개발가이드KOSIS  28
+통계목록 리스트를 조회하기위해 함수를 호출한다// .
+getSubList("MT_ZTITLE", 0, "");
+});
+/****************************************************
+통계목록 리스트 조회 함수* 
+서비스뷰 코드 통계목록구분* parameter : vwcd - ( )
+목록 레벨* listLev - 
+시작목록 * parentId - Id
+****************************************************/
+function getSubList(vwcd, listLev, parentId) {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+u r l : 
+"http://mgmk.kosis.kr/openapi_dev/Expt/statisticsList.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOW
+RjNjgxN2MzNDgwNmY=&vwCd=MT_ZTITLE&parentListId=" + parentId + "&format=sdmx&version=v2_1",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+통신이 성공하였을 때 통계목록 리스트를 화면에 출력하기 위한 함수// ajax 
+var data = object.documentElement.childNodes[1].childNodes[0].childNodes[0].childNodes;
+var nodeInfo="";
+nodeInfo = nodeInfo+"<ul>";
+listLev = Number(listLev) + 1 ;
+for(var cnt=1; cnt < data.length; cnt++) {
+nodeInfo = nodeInfo + "<li>";
+if ( data[cnt].childNodes.length== 2 ) {
+nodeInfo = nodeInfo + "<img src='image/stats.gif'> <a target='_balnk' href=\"http://kosis.kr/start.jsp?orgId=" + 
+data[cnt].attributes[0].value.split("_")[0] + "&tblId=" + data[cnt].attributes[0].value.split("_")[1] + "_" + 
+data[cnt].attributes[0].value.split("_")[2] + "\">"+data[cnt].childNodes[0].childNodes[0].data+"</a>" ;
+} else {
+nodeInfo = nodeInfo + "<img src='image/folder.gif'> <a href=\"javascript:getSubList('MT_ZTITLE', '" + listLev + 
+"', '"+data[cnt].attributes[0].value+"');\">"+data[cnt].childNodes[0].childNodes[0].data+"</a>" ;
+}
+nodeInfo = nodeInfo + "</li>";\n공유서비스 개발가이드KOSIS  29
+    ￭ 예제 소스(R)
+}
+nodeInfo = nodeInfo+"</ul>";
+var r_node = document.getElementById("content"); //
+var v_node = document.getElementById("depth"+listLev);
+if( (typeof(v_node)!="undefined") && v_node!=null) {
+v_node.innerHTML = nodeInfo;
+}
+else {
+v_node = document.createElement("div");
+v_node.setAttribute("id", "depth"+listLev);
+v_node.className = "category0"+listLev;
+v_node.innerHTML = nodeInfo;
+r_node.appendChild(v_node);
+}
+var nodeCount = document.getElementsByTagName("div").length;
+for( var cnt=(Number(listLev)+1); cnt< nodeCount; cnt++) {
+if(document.getElementById("depth"+cnt)!=null)
+r_node.removeChild(document.getElementById("depth"+cnt));
+}
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<div id="content" ></div>
+</body>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+library(stringr)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )\n공유서비스 개발가이드KOSIS  30
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+baseurl <- 'https://kosis.kr/openapi/statisticsList.do'
+서비스뷰코드v_vwCd = 'MT_ZTITLE'                  # 
+시작목록v_parentListId = 'A'                # ID
+url_page <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      vwCd = v_vwCd,
+      parentListId = v_parentListId,
+      apiKey = v_apiKey %>% I()
+    )
+  )
+docParse <- xmlParse(url_page)
+docList <-
+  xmlToList(docParse)$Structures$CategorySchemes$CategoryScheme
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  v_len = length(docList[i]$Category)
+  
+  if (length(docList[i]$Category) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(
+목록        ID = c(docList[i]$Category$.attrs),
+목록명         = c(docList[i]$Category$Name)
+      ))
+  } else if (v_len == 3) {
+    tbl_info <- unlist(docList[2]$Category$.attrs)
+    tbl_infos <- unlist(strsplit(tbl_info, '\\_'))
+    v_org_id <- tbl_infos[1]
+    v_tbl_id <-
+      substr(
+        tbl_info,
+        str_length(v_org_id) + 2,
+        str_length(tbl_info) - str_length(v_org_id) + 3\n공유서비스 개발가이드KOSIS  31
+    ￭ 예제 소스(Python)
+      )
+    
+    df_lists <-
+      rbind(df_lists, cbind(
+기관코드         = v_org_id,
+통계표        ID = v_tbl_id,
+통계표명         = c(docList[i]$Category$Name)
+      ))
+  }
+}
+View(df_lists)
+from PyQt5 import QtWidgets
+from PyQt5.QtWidgets import *
+import functools as fc
+import sys
+import requests
+from bs4 import BeautifulSoup
+클릭한 목록에 대한 하위 목록 생성#
+class NewWindow(QtWidgets.QMainWindow):
+    def __init__(self, parent=None):
+        super(NewWindow, self).__init__(parent)
+        centralWidget = QWidget()
+        self.setCentralWidget(centralWidget)
+        self.setGeometry(300, 300, 500, 500)
+        Setting(self, List_Id)
+최상위 목록 생성#
+class MyWindow(QtWidgets.QMainWindow, QPushButton):
+    def __init__(self):
+        super(MyWindow, self).__init__()
+        centralWidget = QWidget()
+        self.setCentralWidget(centralWidget)
+        self.setGeometry(200, 200, 500, 500)
+        self.setStyleSheet("background-color: white")
+        Setting(self, 'A')
+        
+목록 셋팅 함수#
+def Setting(self, parentId):\n공유서비스 개발가이드KOSIS  32
+    open_url = 
+'https://kosis.kr/openapi/statisticsList.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDg
+wNmY=&vwCd=MT_ZTITLE&parentListId='+parentId+'&format=sdmx&jsonVD=Y&version=v2_1'
+    res = requests.get(open_url)
+    soup = BeautifulSoup(res.content, 'html.parser')
+    
+    data = soup.find_all('structure:category')
+    
+설정    #window title 
+    self.setWindowTitle(soup.find('structure:categoryscheme').find('common:name').text)
+    
+하위 목록이 있다면 하위 목록이 없다면 로 생성    # LinkButton, label
+    for i, item in enumerate(data):
+        if item.find('common:description') == None:
+            btn = QCommandLinkButton(item.find('common:name').text, self)
+            btn.setStyleSheet("Text-align: left;"
+                             "border: none;"
+                             )
+            btn.setGeometry(100, 50 * i, 500, 40)
+            btn.clicked.connect(fc.partial(Action, self, item.get('id')))
+        else:
+            lbl = QLabel(item.find('common:name').text, self)
+            lbl.setGeometry(100, 50 * i, 500, 40)
+def Action(self, check):
+    global List_Id
+    List_Id = check
+    NewWindow(self).show()
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    window = MyWindow()
+    window.show()
+    sys.exit(app.exec_())\n공유서비스 개발가이드KOSIS  33
+통계자료2.2 
+    ￭ 통계표의 수치자료 및 메타정보 수록정보 출처 단위 등 제공을 위한 입니다( , , ) OpenAPI .
+특징2.2.1 
+    ￭ 통계표의 수치자료를 시계열 단일계열 여러시점 또는 횡단면 다중계열 단일시점 으로 제공( , ) ( , )
+    ￭ 통계표의 수록정보 분류 항목 출처 단위 등 메타정보 제공, / , , 
+    ￭ 자료 제공형태 : SDMX (DSD, Generic, StructureSpecific), JSON, XML
+선택 방식은 별도의 자료등록없이 바로 필요한 통계표 항목 분류를 선택하고 에 테이블URL , / / , URL￭
+항목 분류 파라메타를 제공해 이 값을 이용자가 동적으로 변경가능 함 으로서 이용할 자료를 미ID/ / , 
+리 등록하는 과정이 불필요한 방식입니다 등록한 자료의 통계표 메타정보가 변경될 경우 확인 불가.(
+능)
+자료등록 방식은 생성내역의 통계표 및 이 저장되어 등록한 자료의 통계표 메타정보가  URL URL￭
+변경될 경우 이용자가 확인 가능하며 테이블 항목 분류 등 정보값을 이용자가 동적으로 변경할 수 / /
+없는 방식입니다.
+서비스 활용2.2.2 
+생성2.2.2.1 URL 
+    ￭ 개발가이드 통계자료 생성> > URL
+작성기관 통계조사명 통계표명 등 을 입력하여‘ ’, ‘ ’, ‘ ’ 사용하고자 하는 자료를 조회한 뒤 조회결과에 
+서 생성할 통계표 ①선택하면 하단에 ③ 생성 조건 설정URL 이 출력됩니다.
+②통계표조회 버튼을 클릭하면 해당 자료의 통계표를 볼 수 있습니다.
+③ 생성 조건 설정URL 에서 분류’ /항목선택 출력형태 설정 조회기간 설정을 입력 후 ’, , ④ 보기 버 URL
+튼을 클릭하면 생성된 이 조회되고URL , ⑤ 복사URL 버튼을 누르면 생성된 이 클립보드에 복사 URL
+됩니다.
+길이를 줄이기 위해 항목 분류 파라메타에 간판 키워드 적용URL /￭
+항목과 분류별 전체선택시 예 레벨로 구성된 분류의 경우  - ‘all’ -> ) itmID = all, objL1 all - – 
+하위레벨 전체 선택시 예 행정구역별에서 서울 의 하위레벨 ‘*’ -> ) (11)
+전체를 포함하고자 할 경우 objL1 = 11*
+항목 분류값 추가시 예 행정구역별에서 서울 과 부산 을 선택할 경우  - , ‘+’ -> ) (11) (21) objL1 = 
+11+ 21 
+시스템 부하를 줄이기 위해 통계자료 요청은 만셀 이하로 제한 4✳
+   \n공유서비스 개발가이드KOSIS  34
+\n공유서비스 개발가이드KOSIS  35
+자료등록 생성2.2.2.2 URL 
+자료 등록2.2.2.2.1 
+    ￭ 개발가이드 통계자료 생성 자료등록> > URL > 
+작성기관 통계조사명 통계표명 등 을 입력하여‘ ’, ‘ ’, ‘ ’ 사용하고자 하는 자료를 조회한 뒤 조회결 
+과에서 등록할 자료의 ①사용여부 항목을 선택하고 ②통계표 등록 버튼을 누른다. 
+③통계표조회 버튼을 클릭하면 해당 자료의 통계표를 볼 수 있습니다.
+ 
+\n공유서비스 개발가이드KOSIS  36
+등록된 자료2.2.2.2.2 
+    ￭ 마이페이지 등록한 자료 통계자료 등록된 자료> > > 
+자료등록의 통계표 등록을 마치면 이용자가 등록한 자료들의 목록이 , 나타나며 등록된 자료 , 
+중 생성을 원하는 자료의 URL ① 생성 버튼 URL 을 누른다. 
+②통계표조회 버튼을 클릭하면 해당 자료의 통계표를 볼 수 있습니다 .
+￭ 마이페이지 등록한 자료 통계자료 등록된 자료 삭제> > > > 
+버튼① 을 클릭한 후 하단에 조회되는 사용자 생성 목록을 URL 삭제② 할 수 있습니다.
+\n공유서비스 개발가이드KOSIS  37
+생성2.2.2.2.3 URL
+    ￭ 마이페이지 등록한 자료 통계자료 등록된 자료 생성> > > > 
+생성 단계에서는 생성 조건 설정의 활용 자료명 분류URL URL ‘ ’, ’ /항목선택 을 입력 후 ’ ① 생 URL
+성 버튼을 누르면 생성 상세조건 화면으로 이동 후 이 하단에 생성됩니다 생성 상세URL URL . URL
+조건 화면에서 상세설정 후 ② 보기 결과값보기 버튼URL , 을 클릭하여 페이지 하단에서 결과를 
+확인 할 수 있고 복사 버튼을 누르면 생성된 이 클립보드에 복사됩니다, URL URL .③
+\n공유서비스 개발가이드KOSIS  38
+\n공유서비스 개발가이드KOSIS  39
+활용방법2.2.3 
+2.2.3.1 JSON
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do
+    ￭ 입력 변수
+ 자료등록 방법
+ 통계표선택 방법
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+prdSe String 수록주기 필수 
+시점기준
+startPrdDe String 시작수록시점 
+선택
+시점기준 또는(
+최신자료기준 택1)
+ 
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrd
+Cnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격
+format String 결과 유형(json, sdmx) 필수 
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+orgId String 기관 ID 필수 
+tblId String 통계표 ID 필수 
+objL1 String 분류 첫번째 분류코드1( ) 필수 
+objL2 ~ objL8 String 분류 두번째 분류코드 분류 여덟째 분류코드2( ) ~ 8( ) 선택
+itmId String 항목 필수 
+prdSe String 수록주기 필수 
+시점기준
+startPrdDe String 시작수록시점 
+선택
+시점기준 또는(
+최신자료기준 
+택1)
+ 
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrd
+Cnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격
+format String 결과 유형(json, sdmx) 필수 \n공유서비스 개발가이드KOSIS  40
+    ￭ 출력 변수
+    ￭ 예제 소스 결과 막대차트( )
+    ￭ 예제 소스(JSP)
+항목명 영문( ) 항목설명 형식 비고
+ORG_ID 기관코드 VARCHAR2(40)
+TBL_ID 통계표ID VARCHAR2(40)
+TBL_NM 통계표명 VARCHAR2(300)
+C1 ~ C8 분류값 분류값 ID1 ~ ID8 VARCHAR2(40)
+분류값은 2~8 
+없을 경우 생략
+C1_OBJ_NM ~ C8_OBJ_NM 분류명 분류명1 ~ 8 VARCHAR2(3000)
+C1_OBJ_NM_ENG ~ C8_OBJ_NM_ENG분류 영문명 분류 영문명1 ~ 8 VARCHAR2(3000)
+C1_NM ~ C8_NM 분류값 명 분류값 명1 ~ 8 VARCHAR2(3000)
+C1_NM_ENG ~ C8_NM_ENG 분류값 영문명 분류값 영문명1 ~ 8 VARCHAR2(3000)
+ITM_ID 항목 ID VARCHAR2(40)
+ITM_NM 항목명 VARCHAR2(3000)
+ITM_NM_ENG 항목영문명 VARCHAR2(3000)
+UNIT_ID 단위ID VARCHAR2(40)
+UNIT_NM 단위명 VARCHAR2(1000)
+UNIT_NM_ENG 단위영문명 VARCHAR2(1000)
+PRD_SE 수록주기 VARCHAR2(20)
+PRD_DE 수록시점 VARCHAR2(8)
+DT 수치값 VARCHAR2(100)
+LST_CHN_DE 최종수정일 VARCHAR2(8)
+<!--
+를 이용하여 막대차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain\n공유서비스 개발가이드KOSIS  41
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/dojo.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/json.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/ajax.js"></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/jquery.SimpleChart.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+dojo.addOnLoad ( function() {
+getList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getList() {
+통신을 위한 파라메터를 변수에 담는다// ajax .
+var paraObj = {
+임의의 페이지를 호출함으로써 제약을 우회할 수 있다 소스는 소스 하단에 // jsp cross domain . (devGuidePop.jsp 
+제공)
+개발자 홈페이지 주소url : "http://[ ]/devGuidePop.jsp?method=getList&key=ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgx
+N2MzNDgwNmY=&format=json&userStatsId=openapisample/101/DT_1IN1502/2/1/20191106094026_1&prdSe=Y&n
+ewEstPrdCnt=3",
+sync : true,
+load : function(mapData, a, b) {
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var aData = new Array();\n공유서비스 개발가이드KOSIS  42
+    ￭ 예제 소스(R)
+데이터를 배열변수에 적재// 
+for(var i=0;i<mapData.length;i++) {
+aData[i] = [mapData[i].DT.replace(/,/gi,''), mapData[i].PRD_DE, 'pink'];
+}
+차트를 그리기위한 옵션을 정의// 
+var options = {'BarSize': '20px', 'BarSpace': '2px', 'type' : 'horizontal', 'Font': '2px'}
+차트를 화면에 출력// 
+$("#chart2").SimpleChart(aData,options);
+},
+error : function ( resObj, e ) {
+alert(dojo.toJson(resObj));
+}
+}
+통신 호출 함수// ajax 
+sendPost( paraObj );
+}
+</script>
+</head>
+<body>
+<div id="chart2" style="padding-top:30px;"></div>
+</body>
+</html>
+제약을 우회하기 위한 // cross domain jsp (devGuidePop.jsp)
+<%@ page contentType="text/html; charset=utf-8" pageEncoding="utf-8" %>
+<%@ taglib prefix="c" uri="http://java.sun.com/jstl/core" %>
+<c:set var="method" ><%out.println(request.getParameter("method") == null ? "" : (request.getParameter("metho
+d"))); %></c:set>
+<c:set var="key" ><%out.println(request.getParameter("key") == null ? "" : (request.getParameter("key"))); %></
+c:set>
+<c:set var="userStatsId"><%out.println(request.getParameter("userStatsId") == null ? "" : (request.getParameter("
+userStatsId"))); %></c:set>
+<c:set var="newEstPrdCnt"><%out.println(request.getParameter("newEstPrdCnt")== null ? "" : (request.getParame
+ter("newEstPrdCnt"))); %></c:set>
+<c:set var="prdSe" ><%out.println(request.getParameter("prdSe") == null ? "" : (request.getParameter("prdSe"))); 
+%></c:set>
+<c:set var="format" ><%out.println(request.getParameter("format") == null ? "" : (request.getParameter("format
+"))); %></c:set>
+<c:import url="http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=${method}&apiKey=${key}&form
+at=${format}&userStatsId=${userStatsId}&prdSe=${prdSe}&newEstPrdCnt=${newEstPrdCnt}" charEncoding="utf-8"
+/>
+library(httr)\n공유서비스 개발가이드KOSIS  43
+    ￭ 예제 소스(Python)
+library(rvest)
+library(jsonlite)
+library(ggplot2)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+url_page <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'json',
+      jsonVD = 'Y',
+      apiKey = v_apiKey %>% I(),
+시계열 조회 키캆      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1', # 
+      prdSe = 'Y',
+최근수록시점 개수      newEstPrdCnt = 3, # 
+수록시점 간격      prdInterval = 1   # 
+    )
+  )
+url_page %>% content(as = 'text', encoding = 'UTF-8') %>% fromJSON() -> json
+df_lists <-
+  data.frame(
+    C1_NM = c(json$C1_NM),
+    ITM_NM = c(json$ITM_NM),
+    prd_de = c(json$PRD_DE),
+    dt = c(json$DT)
+  )
+바차트# 
+시점ggplot(df_lists, aes(x = prd_de, y = dt, fill = prd_de)) + xlab(" ") + ylab("") + ggtitle(json$TBL_NM[1]) + ge
+om_bar(stat = "identity")
+import json
+버전에서 사용 버전이라면 from urllib.request import urlopen # python 3.x (2.x from urllib import urlopen)
+import matplotlib.pyplot as plt
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)\n공유서비스 개발가이드KOSIS  44
+    ￭ 예제 소스 결과 파이차트( )
+    ￭ 예제 소스(JSP)
+을 통해 데이터 가져오기#url json 
+with urlopen("https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWR
+jNjgxN2MzNDgwNmY=&format=json&jsonVD=Y&userStatsId=openapisample/101/DT_1IN1502/2/1/20191106094026
+_1&prdSe=Y&newEstPrdCnt=3") as url:
+    json_file = url.read()
+    
+py_json = json.loads(json_file.decode('utf-8'))
+변수 지정 및 데이터 저장#
+xAxis = []
+yAxis = []
+title = ''
+for i, v in enumerate(py_json):
+축에 들어갈 데이터    xAxis.append(v['PRD_DE']) #x
+축에 들어갈 데이터    yAxis.append(int(v['DT'])) #y
+    if i == 0 :
+차트제목        title = v['TBL_NM'] #
+차트 그리기    #Bar
+plt.bar(xAxis, yAxis)
+plt.title(title)
+축 수치를 안보이게 하는 코드 필요에 따라 선택하여 사용#y . 
+plt.gca().axes.yaxis.set_visible(False)
+의 가운데에 로 수치 표시#Bar text
+for i, v in enumerate(xAxis):
+    plt.text(v, yAxis[i], yAxis[i],                
+             fontsize = 9,
+             color='blue',
+             horizontalalignment='center',
+             verticalalignment='bottom')
+plt.show()\n공유서비스 개발가이드KOSIS  45
+<!--
+를 이용하여 파이차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/dojo.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/json.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/ajax.js"></script>
+<script type="text/javascript" language="JavaScript">
+var mapData;
+되었을때 실행 함수// window onload 
+dojo.addOnLoad ( function() {
+getList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getList() {
+통신을 위한 파라메터를 변수에 담는다// ajax .
+var paraObj = {
+임의의 페이지를 호출함으로써 제약을 우회할 수 있다 소스는 소스 하단에 // jsp cross domain . (devGuidePop.jsp 
+제공)
+개발자 홈페이지 주소url : "http://[ ]/devGuidePop.jsp?method=getList&key=ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgx
+N2MzNDgwNmY=&format=json&userStatsId=openapisample/101/DT_1IN1502/2/1/20191106094026_1&prdSe=Y&n
+ewEstPrdCnt=3",
+sync : true,
+load : function(resObj, a, b) {\n공유서비스 개발가이드KOSIS  46
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+mapData = resObj;
+차트를 생성하기위한 함수 호출// 
+chartShow();
+},
+error : function ( resObj, e ) {
+alert(dojo.toJson(resObj));
+}
+}
+통신 호출 함수// ajax 
+sendPost( paraObj );
+}
+function chartShow(){
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var data = new Array(mapData.length);
+데이터를 배열변수에 적재// 
+for(var i=0;i<mapData.length;i++) {
+data[i] = mapData[i].DT;
+}
+파이차트를 출력하기위한 // JavaScript Start
+var canvas = document.getElementById("chartcanvas");
+var context = canvas.getContext("2d");
+var sw = canvas.width;
+var sh = canvas.height;
+var PADDING=50;
+var colors = ["#7cfc00", "#0000ff", "#ff1493", "#66CDAA", "#ff00ff", "#FFD700"];
+원의 중심 좌표var center_X=sw/2; // x 
+원의 중심 좌표var center_Y=sh/2; // y 
+var radius = Math.min(sw-(PADDING*2), sh-(PADDING*2)) / 2;
+var angle = 0;
+var total = 0;
+데이터 의 총합 계산for (var i in data) { total += Number(data[i]); } // (data)
+for (var i = 0; i < data.length; i++) {
+생성되는 부분의 채울 색 설정context.fillStyle = colors[i]; //
+context.beginPath();
+원의 중심으로 이동context.moveTo(center_X, center_Y); //
+context.arc(center_X, center_Y, radius, angle, angle +(Math.PI*2*(data[i]/total)));
+context.lineTo(center_X,center_Y);\n공유서비스 개발가이드KOSIS  47
+    ￭ 예제 소스(R)
+context.fill();
+angle += Math.PI*2*(data[i]/total);
+}
+파이차트를 출력하기위한 // JavaScript End
+}
+</script>
+</head>
+<body>
+<canvas id="chartcanvas" width="500" height="400"></canvas>
+</body>
+</html>
+제약을 우회하기 위한 // cross domain jsp (devGuidePop.jsp)
+<%@ page contentType="text/html; charset=utf-8" pageEncoding="utf-8" %>
+<%@ taglib prefix="c" uri="http://java.sun.com/jstl/core" %>
+<c:set var="method" ><%out.println(request.getParameter("method") == null ? "" : (request.getParameter("metho
+d"))); %></c:set>
+<c:set var="key" ><%out.println(request.getParameter("key") == null ? "" : (request.getParameter("key"))); %></
+c:set>
+<c:set var="userStatsId"><%out.println(request.getParameter("userStatsId") == null ? "" : (request.getParameter("
+userStatsId"))); %></c:set>
+<c:set var="newEstPrdCnt"><%out.println(request.getParameter("newEstPrdCnt")== null ? "" : (request.getParame
+ter("newEstPrdCnt"))); %></c:set>
+<c:set var="prdSe" ><%out.println(request.getParameter("prdSe") == null ? "" : (request.getParameter("prdSe"))); 
+%></c:set>
+<c:set var="format" ><%out.println(request.getParameter("format") == null ? "" : (request.getParameter("format
+"))); %></c:set>
+<c:import url="http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=${method}&apiKey=${key}&form
+at=${format}&userStatsId=${userStatsId}&prdSe=${prdSe}&newEstPrdCnt=${newEstPrdCnt}" charEncoding="utf-8"
+/>
+library(httr)
+library(rvest)
+library(jsonlite)
+library(ggplot2)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+url_page <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',\n공유서비스 개발가이드KOSIS  48
+    ￭ 예제 소스(Python)
+      format = 'json',
+      jsonVD = 'Y',
+      apiKey = v_apiKey %>% I(),
+시계열 조회 키캆      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1', # 
+      prdSe = 'Y',
+최근수록시점 개수      newEstPrdCnt = 3, # 
+수록시점 간격      prdInterval = 1   # 
+    )
+  )
+url_page %>% content(as = 'text', encoding = 'UTF-8') %>% fromJSON() -> json
+df_lists <-
+  data.frame(
+    C1_NM = c(json$C1_NM),
+    ITM_NM = c(json$ITM_NM),
+    prd_de = c(json$PRD_DE),
+    dt = c(json$DT)
+  )
+파이차트 비율 라벨 값# 
+pct <-
+  round(as.numeric(df_lists$dt) / sum(as.numeric(df_lists$dt)) * 100, 1)
+df_lists <- data.frame(df_lists, pct = pct)
+파이차트# 
+ggplot(df_lists, aes(
+  x = factor(1),
+  y = '',
+  fill = factor(prd_de)
+)) +
+  geom_bar(stat = 'identity') +
+  theme_void() +
+  ggtitle(json$TBL_NM[1]) +
+  coord_polar('y', start = 0)   +
+  geom_text(aes(label = paste0(round(pct, 1), '%')),
+            position = position_stack(vjust = 0.5))
+import json
+from urllib.request import urlopen
+import matplotlib.pyplot as plt
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url json \n공유서비스 개발가이드KOSIS  49
+    ￭ 예제 소스 결과 표차트( )
+    ￭ 예제 소스(JSP)
+with urlopen("https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWR
+jNjgxN2MzNDgwNmY=&format=json&jsonVD=Y&userStatsId=openapisample/101/DT_1IN1502/2/1/20191106094026
+_1&prdSe=Y&newEstPrdCnt=3") as url:
+    json_file = url.read()
+py_json = json.loads(json_file.decode('utf-8'))
+변수 지정 및 데이터 저장#
+labels = []
+ratio = []
+title = ''
+for i, v in enumerate(py_json):
+년도 데이터    labels.append(v['PRD_DE']) #
+값 비율 데이터    ratio.append(v['DT']) # /
+    if i == 0 :
+차트제목        title = v['TBL_NM'] #
+차트 그리기#Pie
+plt.pie(ratio, labels=labels, autopct='%.1f%%')
+plt.title(title)
+plt.show()
+<!--
+를 이용하여 통계표를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml\n공유서비스 개발가이드KOSIS  50
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+1/js/dojo.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+1/js/json.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+1/js/ajax.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+dojo.addOnLoad ( function() {
+getList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getList(vwcd, listLev, parentId) {
+통신을 위한 파라메터를 변수에 담는다 통계자료// ajax . ( )
+var paraObj = {
+임의의 페이지를 호출함으로써 제약을 우회할 수 있다 소스는 소스 하단에 // jsp cross domain . (devGuidePop.jsp 
+제공)
+개발자 홈페이지 주소url : "http:[ ]/devGuidePop.jsp?method=getList&key=ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN
+2MzNDgwNmY=&format=json&userStatsId=openapisample/101/DT_1IN1502/2/1/20191106094026_1&prdSe=Y&ne
+wEstPrdCnt=3",
+sync : true,
+load : function(mapData, a, b) {
+var strTable = "";
+조회된 결과를 이용하여 통계표 작성// 
+strTable += "<h5>" + mapData[0].TBL_NM + "</h5>";
+단위 strTable += "<p style='position:absolute; top:32px; left:450px;'> : " + mapData[0].UNIT_NM + "</p>";
+strTable += "<table cellpadding='0' cellspacing='0' class='TB02' summary='' style='margin-top:15px;width:500p
+x;'>";
+strTable += "<thead>";
+strTable += "<tr>";
+시점strTable += "<th class='fst al_C' scope='col'> </th>";
+strTable += "<th scope='col'>" + mapData[0].ITM_NM + "(" + mapData[0].C1_NM + ")" + "</th>";
+strTable += "</tr>";
+strTable += "</thead>";
+strTable += "<tbody>";\n공유서비스 개발가이드KOSIS  51
+for(var i=0;i<mapData.length;i++) {
+strTable += "<tr>";
+strTable += "<td class='al_C'>" + mapData[i].PRD_DE + "</td>";
+strTable += "<td class='al_C'>" + mapData[i].DT.replace(/,/gi,'') + "</td>";
+strTable += "</tr>";
+}
+strTable += "</tbody>";
+strTable += "</table>";
+document.getElementById("content").innerHTML = strTable;
+},
+error : function ( resObj, e ) {
+alert(dojo.toJson(resObj));
+}
+}
+통신 호출 함수// ajax 
+sendPost( paraObj );
+통신을 위한 파라메터를 변수에 담는다 출처정보// ajax . ( )
+var paraObj = {
+임의의 페이지를 호출함으로써 제약을 우회할 수 있다// jsp cross domain .
+url : "http://mgmk.kosis.kr/openapi_dev/devGuidePop.jsp?method=getMeta&key=ZjZjOTI3MjRjNmU1YzdhZTMwOW
+RjNjgxN2MzNDgwNmY=&type=SOURCE&format=json&orgId=101&tblId=DT_1B01003",
+sync : true,
+load : function(mapData, a, b) {
+var strTable = "";
+조회된 결과를 이용하여 출처 작성// 
+출처 strTable += "<p style='position:absolute; top:250px; '> : " + mapData[0].JOSA_NM + "</p>";
+document.getElementById("content").innerHTML += strTable;
+},
+error : function ( resObj, e ) {
+alert(dojo.toJson(resObj));
+}
+}
+통신 호출 함수// ajax 
+sendPost( paraObj );
+}
+</script>
+</head>
+<body>
+<div id="content" style="padding-top:30px;"></div>
+</body>
+</html>
+<%@ page contentType="text/html; charset=utf-8" pageEncoding="utf-8" %>
+<%@ taglib prefix="c" uri="http://java.sun.com/jstl/core" %>\n공유서비스 개발가이드KOSIS  52
+    ￭ 예제 소스(R)
+<c:set var="method" ><%out.println(request.getParameter("method") == null ? "" : (request.getParameter("metho
+d"))); %></c:set>
+<c:set var="key" ><%out.println(request.getParameter("key") == null ? "" : (request.getParameter("key"))); %></
+c:set>
+<c:set var="userStatsId"><%out.println(request.getParameter("userStatsId") == null ? "" : (request.getParameter("
+userStatsId"))); %></c:set>
+<c:set var="newEstPrdCnt"><%out.println(request.getParameter("newEstPrdCnt")== null ? "" : (request.getParame
+ter("newEstPrdCnt"))); %></c:set>
+<c:set var="prdSe" ><%out.println(request.getParameter("prdSe") == null ? "" : (request.getParameter("prdSe"))); 
+%></c:set>
+<c:set var="format" ><%out.println(request.getParameter("format") == null ? "" : (request.getParameter("format
+"))); %></c:set>
+<c:set var="type" ><%out.println(request.getParameter("type") == null ? "" : (request.getParameter("type"))); %>
+</c:set>
+<c:set var="orgId" ><%out.println(request.getParameter("orgId") == null ? "" : (request.getParameter("orgId"))); 
+%></c:set>
+<c:set var="tblId" ><%out.println(request.getParameter("tblId") == null ? "" : (request.getParameter("tblId"))); %>
+</c:set>
+<c:import url="http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=${method}&apiKey=${key}&form
+at=${format}&userStatsId=${userStatsId}&prdSe=${prdSe}&newEstPrdCnt=${newEstPrdCnt}&tblId=${tblId}&orgId=
+${orgId}&type=${type}" charEncoding="utf-8"/>
+library(httr)
+library(rvest)
+library(jsonlite)
+library(dplyr)
+모든변수 초기화rm(list = ls()) # 
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+url_page <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'json',
+      jsonVD = 'Y',
+      apiKey = v_apiKey %>% I(),
+      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1',
+시계열 조회 키캆      # 
+      prdSe = 'Y',
+최근수록시점 개수      newEstPrdCnt = 3 # 
+    )
+  )
+url_page %>% content(as = 'text', encoding = 'UTF-8') %>% fromJSON() -> json\n공유서비스 개발가이드KOSIS  53
+    ￭ 예제 소스(Python)
+df_lists <- data.frame()
+df_lists <- cbind(json$PRD_DE)
+df_lists <- cbind(df_lists, json$DT)
+사용자가 선택한 통계 자료의 분류 갯수에 따라 변경# 
+샘플소스의 는 개분류 개 항목 지정됨# key 1 , 1
+colnames(df_lists) <-
+시점  c(" ", paste(json$ITM_NM[1], "(", json$C1_NM[1], ")" , sep = ""))
+View(df_lists)
+import json
+버전에서 사용 버전이라면 from urllib.request import urlopen # python 3.x (2.x from urllib import urlopen)
+import matplotlib.pyplot as plt
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url json 
+with urlopen("https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWR
+jNjgxN2MzNDgwNmY=&format=json&jsonVD=Y&userStatsId=openapisample/101/DT_1IN1502/2/1/20191106094026
+_1&prdSe=Y&newEstPrdCnt=3") as url:
+    json_file = url.read()
+    
+py_json = json.loads(json_file.decode('utf-8'))
+변수 지정 및 데이터 저장#
+data = []
+for i, v in enumerate(py_json):
+    value = []
+    value.append(v['PRD_DE'])
+    value.append(v['DT'])
+    
+    data.append(value)
+만들기#Table 
+fig, ax = plt.subplots(1,1)
+시점 총인구 전국column_labels=[" ", " ( )"]
+ax.axis('tight')
+ax.axis('off')
+ax.table(cellText=data,colLabels=column_labels,colColours =["yellow"] * 2, loc="center", cellLoc='center')
+plt.show()\n공유서비스 개발가이드KOSIS  54
+2.2.3.2 SDMX(DSD)
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do
+    ￭ 입력 변수
+ 자료등록 방법
+ 통계표선택 방법
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분
+생략시 
+구버전으로 
+데이터 출력
+항목명 영문( ) 항목설명
+Header 
+Id 기관코드 통계표_ ID
+Name 통계표명
+Prepared 전송시간
+Sender 
+Id 전송기관
+Name 전송기관명
+Contact 
+Department 담당부서
+Telephone 담당부서 연락처
+Source 출처
+Codelist Codelist 
+Id 코드리스트ID
+Name 코드리스트명 
+Description 코드리스트영문명 
+Code Id 코드ID
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+orgId String 기관 ID 필수 
+tblId String 통계표 ID 필수
+objL2 ~ objL8 String 분류 두번째 분류코드 분류 여덟째 분류코드2( ) ~ 8( ) 선택
+itmId String 항목 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분
+생략시 
+구버전으로 
+데이터 출력\n공유서비스 개발가이드KOSIS  55
+   ￭ 예제 소스 결과 막대차트( )
+    ￭ 예제 소스(JSP)
+Name 코드명
+Concepts ConceptsScheme 
+Id 컨셉스키마ID
+Name 컨셉스키마명 
+Description 컨셉스키마영문명 
+Concept 
+Id 컨셉ID
+Name 컨셉명 
+Description 컨셉영문명 
+DataStructures DataStructure 
+Id 통계표ID
+Name 통계표명
+DataStructureComponents Dimension 
+Id 디멘젼Id
+conceptldentity Id 컨셉객체Id
+<!--
+를 이용하여 막대차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">\n공유서비스 개발가이드KOSIS  56
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/jquery.SimpleChart.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+var data = object.documentElement.childNodes[1].childNodes[0].childNodes;
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var aData = new Array();
+데이터를 배열변수에 적재// 
+for(var i=0; i < data.length; i++) {
+aData[i] = [data[i].attributes[0].value.replace(/,/gi,''), data[i].attributes[1].value, 'pink'];
+}
+차트를 그리기위한 옵션을 정의// 
+var options = {'BarSize': '20px', 'BarSpace': '2px', 'type' : 'horizontal', 'Font': '2px'}
+차트를 화면에 출력// 
+$("#chart2").SimpleChart(aData,options);
+},\n공유서비스 개발가이드KOSIS  57
+    ￭ 예제 소스(R)
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<div id="chart2" style="padding-top:30px;"></div>
+</body>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1',
+시계열 조회 키캆      # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+      newEstPrdCnt = 3,
+최근수록시점 개수      # 
+      prdInterval = 1,
+수록시점 간격      # 
+      version = 'v2_1'
+    )
+  )
+docParse <- xmlParse(res)
+통계표명tbl_title <- xmlToList(docParse)$Header$Name # 
+docList <- xmlToList(docParse)$DataSet$Series\n공유서비스 개발가이드KOSIS  58
+    ￭ 예제 소스(Python)
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(
+        prd_de = paste(docList[i]$Obs[2]),
+        dt = paste(docList[i]$Obs[1])
+      ))
+  }
+}
+바차트# 
+시점ggplot(df_lists, aes(x = prd_de, y = dt, fill = prd_de)) + xlab(" ") + ylab("") + ggtitle(tbl_title) + geom_bar(st
+at = "identity")
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+변수 지정 및 데이터 저장#
+xAxis = []
+yAxis = []
+차트제목title = soup.find('common:name').text #
+dataList = soup.find_all('obs')
+for item in dataList:
+년도 데이터    xAxis.append(item.get('time_period')) #
+값 비율 데이터    yAxis.append(int(item.get('obs_value'))) # /
+차트 그리기#Bar
+plt.bar(xAxis, yAxis)\n공유서비스 개발가이드KOSIS  59
+    ￭ 예제 소스 결과 파이차트( )
+    ￭ 예제 소스(JSP)
+plt.title(title)
+축 수치를 안보이게 하는 코드 필요에 따라 선택하여 사용#y . 
+plt.gca().axes.yaxis.set_visible(False)
+의 가운데에 로 수치 표시#Bar text
+for i, v in enumerate(xAxis):
+    plt.text(v, yAxis[i], yAxis[i],                
+             fontsize = 9,
+             color='blue',
+             horizontalalignment='center',
+             verticalalignment='bottom')
+plt.show()
+<!--
+를 이용하여 파이차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>\n공유서비스 개발가이드KOSIS  60
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var data = new Array(mapdata.length);
+데이터를 배열변수에 적재// 
+for(var i=0;i<mapdata.length;i++) {
+data[i] = mapdata[i].attributes[0].value;
+}
+파이차트를 출력하기위한 // JavaScript Start
+var canvas = document.getElementById("chartcanvas");
+var context = canvas.getContext("2d");
+var sw = canvas.width;
+var sh = canvas.height;
+var PADDING=100;
+별 색상 //Browser lawngreen, blue, deeppink, aquamarine3, magenta, gold
+var colors = ["#7cfc00", "#0000ff", "#ff1493", "#66CDAA", "#ff00ff", "#FFD700"];
+원의 중심 좌표var center_X=sw/2; // x \n공유서비스 개발가이드KOSIS  61
+    ￭ 예제 소스(R)
+원의 중심 좌표var center_Y=sh/2; // y 
+두 계산값 중 작은 값은 값을 원의 반지름으로 설정// 
+var radius = Math.min(sw-(PADDING*2), sh-(PADDING*2)) / 2;
+var angle = 0;
+var total = 0;
+데이터 의 총합 계산for (var i in data) { total += Number(data[i]); } // (data)
+for (var i = 0; i < data.length; i++) {
+생성되는 부분의 채울 색 설정context.fillStyle = colors[i]; //
+context.beginPath();
+원의 중심으로 이동context.moveTo(center_X, center_Y); //
+context.arc(center_X, center_Y, radius, angle, angle +(Math.PI*2*(data[i]/total)));
+context.lineTo(center_X,center_Y);
+context.fill();
+angle += Math.PI*2*(data[i]/total);
+}
+파이차트를 출력하기위한 // JavaScript End
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<canvas id="chartcanvas" width="500" height="400"></canvas>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+library(ggplot2)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1',\n공유서비스 개발가이드KOSIS  62
+    ￭ 예제 소스(Python)
+시계열 조회 키캆      # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+      newEstPrdCnt = 3,
+최근수록시점 개수      # 
+      prdInterval = 1,
+수록시점 간격      # 
+      version = 'v2_1'
+    )
+  )
+docParse <- xmlParse(res)
+통계표명v_tbl_nm <- xmlToList(docParse)$Header$Name # 
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(
+        prd_de = paste(docList[i]$Obs[2]),
+        dt = paste(docList[i]$Obs[1])
+      ))
+  }
+}
+파이차트 비율 라벨 값# 
+pct <-
+  round(as.numeric(df_lists$dt) / sum(as.numeric(df_lists$dt)) * 100, 1)
+df_lists <- data.frame(df_lists, pct = pct)
+파이차트# 
+ggplot(df_lists, aes(
+  x = factor(1),
+  y = '',
+  fill = factor(prd_de)
+)) +
+  geom_bar(stat = 'identity') +
+  theme_void() +
+  ggtitle(v_tbl_nm) +
+  coord_polar('y', start = 0)   +
+  geom_text(aes(label = paste0(round(pct, 1), '%')),
+            position = position_stack(vjust = 0.5))
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup\n공유서비스 개발가이드KOSIS  63
+    ￭ 예제 소스 결과 표차트( )
+    ￭ 예제 소스(JSP)
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+변수 지정 및 데이터 저장#
+labels = []
+ratio = []
+차트제목title = soup.find('common:name').text #
+dataList = soup.find_all('obs')
+for item in dataList:
+년도 데이터    labels.append(item.get('time_period')) #
+값 비율 데이터    ratio.append(item.get('obs_value')) # /
+차트 그리기#Pie
+plt.pie(ratio, labels=labels, autopct='%.1f%%')
+plt.title(title)
+plt.show()
+<!--
+를 이용하여 통계표를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain\n공유서비스 개발가이드KOSIS  64
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+var strUnitId, strItmId, strC1;
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+항목 분류 단위의 명칭을 조회하기위해 각각의 코드를 변수에 저장// , , 
+for(var i=0;i<object.documentElement.childNodes[1].childNodes[0].attributes.length;i++) {
+if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "ITEM") {
+strItmId = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;\n공유서비스 개발가이드KOSIS  65
+} else if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "C_HJG") {
+strC1 = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+} else if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "UNIT") {
+strUnitId = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+}
+}
+var strTable = "";
+조회된 결과를 이용하여 통계표 작성// 
+strTable += "<p style='position:absolute; top:32px; left:450px;' id='unitId'></p>";
+strTable += "<table cellpadding='0' cellspacing='0' class='TB02' summary='' style='margin-top:15px;width:500p
+x;'>";
+strTable += "<thead>";
+strTable += "<tr id = 'theadId'>";
+strTable += "</tr>";
+strTable += "</thead>";
+strTable += "<tbody>";
+for(var i=0;i<mapdata.length;i++) {
+strTable += "<tr>";
+strTable += "<td class='al_C'>" + mapdata[i].attributes[1].value + "</td>";
+strTable += "<td class='al_C'>" + mapdata[i].attributes[0].value + "</td>";
+strTable += "</tr>";
+}
+strTable += "</tbody>";
+strTable += "</table>";
+document.getElementById("content").innerHTML = strTable;
+fnGetTitle ();
+fnGetUnit ();
+fnGetItm ();
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+통계표 명칭 조회* 
+****************************************************/
+function fnGetTitle () {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=TBL&orgId=101&tblId=DT_1B01003",
+data: "",\n공유서비스 개발가이드KOSIS  66
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+조회된 결과를 이용하여 통계표 명칭 작성// 
+var strTable = document.getElementById("content").innerHTML;
+document.getElementById("content").innerHTML = "<h5>" + object.documentElement.childNodes[1].childNodes
+[0].childNodes[0].data + "</h5>" + strTable;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+항목 명칭 조회* 
+****************************************************/
+function fnGetItm () {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=ITM&orgId=101&tblId=DT_1B01003&objId=ITEM&itmId=" + strItmId,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+분류 명칭 조회// 
+fnGetC1(object.documentElement.childNodes[1].childNodes[0].childNodes[4].childNodes[0].data);
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+분류 명칭 조회* 
+****************************************************/
+function fnGetC1(itmNm) {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=ITM&orgId=101&tblId=DT_1B01003&objId=HJG&itmId=" + strC1,\n공유서비스 개발가이드KOSIS  67
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var strTable = "";
+조회된 결과를 이용하여 항목 분류 작성// , 
+시점strTable += "<th class='fst al_C' scope='col'> </th>";
+strTable += "<th scope='col'>" + itmNm + "(" + object.documentElement.childNodes[1].childNodes[0].childNod
+es[4].childNodes[0].data + ")" + "</th>";
+document.getElementById("theadId").innerHTML = strTable;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+단위 명칭 조회* 
+****************************************************/
+function fnGetUnit () {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=UNIT&unitId=" + strUnitId,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+조회된 결과를 이용하여 단위 명칭 작성// 
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+단위 document.getElementById("unitId").innerHTML = " : " + object.documentElement.childNodes[1].childNodes
+[0].childNodes[0].data;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>\n공유서비스 개발가이드KOSIS  68
+    ￭ 예제 소스(R)
+    ￭ 예제 소스(Python)
+<div id="content" style="padding-top:30px;"></div>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+시계열 조회 키캆      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1', # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+최근수록시점 개수      newEstPrdCnt = 3, # 
+수록시점 간격      prdInterval = 1,  # 
+      version = 'v2_1'
+    )
+  )
+docParse <- xmlParse(res)
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(paste(docList[i]$Obs[2]), paste(docList[i]$Obs[1])))
+  }
+}
+시점 수치colnames(df_lists) <- c(" ", " ")
+View(df_lists)
+import matplotlib.pyplot as plt
+import requests\n공유서비스 개발가이드KOSIS  69
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+dataList = soup.find_all('obs')
+변수 지정 및 데이터 저장#
+data = []
+for item in dataList:
+    value = []
+년도 데이터    value.append(item.get('time_period')) #
+값 데이터    value.append(item.get('obs_value')) #
+    
+    data.append(value)
+만들기#Table 
+fig, ax = plt.subplots(1,1)
+시점 총인구 전국column_labels=[" ", " ( )"]
+ax.axis('tight')
+ax.axis('off')
+ax.table(cellText=data,colLabels=column_labels,colColours =["yellow"] * 2, loc="center", cellLoc='center')
+plt.show()\n공유서비스 개발가이드KOSIS  70
+2.2.3.3 SDMX(Generic)
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do
+    ￭ 입력 변수
+ 자료등록 방법
+ 통계표선택 방법
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+prdSe String 수록주기 필수 
+시점기준 startPrdDe String 시작수록시점 선택 
+시점기준 또는(
+최신자료기준 택1)
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrdCnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분 생략시 구버전으로 
+데이터 출력
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+orgId String 기관 ID 필수 
+tblId String 통계표 ID 필수 
+objL2 ~ objL8 String 분류 두번째 분류코드 분류 여덟째 분류코드2( ) ~ 8( ) 선택
+itmId String 항목 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+prdSe String 수록주기 필수 
+시점기준 startPrdDe String 시작수록시점 선택 
+시점기준 또는(
+최신자료기준 택1)
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrdCnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분 생략시 구버전으로 
+데이터 출력\n공유서비스 개발가이드KOSIS  71
+    ￭ 출력 변수
+    ￭ 예제 소스 결과 막대차트( )
+    ￭ 예제 소스(JSP)
+항목명 영문( ) 항목설명
+Header
+ID 기관코드 통계표_ ID
+Name 통계표명
+Prepared 전송시간
+Sender
+Id 전송기관
+Name 전송기관명
+Contact
+Department 담당부서
+Telephone 담당부서 연락처
+Source 출처
+Series
+SeriesKey Value
+Id 시리즈키ID
+value 시리즈키값 
+UNIT 단위
+Obs
+ObsDimen
+sion Value 시점
+ObsValue Value 수치자료값 
+LstChnDe Value 최종수정일
+<!--
+를 이용하여 막대차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp\n공유서비스 개발가이드KOSIS  72
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/jquery.SimpleChart.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+var data = object.documentElement.childNodes[1].childNodes[0].childNodes;
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var aData = new Array();
+데이터를 배열변수에 적재// 
+for(var i=0; i < data.length; i++) {
+aData[i] = [data[i].attributes[0].value.replace(/,/gi,''), data[i].attributes[1].value, 'pink'];
+}\n공유서비스 개발가이드KOSIS  73
+    ￭ 예제 소스(R)
+차트를 그리기위한 옵션을 정의// 
+var options = {'BarSize': '20px', 'BarSpace': '2px', 'type' : 'horizontal', 'Font': '2px'}
+차트를 화면에 출력// 
+$("#chart2").SimpleChart(aData,options);
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<div id="chart2" style="padding-top:30px;"></div>
+</body>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1',
+시계열 조회 키캆      # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+      newEstPrdCnt = 3,
+최근수록시점 개수      # 
+      prdInterval = 1,
+수록시점 간격      # 
+      version = 'v2_1'
+    )
+  )\n공유서비스 개발가이드KOSIS  74
+    ￭ 예제 소스(Python)
+docParse <- xmlParse(res)
+통계표명tbl_title <- xmlToList(docParse)$Header$Name # 
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(
+        prd_de = paste(docList[i]$Obs[2]),
+        dt = paste(docList[i]$Obs[1])
+      ))
+  }
+}
+바차트# 
+시점ggplot(df_lists, aes(x = prd_de, y = dt, fill = prd_de)) + xlab(" ") + ylab("") + ggtitle(tbl_title) + geom_bar(st
+at = "identity")
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+변수 지정 및 데이터 저장#
+xAxis = []
+yAxis = []
+차트제목title = soup.find('common:name').text #
+dataList = soup.find_all('obs')\n공유서비스 개발가이드KOSIS  75
+    ￭ 예제 소스 결과 파이차트( )
+    ￭ 예제 소스(JSP)
+for item in dataList:
+년도 데이터    xAxis.append(item.get('time_period')) #
+값 비율 데이터    yAxis.append(int(item.get('obs_value'))) # /
+차트 그리기#Bar
+plt.bar(xAxis, yAxis)
+plt.title(title)
+축 수치를 안보이게 하는 코드 필요에 따라 선택하여 사용#y . 
+plt.gca().axes.yaxis.set_visible(False)
+의 가운데에 로 수치 표시#Bar text
+for i, v in enumerate(xAxis):
+    plt.text(v, yAxis[i], yAxis[i],                
+             fontsize = 9,
+             color='blue',
+             horizontalalignment='center',
+             verticalalignment='bottom')
+plt.show()
+<!--
+를 이용하여 파이차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->\n공유서비스 개발가이드KOSIS  76
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var data = new Array(mapdata.length);
+데이터를 배열변수에 적재// 
+for(var i=0;i<mapdata.length;i++) {
+data[i] = mapdata[i].attributes[0].value;
+}
+파이차트를 출력하기위한 // JavaScript Start
+var canvas = document.getElementById("chartcanvas");
+var context = canvas.getContext("2d");
+var sw = canvas.width;\n공유서비스 개발가이드KOSIS  77
+    ￭ 예제 소스(R)
+var sh = canvas.height;
+var PADDING=100;
+별 색상 //Browser lawngreen, blue, deeppink, aquamarine3, magenta, gold
+var colors = ["#7cfc00", "#0000ff", "#ff1493", "#66CDAA", "#ff00ff", "#FFD700"];
+원의 중심 좌표var center_X=sw/2; // x 
+원의 중심 좌표var center_Y=sh/2; // y 
+두 계산값 중 작은 값은 값을 원의 반지름으로 설정// 
+var radius = Math.min(sw-(PADDING*2), sh-(PADDING*2)) / 2;
+var angle = 0;
+var total = 0;
+데이터 의 총합 계산for (var i in data) { total += Number(data[i]); } // (data)
+for (var i = 0; i < data.length; i++) {
+생성되는 부분의 채울 색 설정context.fillStyle = colors[i]; //
+context.beginPath();
+원의 중심으로 이동context.moveTo(center_X, center_Y); //
+context.arc(center_X, center_Y, radius, angle, angle +(Math.PI*2*(data[i]/total)));
+context.lineTo(center_X,center_Y);
+context.fill();
+angle += Math.PI*2*(data[i]/total);
+}
+파이차트를 출력하기위한 // JavaScript End
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<canvas id="chartcanvas" width="500" height="400"></canvas>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+library(ggplot2)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-\n공유서비스 개발가이드KOSIS  78
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1',
+시계열 조회 키캆      # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+      newEstPrdCnt = 3,
+최근수록시점 개수      # 
+      prdInterval = 1,
+수록시점 간격      # 
+      version = 'v2_1'
+    )
+  )
+docParse <- xmlParse(res)
+통계표명v_tbl_nm <- xmlToList(docParse)$Header$Name # 
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(
+        prd_de = paste(docList[i]$Obs[2]),
+        dt = paste(docList[i]$Obs[1])
+      ))
+  }
+}
+파이차트 비율 라벨 값# 
+pct <-
+  round(as.numeric(df_lists$dt) / sum(as.numeric(df_lists$dt)) * 100, 1)
+df_lists <- data.frame(df_lists, pct = pct)
+파이차트# 
+ggplot(df_lists, aes(
+  x = factor(1),
+  y = '',
+  fill = factor(prd_de)
+)) +
+  geom_bar(stat = 'identity') +
+  theme_void() +
+  ggtitle(v_tbl_nm) +
+  coord_polar('y', start = 0)   +
+  geom_text(aes(label = paste0(round(pct, 1), '%')),\n공유서비스 개발가이드KOSIS  79
+    ￭ 예제 소스(Python)
+    ￭ 예제 소스 결과 표차트( )
+    ￭ 예제 소스(JSP)
+            position = position_stack(vjust = 0.5))
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+변수 지정 및 데이터 저장#
+labels = []
+ratio = []
+차트제목title = soup.find('common:name').text #
+dataList = soup.find_all('obs')
+for item in dataList:
+년도 데이터    labels.append(item.get('time_period')) #
+값 비율 데이터    ratio.append(item.get('obs_value')) # /
+차트 그리기#Pie
+plt.pie(ratio, labels=labels, autopct='%.1f%%')
+plt.title(title)
+plt.show()\n공유서비스 개발가이드KOSIS  80
+<!--
+를 이용하여 통계표를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+var strUnitId, strItmId, strC1;
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;\n공유서비스 개발가이드KOSIS  81
+항목 분류 단위의 명칭을 조회하기위해 각각의 코드를 변수에 저장// , , 
+for(var i=0;i<object.documentElement.childNodes[1].childNodes[0].attributes.length;i++) {
+if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "ITEM") {
+strItmId = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+} else if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "C_HJG") {
+strC1 = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+} else if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "UNIT") {
+strUnitId = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+}
+}
+var strTable = "";
+조회된 결과를 이용하여 통계표 작성// 
+strTable += "<p style='position:absolute; top:32px; left:450px;' id='unitId'></p>";
+strTable += "<table cellpadding='0' cellspacing='0' class='TB02' summary='' style='margin-top:15px;width:500p
+x;'>";
+strTable += "<thead>";
+strTable += "<tr id = 'theadId'>";
+strTable += "</tr>";
+strTable += "</thead>";
+strTable += "<tbody>";
+for(var i=0;i<mapdata.length;i++) {
+strTable += "<tr>";
+strTable += "<td class='al_C'>" + mapdata[i].attributes[1].value + "</td>";
+strTable += "<td class='al_C'>" + mapdata[i].attributes[0].value + "</td>";
+strTable += "</tr>";
+}
+strTable += "</tbody>";
+strTable += "</table>";
+document.getElementById("content").innerHTML = strTable;
+fnGetTitle ();
+fnGetUnit ();
+fnGetItm ();
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+통계표 명칭 조회* 
+****************************************************/
+function fnGetTitle () {\n공유서비스 개발가이드KOSIS  82
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=TBL&orgId=101&tblId=DT_1B01003",
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+조회된 결과를 이용하여 통계표 명칭 작성// 
+var strTable = document.getElementById("content").innerHTML;
+document.getElementById("content").innerHTML = "<h5>" + object.documentElement.childNodes[1].childNodes
+[0].childNodes[0].data + "</h5>" + strTable;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+항목 명칭 조회* 
+****************************************************/
+function fnGetItm () {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=ITM&orgId=101&tblId=DT_1B01003&objId=ITEM&itmId=" + strItmId,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+분류 명칭 조회// 
+fnGetC1(object.documentElement.childNodes[1].childNodes[0].childNodes[4].childNodes[0].data);
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+분류 명칭 조회* 
+****************************************************/
+function fnGetC1(itmNm) {\n공유서비스 개발가이드KOSIS  83
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=ITM&orgId=101&tblId=DT_1B01003&objId=HJG&itmId=" + strC1,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var strTable = "";
+조회된 결과를 이용하여 항목 분류 작성// , 
+시점strTable += "<th class='fst al_C' scope='col'> </th>";
+strTable += "<th scope='col'>" + itmNm + "(" + object.documentElement.childNodes[1].childNodes[0].childNod
+es[4].childNodes[0].data + ")" + "</th>";
+document.getElementById("theadId").innerHTML = strTable;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+단위 명칭 조회* 
+****************************************************/
+function fnGetUnit () {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=UNIT&unitId=" + strUnitId,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+조회된 결과를 이용하여 단위 명칭 작성// 
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+단위 document.getElementById("unitId").innerHTML = " : " + object.documentElement.childNodes[1].childNodes
+[0].childNodes[0].data;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}\n공유서비스 개발가이드KOSIS  84
+    ￭ 예제 소스(R)
+});
+}
+</script>
+</head>
+<body>
+<div id="content" style="padding-top:30px;"></div>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+시계열 조회 키캆      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1', # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+최근수록시점 개수      newEstPrdCnt = 3, # 
+수록시점 간격      prdInterval = 1,  # 
+      version = 'v2_1'
+    )
+  )
+docParse <- xmlParse(res)
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(paste(docList[i]$Obs[2]), paste(docList[i]$Obs[1])))
+  }
+}
+시점 수치colnames(df_lists) <- c(" ", " ")\n공유서비스 개발가이드KOSIS  85
+    ￭ 예제 소스(Python)
+View(df_lists)
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+dataList = soup.find_all('obs')
+변수 지정 및 데이터 저장#
+data = []
+for item in dataList:
+    value = []
+년도 데이터    value.append(item.get('time_period')) #
+값 데이터    value.append(item.get('obs_value')) #
+    
+    data.append(value)
+만들기#Table 
+fig, ax = plt.subplots(1,1)
+시점 총인구 전국column_labels=[" ", " ( )"]
+ax.axis('tight')
+ax.axis('off')
+ax.table(cellText=data,colLabels=column_labels,colColours =["yellow"] * 2, loc="center", cellLoc='center')
+plt.show()\n공유서비스 개발가이드KOSIS  86
+2.2.3.4 SDMX(StructureSpecific)
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do
+    ￭ 입력 변수
+ 자료등록 방법
+ 통계표선택 방법
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+prdSe String 수록주기 필수 
+시점기준 startPrdDe String 시작수록시점 선택 
+시점기준 또는(
+최신자료기준 택1)
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrdCnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분 생략시 구버전으로 
+데이터 출력
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+orgId String 기관 ID 필수 
+tblId String 통계표 ID 필수 
+objL2 ~ objL8 String 분류 두번째 분류코드 분류 여덟째 분류코드2( ) ~ 8( ) 선택
+itmId String 항목 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+prdSe String 수록주기 필수 
+시점기준 startPrdDe String 시작수록시점 선택 
+시점기준 또는(
+최신자료기준 택1)
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrdCnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분 생략시 구버전으로 
+데이터 출력\n공유서비스 개발가이드KOSIS  87
+    ￭ 출력 변수
+    ￭ 예제 소스 결과 막대차트( )
+    ￭ 예제 소스(JSP)
+항목명 영문( ) 항목설명
+Header
+ID 기관코드 통계표_ ID
+Name 통계표명
+Prepared 전송시간
+Sender
+Id 전송기관
+Name 전송기관명
+Contact
+Department 담당부서
+Telephone 담당부서 연락처
+Source 출처
+Series
+UNIT 단위
+ITEM 항목
+FIEQ 주기
+분류C_ 분류C_
+개 분류까지 가능(8 )
+OBS
+TIME_PERIOD 시점
+OBS_VALUE 수치자료
+<!--
+를 이용하여 막대차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp\n공유서비스 개발가이드KOSIS  88
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+2/js/jquery.SimpleChart.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+var data = object.documentElement.childNodes[1].childNodes[0].childNodes;
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var aData = new Array();
+데이터를 배열변수에 적재// 
+for(var i=0; i < data.length; i++) {
+aData[i] = [data[i].attributes[0].value.replace(/,/gi,''), data[i].attributes[1].value, 'pink'];
+}\n공유서비스 개발가이드KOSIS  89
+    ￭ 예제 소스(R)
+차트를 그리기위한 옵션을 정의// 
+var options = {'BarSize': '20px', 'BarSpace': '2px', 'type' : 'horizontal', 'Font': '2px'}
+차트를 화면에 출력// 
+$("#chart2").SimpleChart(aData,options);
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<div id="chart2" style="padding-top:30px;"></div>
+</body>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1',
+시계열 조회 키캆      # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+      newEstPrdCnt = 3,
+최근수록시점 개수      # 
+      prdInterval = 1,
+수록시점 간격      # 
+      version = 'v2_1'
+    )
+  )\n공유서비스 개발가이드KOSIS  90
+    ￭ 예제 소스(Python)
+docParse <- xmlParse(res)
+통계표명tbl_title <- xmlToList(docParse)$Header$Name # 
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(
+        prd_de = paste(docList[i]$Obs[2]),
+        dt = paste(docList[i]$Obs[1])
+      ))
+  }
+}
+바차트# 
+시점ggplot(df_lists, aes(x = prd_de, y = dt, fill = prd_de)) + xlab(" ") + ylab("") + ggtitle(tbl_title) + geom_bar(st
+at = "identity")
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+변수 지정 및 데이터 저장#
+xAxis = []
+yAxis = []
+차트제목title = soup.find('common:name').text #
+dataList = soup.find_all('obs')\n공유서비스 개발가이드KOSIS  91
+    ￭ 예제 소스 결과 파이차트( )
+    ￭ 예제 소스(JSP)
+for item in dataList:
+년도 데이터    xAxis.append(item.get('time_period')) #
+값 비율 데이터    yAxis.append(int(item.get('obs_value'))) # /
+차트 그리기#Bar
+plt.bar(xAxis, yAxis)
+plt.title(title)
+축 수치를 안보이게 하는 코드 필요에 따라 선택하여 사용#y . 
+plt.gca().axes.yaxis.set_visible(False)
+의 가운데에 로 수치 표시#Bar text
+for i, v in enumerate(xAxis):
+    plt.text(v, yAxis[i], yAxis[i],                
+             fontsize = 9,
+             color='blue',
+             horizontalalignment='center',
+             verticalalignment='bottom')
+plt.show()
+<!--
+를 이용하여 파이차트를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml\n공유서비스 개발가이드KOSIS  92
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+차트에 보여주기위해 값을 담고있을 배열변수를 선언// 
+var data = new Array(mapdata.length);
+데이터를 배열변수에 적재// 
+for(var i=0;i<mapdata.length;i++) {
+data[i] = mapdata[i].attributes[0].value;
+}
+파이차트를 출력하기위한 // JavaScript Start
+var canvas = document.getElementById("chartcanvas");
+var context = canvas.getContext("2d");
+var sw = canvas.width;
+var sh = canvas.height;\n공유서비스 개발가이드KOSIS  93
+    ￭ 예제 소스(R)
+var PADDING=100;
+별 색상 //Browser lawngreen, blue, deeppink, aquamarine3, magenta, gold
+var colors = ["#7cfc00", "#0000ff", "#ff1493", "#66CDAA", "#ff00ff", "#FFD700"];
+원의 중심 좌표var center_X=sw/2; // x 
+원의 중심 좌표var center_Y=sh/2; // y 
+두 계산값 중 작은 값은 값을 원의 반지름으로 설정// 
+var radius = Math.min(sw-(PADDING*2), sh-(PADDING*2)) / 2;
+var angle = 0;
+var total = 0;
+데이터 의 총합 계산for (var i in data) { total += Number(data[i]); } // (data)
+for (var i = 0; i < data.length; i++) {
+생성되는 부분의 채울 색 설정context.fillStyle = colors[i]; //
+context.beginPath();
+원의 중심으로 이동context.moveTo(center_X, center_Y); //
+context.arc(center_X, center_Y, radius, angle, angle +(Math.PI*2*(data[i]/total)));
+context.lineTo(center_X,center_Y);
+context.fill();
+angle += Math.PI*2*(data[i]/total);
+}
+파이차트를 출력하기위한 // JavaScript End
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<canvas id="chartcanvas" width="500" height="400"></canvas>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+library(ggplot2)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(\n공유서비스 개발가이드KOSIS  94
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1',
+시계열 조회 키캆      # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+      newEstPrdCnt = 3,
+최근수록시점 개수      # 
+      prdInterval = 1,
+수록시점 간격      # 
+      version = 'v2_1'
+    )
+  )
+docParse <- xmlParse(res)
+통계표명v_tbl_nm <- xmlToList(docParse)$Header$Name # 
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(
+        prd_de = paste(docList[i]$Obs[2]),
+        dt = paste(docList[i]$Obs[1])
+      ))
+  }
+}
+파이차트 비율 라벨 값# 
+pct <-
+  round(as.numeric(df_lists$dt) / sum(as.numeric(df_lists$dt)) * 100, 1)
+df_lists <- data.frame(df_lists, pct = pct)
+파이차트# 
+ggplot(df_lists, aes(
+  x = factor(1),
+  y = '',
+  fill = factor(prd_de)
+)) +
+  geom_bar(stat = 'identity') +
+  theme_void() +
+  ggtitle(v_tbl_nm) +
+  coord_polar('y', start = 0)   +
+  geom_text(aes(label = paste0(round(pct, 1), '%')),
+            position = position_stack(vjust = 0.5))\n공유서비스 개발가이드KOSIS  95
+    ￭ 예제 소스(Python)
+    ￭ 예제 소스 결과 표차트( )
+    ￭ 예제 소스(JSP)
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+변수 지정 및 데이터 저장#
+labels = []
+ratio = []
+차트제목title = soup.find('common:name').text #
+dataList = soup.find_all('obs')
+for item in dataList:
+년도 데이터    labels.append(item.get('time_period')) #
+값 비율 데이터    ratio.append(item.get('obs_value')) # /
+차트 그리기#Pie
+plt.pie(ratio, labels=labels, autopct='%.1f%%')
+plt.title(title)
+plt.show()
+<!--\n공유서비스 개발가이드KOSIS  96
+를 이용하여 통계표를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<xml:namespace prefix="v"/>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+getSubList();
+});
+var strUnitId, strItmId, strC1;
+/****************************************************
+통계자료 조회 함수* 
+****************************************************/
+function getSubList() {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTM
+wOWRjNjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2
+/1/20191106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1",
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+항목 분류 단위의 명칭을 조회하기위해 각각의 코드를 변수에 저장// , , \n공유서비스 개발가이드KOSIS  97
+for(var i=0;i<object.documentElement.childNodes[1].childNodes[0].attributes.length;i++) {
+if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "ITEM") {
+strItmId = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+} else if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "C_HJG") {
+strC1 = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+} else if (object.documentElement.childNodes[1].childNodes[0].attributes[i].nodeName == "UNIT") {
+strUnitId = object.documentElement.childNodes[1].childNodes[0].attributes[i].value;
+}
+}
+var strTable = "";
+조회된 결과를 이용하여 통계표 작성// 
+strTable += "<p style='position:absolute; top:32px; left:450px;' id='unitId'></p>";
+strTable += "<table cellpadding='0' cellspacing='0' class='TB02' summary='' style='margin-top:15px;width:500p
+x;'>";
+strTable += "<thead>";
+strTable += "<tr id = 'theadId'>";
+strTable += "</tr>";
+strTable += "</thead>";
+strTable += "<tbody>";
+for(var i=0;i<mapdata.length;i++) {
+strTable += "<tr>";
+strTable += "<td class='al_C'>" + mapdata[i].attributes[1].value + "</td>";
+strTable += "<td class='al_C'>" + mapdata[i].attributes[0].value + "</td>";
+strTable += "</tr>";
+}
+strTable += "</tbody>";
+strTable += "</table>";
+document.getElementById("content").innerHTML = strTable;
+fnGetTitle ();
+fnGetUnit ();
+fnGetItm ();
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+통계표 명칭 조회* 
+****************************************************/
+function fnGetTitle () {
+통신을 위한 호출 함수// ajax \n공유서비스 개발가이드KOSIS  98
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=TBL&orgId=101&tblId=DT_1B01003",
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+조회된 결과를 이용하여 통계표 명칭 작성// 
+var strTable = document.getElementById("content").innerHTML;
+document.getElementById("content").innerHTML = "<h5>" + object.documentElement.childNodes[1].childNodes
+[0].childNodes[0].data + "</h5>" + strTable;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+항목 명칭 조회* 
+****************************************************/
+function fnGetItm () {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=ITM&orgId=101&tblId=DT_1B01003&objId=ITEM&itmId=" + strItmId,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+분류 명칭 조회// 
+fnGetC1(object.documentElement.childNodes[1].childNodes[0].childNodes[4].childNodes[0].data);
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+분류 명칭 조회* 
+****************************************************/
+function fnGetC1(itmNm) {\n공유서비스 개발가이드KOSIS  99
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=ITM&orgId=101&tblId=DT_1B01003&objId=HJG&itmId=" + strC1,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+var strTable = "";
+조회된 결과를 이용하여 항목 분류 작성// , 
+시점strTable += "<th class='fst al_C' scope='col'> </th>";
+strTable += "<th scope='col'>" + itmNm + "(" + object.documentElement.childNodes[1].childNodes[0].childNod
+es[4].childNodes[0].data + ")" + "</th>";
+document.getElementById("theadId").innerHTML = strTable;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+/****************************************************
+단위 명칭 조회* 
+****************************************************/
+function fnGetUnit () {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/statisticsData.do?method=getMeta&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=xml&type=UNIT&unitId=" + strUnitId,
+data: "",
+sync : true,
+dataType: "xml",
+success:function(object)
+{
+조회된 결과를 이용하여 단위 명칭 작성// 
+var mapdata = object.documentElement.childNodes[1].childNodes[0].childNodes;
+단위 document.getElementById("unitId").innerHTML = " : " + object.documentElement.childNodes[1].childNodes
+[0].childNodes[0].data;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});\n공유서비스 개발가이드KOSIS  100
+    ￭ 예제 소스(R)
+}
+</script>
+</head>
+<body>
+<div id="content" style="padding-top:30px;"></div>
+</html>
+library(httr)
+library(rvest)
+library(XML)
+모든변수 초기화rm(list = ls()) # 
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+요청baseurl <- 'https://kosis.kr/openapi/statisticsData.do' # URL
+res <-
+  GET(
+    url = baseurl,
+    query = list(
+      method = 'getList',
+      format = 'sdmx',
+      apiKey = v_apiKey %>% I(),
+시계열 조회 키캆      userStatsId = 'openapisample/101/DT_1IN1502/2/1/20191106094026_1', # 
+      jsonVD = 'Y',
+      type = 'StructureSpecific',
+      prdSe = 'Y',
+최근수록시점 개수      newEstPrdCnt = 3, # 
+수록시점 간격      prdInterval = 1,  # 
+      version = 'v2_1'
+    )
+  )
+docParse <- xmlParse(res)
+docList <- xmlToList(docParse)$DataSet$Series
+df_lists <- data.frame()
+for (i in 1:length(docList)) {
+  if (length(docList[i]$Obs) == 2) {
+    df_lists <-
+      rbind(df_lists, cbind(paste(docList[i]$Obs[2]), paste(docList[i]$Obs[1])))
+  }
+}
+시점 수치colnames(df_lists) <- c(" ", " ")\n공유서비스 개발가이드KOSIS  101
+    ￭ 예제 소스(Python)
+View(df_lists)
+import matplotlib.pyplot as plt
+import requests
+from bs4 import BeautifulSoup
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url sdmx 
+open_url = 'https://kosis.kr/openapi/statisticsData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&format=sdmx&type=StructureSpecific&userStatsId=openapisample/101/DT_1IN1502/2/1/201
+91106094026_1&prdSe=Y&newEstPrdCnt=3&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+dataList = soup.find_all('obs')
+변수 지정 및 데이터 저장#
+data = []
+for item in dataList:
+    value = []
+년도 데이터    value.append(item.get('time_period')) #
+값 데이터    value.append(item.get('obs_value')) #
+    
+    data.append(value)
+만들기#Table 
+fig, ax = plt.subplots(1,1)
+시점 총인구 전국column_labels=[" ", " ( )"]
+ax.axis('tight')
+ax.axis('off')
+ax.table(cellText=data,colLabels=column_labels,colColours =["yellow"] * 2, loc="center", cellLoc='center')
+plt.show()\n공유서비스 개발가이드KOSIS  102
+대용량 통계자료2.3 
+    ￭ 통계표의 수치자료 및 메타정보 제공을 위한 로 통계표 전체 분류 전체 일부 항목 OpenAPI , , ( ), 
+전체 일부 를 선택적으로 요청합니다( ) .
+특징2.3.1 
+    ￭ 통계표의 수치자료를 다중계열 여러시점으로 제공, 
+    ￭ 통계표의 수록정보 분류 항목 출처 단위 등 메타정보 제공, / , , 
+    ￭ 자료 제공형태 : SDMX (DSD, Generic, StructureSpecific), CSV
+서비스 활용2.3.2 
+자료등록2.3.2.1 
+    ￭ 개발가이드 대용량 통계자료 생성 자료등록> > URL > 
+‘작성기관 통계조사명 통계표명 등을 입력하여’, ‘ ’, ‘ ’ 사용하고자 하는 자료를 조회한 뒤 조회결과에 
+서 등록할 자료의 ①사용여부 항목을 선택하고 ②통계표 등록 버튼을 누릅니다. ③통계표조회 버튼
+을 클릭하면 해당 자료의 통계표를 볼 수 있습니다. 
+\n공유서비스 개발가이드KOSIS  103
+등록된 자료2.3.2.2 
+    ￭ 마이페이지 등록한 자료 대용량통계자료> > 
+자료등록의 통계표 등록을 마치고 등록된 자료 탭을 클릭하면 이용자가 등록한 자료들의 목록이 , 
+나타나며 등록된 자료 중 생성을 원하는 자료의 , URL ① 생성 URL 버튼 을 누릅니다. ②통계표조회 
+버튼을 클릭하면 해당 자료의 통계표를 볼 수 있습니다.
+   
+    ￭ 마이페이지 등록한 자료 대용량통계자료 삭제> > > 
+버튼① 을 클릭한 후 하단에 조회되는 사용자 생성 목록을 URL 삭제② 할 수 있습니다.
+\n공유서비스 개발가이드KOSIS  104
+생성2.3.2.3 URL
+    ￭ 개발가이드 통계자료 자료등록 생성 등록된 자료 생성> > URL > > URL 
+생성 단계에서는 생성 조건 설정의 활용 자료명 분류URL URL ‘ ’, ’ /항목선택 을 입력 후 ’ ① 생 URL
+성 버튼을 누르면 생성 상세조건 화면으로 이동 후 이 하단에 생성됩니다 생성 상세URL URL . URL
+조건 화면에서 상세설정 후 ② 보기 결과값보기 버튼URL , 을 클릭하여 페이지 하단에서 결과를 
+확인 할 수 있고 복사 버튼을 누르면 생성된 이 클립보드에 복사됩니다, URL URL .③
+\n공유서비스 개발가이드KOSIS  105
+\n공유서비스 개발가이드KOSIS  106
+활용방법2.3.3 
+2.3.3.1 SDMX(DSD)
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsBigData.do
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분 생략시 구버전으로 데이터 
+출력
+항목명 영문( ) 항목설명
+Header
+ID 기관코드 통계표_ ID
+Name 통계표명
+Prepared 전송시간
+Sender
+Id 전송기관
+Name 전송기관명
+Contact Department 담당부서
+Telephone 담당부서 연락처
+Source 출처
+Codelist Codelist 
+Id 코드리스트ID
+Name 코드리스트명
+Description 코드리스트영문명 
+Code Id 코드ID
+Name 코드명
+Concepts ConceptsSche
+me
+Id 컨셉스키마ID
+Name 컨셉스키마명 
+Description 컨셉스키마영문명 
+concept
+Id 컨셉ID
+Name 컨셉명 
+Description 컨셉영문명 
+DataStructuresDataStructure 
+Id 통계표ID
+Name 통계표명
+DataStructureComponentsDimension
+Id 디멘젼Id
+ConceptI
+dentity
+Id Id\n공유서비스 개발가이드KOSIS  107
+2.3.3.2 SDMX(Generic)
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsBigData.do
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 항목설명
+Header
+ID 기관코드 통계표_ ID
+Name 통계표명
+Prepared 전송시간
+Sender
+Id 전송기관
+Name 전송기관명
+Contact
+Department 담당부서
+Telephone 담당부서 연락처
+Source 출처
+Series
+SeriesKey Value
+Id 시리즈키ID
+value 시리즈키값 
+Obs
+ObsDimensionValue 시점
+ObsValue Value 수치자료값 
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+prdSe String 수록주기 필수 
+시점기준 startPrdDe String 시작수록시점 선택 
+시점기준 또는(
+최신자료기준 택1)
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrdCnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분 생략시 구버전으로 
+데이터 출력\n공유서비스 개발가이드KOSIS  108
+2.3.3.3 SDMX(StructureSpecific)
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsBigData.do
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 항목설명
+Header
+ID 기관코드 통계표_ ID
+Name 통계표명
+Prepared 전송시간
+Sender
+Id 전송기관
+Name 전송기관명
+Contact
+Department 담당부서
+Telephone 담당부서 연락처
+Source 출처
+Series
+UNIT 단위
+ITEM 항목
+FREQ 주기
+분류 분류
+Obs
+ObsDimensionValue 시점
+ObsValue Value 수치자료값 
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+type String 의 유형SDMX (DSD, Generic, StructureSpecific) 필수 
+prdSe String 수록주기 필수 
+시점기준 startPrdDe String 시작수록시점 선택 
+시점기준 또는(
+최신자료기준 택1)
+endPrdDe String 종료수록시점 
+최신자료
+기준
+newEstPrdCnt String 최근수록시점 개수 
+prdInterval String 수록시점 간격 
+format String 결과 유형(json, sdmx) 필수 
+version String 결과값 구분 생략시 구버전으로 
+데이터 출력\n공유서비스 개발가이드KOSIS  109
+2.3.3.4 XLS
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsBigData.do
+    ￭ 입력 변수
+    ￭ 출력 결과 예시
+항목명 영문( ) 변수타입 항목설명 비고
+apiKey String 발급된 인증키 필수 
+userStatsId String 사용자 등록 통계표 필수 
+prdSe String 수록주기 필수 
+시점기준
+startPrdDe String 시작수록시점 
+선택
+시점기준 또는(
+최신자료기준 택1)
+endPrdDe String 종료수록시점
+최신자료기준
+newEstPrdCntString 최근수록시점 개수
+prdInterval String 수록시점 간격
+format String 결과 유형(json, sdmx) 필수 \n공유서비스 개발가이드KOSIS  110
+통계설명2.4 
+    ￭ 통계조사에 대한 설명자료 제공을 위한 입니다OpenAPI . 
+특징2.4.1 
+    ￭ 자료 제공형태 : XML, JSON
+서비스 활용2.4.2 
+생성2.4.2.1 URL
+    ￭ 개발가이드 통계설명 생성> > URL
+생성 단계에서는 생성 조건 설정의 통계조사 설명항목 설명자료 를 입력 후 URL URL ‘ ’, ‘ ’, ’ ’ ①URL
+복사 결과값보기 버튼, 을 클릭하여 페이지 하단에서 결과를 확인 할 수 있습니다.
+\n공유서비스 개발가이드KOSIS  111
+활용방법2.4.3 
+2.4.3.1 JSON
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsExplData.do
+    ￭ 입력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+statId 
+기관* orgId( ID) + 
+통계표 로도 가능tblId( ID) 
+String 통계조사 ID 필수
+metaItm String 요청 항목 
+필수
+전체 - All
+조사명-statsNm
+작성유형-statsKind
+통계종류-statsEnd
+계속여부-statsContinue
+법적근거-basisLaw
+조사목적-writingPurps
+조사기간-examinPd
+조사주기-statsPeriod
+조사체계-writingSystem
+연락처-writingTel
+통계 활용 분야 실태( ) · -statsField
+조사 대상범위-examinObjrange
+조사 대상지역-examinObjArea
+조사단위 및 조사대상규모-josaUnit
+적용분류-applyGroup
+조사항목-josaItm
+공표주기-pubPeriod
+공표범위-pubExtent
+공표시기-pubDate
+공표방법 및 URL-publictMth
+조사대상기간 및 조사기준시점-exami
+nTrgetPd
+자료이용시 유의사항 -dataUserNote
+주요 용어해설-mainTermExpl
+자료 수집방법-dataCollectMth
+조사연혁-examinHistory
+승인번호-confmNo
+승인일자-confmDt
+format String 결과유형(JSON, SDMX) 필수 
+content String 헤더 유형(html, json) 선택\n공유서비스 개발가이드KOSIS  112
+￭ 출력 변수
+    ￭ 예제 소스 결과
+항목명 영문( ) 항목설명 형식
+statsNm 조사명 VARCHAR2(4000)
+statsKind 작성유형 VARCHAR2(4000)
+statsEnd 통계종류 VARCHAR2(4000)
+statsContinue 계속여부 VARCHAR2(4000)
+basisLaw 법적근거 VARCHAR2(4000)
+writingPurps 조사목적 VARCHAR2(4000)
+examinPd 조사기간 VARCHAR2(4000)
+statsPeriod 조사주기 VARCHAR2(4000)
+writingSystem 조사체계 VARCHAR2(4000)
+writingTel 연락처 VARCHAR2(8000)
+statsField 통계 활용 분야 실태 ( ) · VARCHAR2(4000)
+examinObjrange 조사 대상범위 VARCHAR2(4000)
+examinObjArea 조사 대상지역 VARCHAR2(4000)
+josaUnit 조사단위 및 조사대상규모 VARCHAR2(4000)
+applyGroup 적용분류 VARCHAR2(4000)
+josaItm 조사항목 VARCHAR2(4000)
+pubPeriod 공표주기 VARCHAR2(4000)
+pubExtent 공표범위 VARCHAR2(4000)
+pubDate 공표시기 VARCHAR2(4000)
+publictMth 공표방법 및 URL VARCHAR2(4000)
+examinTrgetPd 조사대상기간 및 조사기준시점 VARCHAR2(4000)
+dataUserNote 자료이용자 유의사항 VARCHAR2(4000)
+mainTermExpl 주요 용어해설 VARCHAR2(4000)
+dataCollectMth 자료 수집방법 VARCHAR2(4000)
+examinHistory 조사연혁 VARCHAR2(4000)
+confmNo 승인번호 VARCHAR2(4000)
+confmDt 승인일자 VARCHAR2(4000)\n공유서비스 개발가이드KOSIS  113
+    ￭ 예제 소스(JSP)
+<!--
+를 이용하여 통계설명자료를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+4/js/dojo.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+4/js/json.js" ></script>
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/devGuide/devGuide0
+4/js/ajax.js"></script>
+<script type="text/javascript" language="JavaScript">
+var mapData;
+되었을때 실행 함수// window onload 
+dojo.addOnLoad ( function() {
+통계설명자료를 조회하기위해 함수를 호출한다// .
+getSubList("ALL", "1962009");
+});
+/****************************************************
+통계목록 리스트 조회 함수* 
+요청 항목* parameter : metaItm - 
+통계조사 * statId - Id
+****************************************************/
+function getSubList(metaItm, statId) {
+통신을 위한 파라메터를 변수에 담는다// ajax .
+var paraObj = {
+임의의 페이지를 호출함으로써 제약을 우회할 수 있다// jsp cross domain .
+url : "http://mgmk.kosis.kr/openapi_dev/devGuidePop.jsp?method=getList&key=ZjZjOTI3MjRjNmU1YzdhZTMwOWRj
+NjgxN2MzNDgwNmY=&metaItm=" + metaItm + "&statId=" + statId + "&type=json",\n공유서비스 개발가이드KOSIS  114
+sync : true,
+load : function(resObj, a, b) { mapData = resObj; },
+error : function ( resObj, e ) { alert(dojo.toJson(resObj)); }
+}
+sendPost( paraObj );
+var nodeInfo="";
+통계설명자료를 화면에 출력하기 위해 변수에 적재// 
+nodeInfo= "<table cellpadding='0' cellspacing='0' class='TB02' summary=''>";
+nodeInfo+=" <thead>"
+nodeInfo+=" <tr>"
+항목nodeInfo+=" <th class='fst al_C' scope='col' style='width:20%;'> </th>"
+설명nodeInfo+=" <th scope='col'> </th>"
+nodeInfo+=" </tr>"
+nodeInfo+=" </thead>"
+nodeInfo+=" <tbody>"
+nodeInfo+=" <tr>"
+조사명nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].statsNm+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+작성유형nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].statsKind+"</td>"
+nodeInfo+=" </tr>“
+nodeInfo+=" <tr>"
+통계종류nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].statsEnd+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+계속여부nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].statsContinue+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+법적근거nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].basisLaw+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사목적nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].writingPurps+"</td>"
+nodeInfo+=" </tr>“
+nodeInfo+=" <tr>"
+조사기간nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].examinPd+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사주기nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].statsPeriod+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사체계nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].writingSystem+"</td>"\n공유서비스 개발가이드KOSIS  115
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+연락처nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].writingTel+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+통계 활용 분야 실태nodeInfo+=" <td class='fst al_C' scope='row'> ( ) · </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].statsField+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사대상범위nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].examinObjrange+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사대상지역nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].examinObjArea+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사단위및조사대상규모nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].josaUnit+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+적용분류nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].applyGroup+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사항목nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].josaItm+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+공표주기nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].pubPeriod+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+공표범위nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].pubExtent+"</td>"
+nodeInfo+=" </tr>“
+nodeInfo+=" <tr>"
+공표시기nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].pubDate+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+공표방법및nodeInfo+=" <td class='fst al_C' scope='row'> URL</td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].publictMth+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사대상기간및조사기준시점nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].examinTrgetPd+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+자료이용자유의사항nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].dataUserNote+"</td>"
+nodeInfo+=" </tr>"\n공유서비스 개발가이드KOSIS  116
+nodeInfo+=" <tr>"
+주요용어해설nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].mainTermExpl+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+자료수집방법nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].dataCollectMth+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+조사연혁nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].examinHistory+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+승인번호nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].confmNo+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" <tr>"
+승인일자nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+mapData[0].confmDt+"</td>"
+nodeInfo+=" </tr>"
+nodeInfo+=" </tbody>"
+nodeInfo+="</table>"
+변수에 적재된 를 화면에 출력// UI
+var r_node = document.getElementById("content");
+r_node.innerHTML =nodeInfo;
+}
+</script>
+</head>
+<body>
+<div id="content" ></div>
+</body>
+</html>
+제약을 우회하기 위한 // cross domain jsp (devGuidePop.jsp)
+<%@ page contentType="text/html; charset=utf-8" pageEncoding="utf-8" %>
+<%@ taglib prefix="c" uri="http://java.sun.com/jstl/core" %>
+<c:set var="method" ><%out.println(request.getParameter("method") == null ? "" : (request.getParameter("metho
+d"))); %></c:set>
+<c:set var="key" ><%out.println(request.getParameter("key") == null ? "" : (request.getParameter("key"))); %></
+c:set>
+<c:set var="metaItm" ><%out.println(request.getParameter("metaItm") == null ? "" : (request.getParameter("met
+aItm")));%></c:set>
+<c:set var="statId" ><%out.println(request.getParameter("statId") == null ? "" : (request.getParameter("statId"))); 
+%></c:set>
+<c:set var="type" ><%out.println(request.getParameter("type") == null ? "" : (request.getParameter("type"))); %>
+</c:set>
+<c:import url="http://mgmk.kosis.kr/openapi_dev/Expt/statisticsExplData.do?method=${method}&apiKey=${key}&
+metaItm=${metaItm}&statId=${statId}&format=${type}" charEncoding="utf-8"/>\n공유서비스 개발가이드KOSIS  117
+    ￭ 예제 소스(R)
+library(httr)
+library(rvest)
+library(jsonlite)
+library(dplyr)
+모든변수 초기화rm(list = ls()) # 
+all_items  <- data.frame(
+  ename = c(
+    'statsNm',
+    'statsKind',
+    'statsEnd',
+    'statsContinue',
+    'basisLaw',
+    'writingPurps',
+    'examinPd',
+    'statsPeriod',
+    'writingSystem',
+    'writingTel',
+    'statsField',
+    'examinObjrange',
+    'examinObjArea',
+    'josaUnit',
+    'applyGroup',
+    'josaItm',
+    'pubPeriod',
+    'pubExtent',
+    'pubDate',
+    'publictMth',
+    'examinTrgetPd',
+    'dataUserNote',
+    'mainTermExpl',
+    'dataCollectMth',
+    'examinHistory',
+    'confmNo',
+    'confmDt'
+  ),
+  hname = c(
+조사명    ' ',
+작성유형    ' ',
+통계종류    ' ',
+계속여부    ' ',
+법적근거    ' ',
+조사목적    ' ',
+조사기간    ' ',
+조사주기    ' ',
+조사체계    ' ',
+연락처    ' ',
+통계 활용 분야 실태    ' ( ) · ',
+조사 대상범위    ' ',
+조사 대상지역    ' ',\n공유서비스 개발가이드KOSIS  118
+조사단위 및 조사대상규모    ' ',
+적용분류    ' ',
+조사항목    ' ',
+공표주기    ' ',
+공표범위    ' ',
+공표시기    ' ',
+공표방법 및     ' URL',
+조사대상기간 및 조사기준시점    ' ',
+자료이용자 유의사항    ' ',
+주요 용어해설    ' ',
+자료 수집방법    ' ',
+조사연혁    ' ',
+승인번호    ' ',
+승인일자    ' '
+  )
+)
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+baseurl <- 'https://kosis.kr/openapi/statisticsExplData.do?'
+res <- GET(
+  url = baseurl,
+  query = list(
+    method = 'getList',
+    format = 'json',
+    jsonVD = 'Y',
+    apiKey = v_apiKey,
+    statId = '1962009',
+    metaItm = 'ALL'
+  )
+)
+res %>% content(as = 'text', encoding = 'UTF-8') %>% fromJSON() -> json
+df_lists <- data.frame()
+json_names <- names(json)
+for (i in 1:length(all_items$ename)) {
+  if (is.na(match(all_items$ename[i], json_names))==FALSE) {    
+    v_desc <- select(json, all_items$ename[i])
+    
+    df_lists <-
+      rbind(df_lists, c(all_items$hname[i], paste(na.omit(v_desc))))
+  }
+  
+}
+항목 내용colnames(df_lists) <- c(" ", " ")
+View(df_lists)\n공유서비스 개발가이드KOSIS  119
+    ￭ 예제 소스(Python)
+import sys
+import json
+from urllib.request import urlopen
+from PyQt5.QtWidgets import *
+한글 폰트 사용을 위해서 세팅# 
+from matplotlib import font_manager, rc
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font = font_manager.FontProperties(fname=font_path).get_name()
+rc('font', family=font)
+을 통해 데이터 가져오기#url json 
+with urlopen("http://kosis.kr/openapi/statisticsExplData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwO
+WRjNjgxN2MzNDgwNmY=&format=json&jsonVD=Y&statId=1962009&metaItm=All") as url:
+    json_file = url.read()
+py_json = json.loads(json_file.decode('utf-8'))
+변수 지정 및 데이터 저장#
+data = []
+는 인덱스를 나타냄for i, v in enumerate(py_json): #i
+    #print(json.loads(json_file[i]))
+    value = []
+    if 'statsNm' in v:
+조사명        value.append(" ")
+        value.append(v['statsNm'])
+        data.append(value)
+    if 'statsKind' in v:
+통계종류        value.append(" ")
+        value.append(v['statsKind'])
+        data.append(value)
+    if 'statsContinue' in v:
+계속여부        value.append(" ")
+        value.append(v['statsContinue'])
+        data.append(value)
+    if 'basisLaw' in v:
+법적근거        value.append(" ")
+        value.append(v['basisLaw'])
+        data.append(value)
+    if 'writingPurps' in v:
+조사목적        value.append(" ")
+        value.append(v['writingPurps'])
+        data.append(value)
+    if 'statsPeriod' in v:
+조사주기        value.append(" ")\n공유서비스 개발가이드KOSIS  120
+        value.append(v['statsPeriod'])
+        data.append(value)
+    if 'writingSystem' in v:
+조사체계        value.append(" ")
+        value.append(v['writingSystem'])
+        data.append(value)
+    #if 'pubExtent' in v:
+공표단위        #value.append(" ")
+        #value.append(v['pubExtent'])
+        #data.append(value)
+    if 'pubPeriod' in v:
+공표주기        value.append(" ")
+        value.append(v['pubPeriod'])
+        data.append(value)
+    if 'writingTel' in v:
+연락처        value.append(" ")
+        value.append(v['writingTel'])
+        data.append(value)
+    if 'statsField' in v:
+통계 활용 분야 실태        value.append(" ( ) · ")
+        value.append(v['statsField'])
+        data.append(value)
+    if 'examinObjrange' in v:
+조사대상범위        value.append(" ")
+        value.append(v['examinObjrange'])
+        data.append(value)
+    if 'examinObjArea' in v:
+조사대상지역        value.append(" ")
+        value.append(v['examinObjArea'])
+        data.append(value)
+    if 'josaUnit' in v:
+조사단위및조사대상규모        value.append(" ")
+        value.append(v['josaUnit'])
+        data.append(value)
+    if 'applyGroup' in v:
+적용분류        value.append(" ")
+        value.append(v['applyGroup'])
+        data.append(value)
+    if 'josaItm' in v:
+조사항목        value.append(" ")
+        value.append(v['josaItm'])
+        data.append(value)\n공유서비스 개발가이드KOSIS  121
+    if 'pubExtent' in v:
+공표범위        value.append(" ")
+        value.append(v['pubExtent'])
+        data.append(value)
+    if 'publictMth' in v:
+공표방법및        value.append(" URL")
+        value.append(v['publictMth'])
+        data.append(value)
+    if 'examinTrgetPd' in v:
+조사대상기간및조사기준시점        value.append(" ")
+        value.append(v['examinTrgetPd'])
+        data.append(value)
+    if 'dataUserNote' in v:
+자료이용자유의사항        value.append(" ")
+        value.append(v['dataUserNote'])
+        data.append(value)
+    if 'mainTermExpl' in v:
+주요용어해설        value.append(" ")
+        value.append(v['mainTermExpl'])
+        data.append(value)
+    if 'dataCollectMth' in v:
+자료수집방법        value.append(" ")
+        value.append(v['dataCollectMth'])
+        data.append(value)
+    if 'examinHistory' in v:
+조사연혁        value.append(" ")
+        value.append(v['examinHistory'])
+        data.append(value)
+    if 'confmNo' in v:
+승인번호        value.append(" ")
+        value.append(v['confmNo'])
+        data.append(value)
+    if 'confmDt' in v:
+승인일자        value.append(" ")
+        value.append(v['confmDt'])
+        data.append(value)
+    if 'statsEnd' in v:
+통계종료        value.append(" ")
+        value.append(v['statsEnd'])
+        data.append(value)
+데이터개수#
+count = len(data)\n공유서비스 개발가이드KOSIS  122
+class MyWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setupUI()
+    def setupUI(self):
+        self.setGeometry(800, 200, 600, 600)
+        self.tableWidget = QTableWidget(self)
+        self.tableWidget.resize(600, 600)
+        self.tableWidget.setRowCount(count)
+        self.tableWidget.setColumnCount(2)
+        self.tableWidget.setColumnWidth(1, 450)
+        self.setTableWidgetData()
+        self.tableWidget.resizeRowsToContents()
+    def setTableWidgetData(self):
+항목 설명        column_headers = [' ', ' ']
+        self.tableWidget.setHorizontalHeaderLabels(column_headers)
+        for i in range(count):
+            str_data = str(data[i])
+            item = str_data.replace("'", "").replace("[", "").replace("]", "")
+            total_count = len(item.split(","))
+            
+항목            #
+            title = item.split(",")[0]
+설명            #
+            content = ""
+            for j in range(1, total_count):
+                content += item.split(",")[j]
+            self.tableWidget.setItem(0, i*2, QTableWidgetItem(title))
+            self.tableWidget.setItem(0, (i*2)+1, QTableWidgetItem(content))
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    mywindow = MyWindow()
+    mywindow.show()
+    app.exec_()\n공유서비스 개발가이드KOSIS  123
+2.4.3.2 XML
+    ￭ 호출 URL : http://kosis.kr/openApi/StatsExplain.domethod=getList
+    ￭ 입력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+statId 
+기관* orgId( ID) 
+통계표 로도 가능+tblId( ID) 
+String 통계조사 ID 필수
+metaItm String 요청 항목 
+필수
+전체 - All
+조사명-statsNm
+작성유형-statsKind
+통계종류-statsEnd
+계속여부-statsContinue
+법적근거-basisLaw
+조사목적-writingPurps
+조사기간-examinPd
+조사주기-statsPeriod
+조사체계-writingSystem
+연락처-writingTel
+통계 활용 분야 실태( ) · -statsField
+조사 대상범위-examinObjrange
+조사 대상지역-examinObjArea
+조사단위 및 조사대상규모-josaUnit
+적용분류-applyGroup
+조사항목-josaItm
+공표주기-pubPeriod
+공표범위-pubExtent
+공표시기-pubDate
+공표방법 및 URL-publictMth
+조사대상기간 및 조사기준시점-examinTrgetPd
+자료이용시 유의사항 -dataUserNote
+주요 용어해설-mainTermExpl
+자료 수집방법-dataCollectMth
+조사연혁-examinHistory
+승인번호-confmNo
+승인일자-confmDt
+format String 결과유형(JSON, SDMX) 필수 \n공유서비스 개발가이드KOSIS  124
+    ￭ 출력 변수
+항목명 영문( ) 항목설명 형식
+statsNm 조사명 VARCHAR2(4000)
+statsKind 작성유형 VARCHAR2(4000)
+statsEnd 통계종류 VARCHAR2(4000)
+statsContinue 계속여부 VARCHAR2(4000)
+basisLaw 법적근거 VARCHAR2(4000)
+writingPurps 조사목적 VARCHAR2(4000)
+examinPd 조사기간 VARCHAR2(4000)
+statsPeriod 조사주기 VARCHAR2(4000)
+writingSystem 조사체계 VARCHAR2(4000)
+writingTel 연락처 VARCHAR2(8000)
+statsField 통계 활용 분야 실태 ( ) · VARCHAR2(4000)
+examinObjrange 조사 대상범위 VARCHAR2(4000)
+examinObjArea 조사 대상지역 VARCHAR2(4000)
+josaUnit 조사단위 및 조사대상규모 VARCHAR2(4000)
+applyGroup 적용분류 VARCHAR2(4000)
+josaItm 조사항목 VARCHAR2(4000)
+pubPeriod 공표주기 VARCHAR2(4000)
+pubExtent 공표범위 VARCHAR2(4000)
+pubDate 공표시기 VARCHAR2(4000)
+publictMth 공표방법 및 URL VARCHAR2(4000)
+examinTrgetPd 조사대상기간 및 조사기준시점 VARCHAR2(4000)
+dataUserNote 자료이용자 유의사항 VARCHAR2(4000)
+mainTermExpl 주요 용어해설 VARCHAR2(4000)
+dataCollectMth 자료 수집방법 VARCHAR2(4000)
+examinHistory 조사연혁 VARCHAR2(4000)
+confmNo 승인번호 VARCHAR2(4000)
+confmDt 승인일자 VARCHAR2(4000)\n공유서비스 개발가이드KOSIS  125
+    ￭ 예제 소스 결과
+    ￭ 예제 소스(JSP)
+<!--
+를 이용하여 통계설명자료를 출력하는 예제입니다  KOSIS OpenAPI .
+이 소스는 를 사용하는데 참고가 되도록 제공하는 것으로  KOSIS API
+사용자의 운영환경에 따라 수정작업이 필요합니다  
+유의사항 를 활용하여 개발을 진행하실 때에는 으로 인한  * : Ajax CrossDomain
+통신문제가 발생 할 수 있습니다     .
+방식으로 제공받으실 때에는 개발홈페이지에 임의의 를 생성하여     JSON jsp
+호출함으로써 에 대한 제약을 우회하실 수 있는 개발소스를 제공합니다     CrossDomain .
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml
+1-transitional.dtd">
+<%@ page contentType="text/html; charset=utf-8" %>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+국가데이터처 공유서비스<title> - </title>
+<link type="text/css" rel="stylesheet" media="all" href="https://mgmk.kosis.kr/openapi_dev/ext/style/subCommon.
+css" />
+<script type="text/javascript" language="JavaScript" src="https://mgmk.kosis.kr/openapi_dev/ext/script/jquery-1.
+6.1.min.js"></script>
+<script type="text/javascript" language="JavaScript">
+var mapData;
+되었을때 실행 함수// window onload 
+$(document).ready(function(){
+통계설명자료를 조회하기위해 함수를 호출한다// .
+getSubList("ALL", "1962009");
+});
+/****************************************************
+통계목록 리스트 조회 함수* 
+요청 항목* parameter : metaItm - \n공유서비스 개발가이드KOSIS  126
+통계조사 * statId - Id
+****************************************************/
+function getSubList(metaItm, statId) {
+통신을 위한 호출 함수// ajax 
+$.ajax({
+type: "GET",
+url: "http://mgmk.kosis.kr/openapi_dev/Expt/statisticsExplData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1Yzdh
+ZTMwOWRjNjgxN2MzNDgwNmY=&metaItm=" + metaItm + "&statId=" + statId + "&format=xml&version=v2_1",
+data: "",
+async : true,
+dataType: "xml",
+success:function(object)
+{
+통신이 성공하였을 때 통계설명자료를 화면에 출력하기 위한 함수// ajax 
+var data = object.documentElement.childNodes[1].childNodes;
+var nodeInfo="";
+nodeInfo= "<table cellpadding='0' cellspacing='0' class='TB02' summary=''>";
+nodeInfo+=" <thead>"
+nodeInfo+=" <tr>"
+항목nodeInfo+=" <th class='fst al_C' scope='col' style='width:20%;'> </th>"
+설명nodeInfo+=" <th scope='col'> </th>"
+nodeInfo+=" </tr>"
+nodeInfo+=" </thead>"
+nodeInfo+=" <tbody>"
+for (var i = 0; i < data.length; i++) {
+if (data[i].tagName == "statsNm") {
+nodeInfo+=" <tr>"
+조사명nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "statsKind") {
+nodeInfo+=" <tr>"
+작성유형nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "statsEnd") {
+nodeInfo+=" <tr>"
+통계종류nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "statsContinue") {
+nodeInfo+=" <tr>"
+계속여부nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"\n공유서비스 개발가이드KOSIS  127
+}
+if (data[i].tagName == "basisLaw") {
+nodeInfo+=" <tr>"
+법적근거nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "writingPurps") {
+nodeInfo+=" <tr>"
+조사목적nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "examinPd") {
+nodeInfo+=" <tr>"
+조사기간nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "statsPeriod") {
+nodeInfo+=" <tr>"
+조사주기nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "writingSystem") {
+nodeInfo+=" <tr>"
+조사체계nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "writingTel") {
+nodeInfo+=" <tr>"
+연락처nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "statsField") {
+nodeInfo+=" <tr>"
+통계 활용 분야 실태nodeInfo+=" <td class='fst al_C' scope='row'> ( ) · </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "examinObjrange") {
+nodeInfo+=" <tr>"
+조사대상범위nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "examinObjArea") {
+nodeInfo+=" <tr>"
+조사대상지역nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"\n공유서비스 개발가이드KOSIS  128
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "josaUnit") {
+nodeInfo+=" <tr>"
+조사단위및조사대상규모nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "applyGroup") {
+nodeInfo+=" <tr>"
+적용분류nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "josaItm") {
+nodeInfo+=" <tr>"
+조사항목nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "pubPeriod") {
+nodeInfo+=" <tr>"
+공표주기nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "pubExtent") {
+nodeInfo+=" <tr>"
+공표범위nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "pubDate") {
+nodeInfo+=" <tr>"
+공표시기nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "publictMth") {
+nodeInfo+=" <tr>"
+공표방법및nodeInfo+=" <td class='fst al_C' scope='row'> URL</td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "examinTrgetPd") {
+nodeInfo+=" <tr>"
+조사대상기간및조사기준시점nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "dataUserNote") {
+nodeInfo+=" <tr>"
+자료이용자유의사항nodeInfo+=" <td class='fst al_C' scope='row'> </td>"\n공유서비스 개발가이드KOSIS  129
+    ￭ 예제 소스(R)
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "mainTermExpl") {
+nodeInfo+=" <tr>"
+주요용어해설nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "dataCollectMth") {
+nodeInfo+=" <tr>"
+자료수집방법nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "examinHistory") {
+nodeInfo+=" <tr>"
+조사연혁nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "confmNo") {
+nodeInfo+=" <tr>"
+승인번호nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+if (data[i].tagName == "confmDt") {
+nodeInfo+=" <tr>"
+승인일자nodeInfo+=" <td class='fst al_C' scope='row'> </td>"
+nodeInfo+=" <td class='al_C'>"+data[i].childNodes[0].data+"</td>"
+nodeInfo+=" </tr>"
+}
+}
+nodeInfo+=" </tbody>"
+nodeInfo+="</table>"
+var r_node = document.getElementById("content");
+r_node.innerHTML =nodeInfo;
+},
+error: function(xhr,status,error){
+alert("error = " + error);
+}
+});
+}
+</script>
+</head>
+<body>
+<div id="content" ></div>
+</body>
+</html>\n공유서비스 개발가이드KOSIS  130
+의 자료를 로 받은 경우library(rvest) # api xml, html
+에서 데이터 수집library(XML)   # API XML
+library(RCurl)
+library(tidyverse)
+library(xml2)
+all_items  <- data.frame(
+  ename = c(
+    'statsNm',
+    'statsKind',
+    'statsEnd',
+    'statsContinue',
+    'basisLaw',
+    'writingPurps',
+    'examinPd',
+    'statsPeriod',
+    'writingSystem',
+    'writingTel',
+    'statsField',
+    'examinObjrange',
+    'examinObjArea',
+    'josaUnit',
+    'applyGroup',
+    'josaItm',
+    'pubPeriod',
+    'pubExtent',
+    'pubDate',
+    'publictMth',
+    'examinTrgetPd',
+    'dataUserNote',
+    'mainTermExpl',
+    'dataCollectMth',
+    'examinHistory',
+    'confmNo',
+    'confmDt'
+  ),
+  hname = c(
+조사명    ' ',
+작성유형    ' ',
+통계종류    ' ',
+계속여부    ' ',
+법적근거    ' ',
+조사목적    ' ',
+조사주기    ' ',
+조사체계    ' ',
+공표범위    ' ',
+공표주기    ' ',
+연락처    ' ',
+통계 활용 분야 실태    ' ( ) · ',
+조사 대상범위    ' ',
+조사 대상지역    ' ',
+조사단위 및 조사대상규모    ' ',
+적용분류    ' ',\n공유서비스 개발가이드KOSIS  131
+조사항목    ' ',
+공표주기    ' ',
+공표범위    ' ',
+공표시기    ' ',
+공표방법 및     ' URL',
+조사대상기간 및 조사기준시점    ' ',
+자료이용자 유의사항    ' ',
+주요 용어해설    ' ',
+자료 수집방법    ' ',
+조사연혁    ' ',
+승인번호    ' ',
+승인일자    ' '
+  )
+)
+환경변수에 사용자 정의 환경변수 편집 # key ( usethis::edit_r_environ() )
+# KOSIS_TOKEN = ZjZjOTI3MjRjNmU1YzdhZTMwOWRjNjgxN2MzNDgwNmY=
+v_apiKey = Sys.getenv('KOSIS_TOKEN')
+baseurl <- 'https://kosis.kr/openapi/statisticsExplData.do?'
+requestURL <- paste0(
+  baseurl,
+  "method=getList",
+  "&format=xml",
+  "&apiKey=" ,
+  v_apiKey %>% I(),
+  "&statId=" ,
+  '1962009',
+  "&metaItm=",
+  'ALL'
+)
+raw_xml <- read_xml(requestURL)
+xml_nodeSet <- xml_find_all(raw_xml, "//Structures")
+df_lists <- data.frame()
+for (i in 1:xml_length(xml_nodeSet[1])) {
+  j <- xml_length(xml_nodeSet[1]) - i + 1
+  
+  v_desc <- xml_child(xml_nodeSet[[1]], j) %>% xml_text()
+  v_name <- xml_child(xml_nodeSet[[1]], j) %>% xml_name()
+  
+  all_items %>% filter(ename == v_name)  %>% select(hname) -> i_hname
+  
+  df_lists <- rbind(df_lists, c(item = i_hname, desc = v_desc))
+  
+}
+항목 내용colnames(df_lists) <- c(" ", " ")
+View(df_lists)\n공유서비스 개발가이드KOSIS  132
+ ￭ 예제 소스(Python)
+import sys
+import requests
+from bs4 import BeautifulSoup
+from PyQt5.QtWidgets import *
+open_url = 'http://kosis.kr/openapi/statisticsExplData.do?method=getList&apiKey=ZjZjOTI3MjRjNmU1YzdhZTMwOW
+RjNjgxN2MzNDgwNmY=&format=xml&statId=1962009&metaItm=All&version=v2_1'
+res = requests.get(open_url)
+soup = BeautifulSoup(res.content, 'html.parser')
+변수 지정 및 데이터 저장#
+data = []
+count = 0
+if soup.find('statsnm') is not None:
+    value = []
+조사명    value.append(" ")
+    value.append(soup.find('statsnm').text)
+    data.append(value)
+    count += 1
+if soup.find('statskind') is not None:
+    value = []
+작성유형    value.append(" ")
+    value.append(soup.find('statskind').text)
+    data.append(value)
+    count += 1
+if soup.find('statsEnd') is not None:
+    value = []
+통계종류    value.append(" ")
+    value.append(soup.find('statsEnd').text)
+    data.append(value)
+    count += 1
+if soup.find('statscontinue') is not None:
+    value = []
+계속여부    value.append(" ")
+    value.append(soup.find('statscontinue').text)
+    data.append(value)
+    count += 1
+if soup.find('basislaw') is not None:
+    value = []
+법적근거    value.append(" ")
+    value.append(soup.find('basislaw').text)
+    data.append(value)
+    count += 1\n공유서비스 개발가이드KOSIS  133
+if soup.find('writingpurps') is not None:
+    value = []
+조사목적    value.append(" ")
+    value.append(soup.find('writingpurps').text)
+    data.append(value)
+    count += 1
+if soup.find('examinPd') is not None:
+    value = []
+조사기간    value.append(" ")
+    value.append(soup.find('examinPd').text)
+    data.append(value)
+    count += 1
+if soup.find('statsperiod') is not None:
+    value = []
+조사주기    value.append(" ")
+    value.append(soup.find('statsperiod').text)
+    data.append(value)
+    count += 1
+if soup.find('writingsystem') is not None:
+    value = []
+조사체계    value.append(" ")
+    value.append(soup.find('writingsystem').text)
+    data.append(value)
+    count += 1
+if soup.find('writingtel') is not None:
+    value = []
+연락처    value.append(" ")
+    value.append(soup.find('writingtel').text)
+    data.append(value)
+    count += 1
+if soup.find('statsfield') is not None:
+    value = []
+통계 활용 분야 실태    value.append(" ( ) · ")
+    value.append(soup.find('statsfield').text)
+    data.append(value)
+    count += 1
+if soup.find('examinobjrange') is not None:
+    value = []
+조사대상범위    value.append(" ")
+    value.append(soup.find('examinobjrange').text)
+    data.append(value)
+    count += 1
+if soup.find('examinobjArea') is not None:
+    value = []
+조사대상지역    value.append(" ")
+    value.append(soup.find('examinobjArea').text)\n공유서비스 개발가이드KOSIS  134
+    data.append(value)
+    count += 1
+if soup.find('josaunit') is not None:
+    value = []
+조사단위및조사대상규모    value.append(" ")
+    value.append(soup.find('josaunit').text)
+    data.append(value)
+    count += 1
+if soup.find('applygroup') is not None:
+    value = []
+적용분류    value.append(" ")
+    value.append(soup.find('applygroup').text)
+    data.append(value)
+    count += 1
+if soup.find('josaitm') is not None:
+    value = []
+조사항목    value.append(" ")
+    value.append(soup.find('josaitm').text)
+    data.append(value)
+    count += 1
+if soup.find('pubperiod') is not None:
+    value = []
+공표주기    value.append(" ")
+    value.append(soup.find('pubperiod').text)
+    data.append(value)
+    count += 1
+if soup.find('pubExtent') is not None:
+    value = []
+공표범위    value.append(" ")
+    value.append(soup.find('pubExtent').text)
+    data.append(value)
+    count += 1
+if soup.find('pubDate') is not None:
+    value = []
+공표시기    value.append(" ")
+    value.append(soup.find('pubDate').text)
+    data.append(value)
+    count += 1
+if soup.find('publictmth') is not None:
+    value = []
+공표방법및    value.append(" URL")
+    value.append(soup.find('publictmth').text)
+    data.append(value)
+    count += 1
+if soup.find('examintrgetpd') is not None:\n공유서비스 개발가이드KOSIS  135
+    value = []
+조사대상기간및조사기준시점    value.append(" ")
+    value.append(soup.find('examintrgetpd').text)
+    data.append(value)
+    count += 1
+if soup.find('datausernote') is not None:
+    value = []
+자료이용자유의사항    value.append(" ")
+    value.append(soup.find('datausernote').text)
+    data.append(value)
+    count += 1
+if soup.find('maintermexpl') is not None:
+    value = []
+주요용어해설    value.append(" ")
+    value.append(soup.find('maintermexpl').text)
+    data.append(value)
+    count += 1
+if soup.find('datacollectmth') is not None:
+    value = []
+자료수집방법    value.append(" ")
+    value.append(soup.find('datacollectmth').text)
+    data.append(value)
+    count += 1
+if soup.find('examinhistory') is not None:
+    value = []
+조사연혁    value.append(" ")
+    value.append(soup.find('examinhistory').text)
+    data.append(value)
+    count += 1
+if soup.find('confmno') is not None:
+    value = []
+승인번호    value.append(" ")
+    value.append(soup.find('confmno').text)
+    data.append(value)
+    count += 1
+if soup.find('confmdt') is not None:
+    value = []
+승인일자    value.append(" ")
+    value.append(soup.find('confmdt').text)
+    data.append(value)
+    count += 1
+class MyWindow(QMainWindow):
+    
+    def __init__(self):
+        super().__init__()\n공유서비스 개발가이드KOSIS  136
+        self.setupUI()
+    def setupUI(self):
+        self.setGeometry(800, 200, 600, 600)
+        self.tableWidget = QTableWidget(self)
+        self.tableWidget.resize(600, 600)
+        self.tableWidget.setRowCount(count)
+        self.tableWidget.setColumnCount(2)
+        self.tableWidget.setColumnWidth(1, 450)
+        self.setTableWidgetData()
+        self.tableWidget.resizeRowsToContents()
+설정        #window title 
+        self.setWindowTitle(soup.find('structures').find('statsnm').text)
+    def setTableWidgetData(self):
+항목 설명        column_headers = [' ', ' ']
+        self.tableWidget.setHorizontalHeaderLabels(column_headers)
+        for i in range(count):
+            str_data = str(data[i])
+            item = str_data.replace("'", "").replace("[", "").replace("]", "")
+            total_count = len(item.split(","))
+            title = item.split(",")[0]
+            content = ""
+            for j in range(1, total_count):
+                content += item.split(",")[j]
+            self.tableWidget.setItem(0, i * 2, QTableWidgetItem(title))
+            self.tableWidget.setItem(0, (i * 2) + 1, QTableWidgetItem(content))
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    mywindow = MyWindow()
+    mywindow.show()
+    app.exec_()\n공유서비스 개발가이드KOSIS  137
+메타자료2.5 
+    ￭ 통계자료에 대한 메타자료 제공을 위한 입니다OpenAPI . 
+특징2.5.1 
+    ￭ 자료 제공형태 : XML, JSON
+서비스 활용2.5.2 
+생성2.5.2.1 URL
+    ￭ 개발가이드 통계표 설명 생성> > URL
+작성기관 통계조사명 통계표명 등 을 입력하여‘ ’, ‘ ’, ‘ ’ 사용하고자 하는 자료를 조회한 뒤 조회결과에 
+서 생성할 통계표 ①선택하고, ②통계표 설명 분류선택, ③세부정보 입력하여 ④ 생성 버튼URL 을 
+을 누르면 결과 값을 제공받을 수 있는 이 생성됩니다URL .
+⑤통계표조회 버튼을 클릭하면 해당 자료의 통계표를 볼 수 있습니다.
+\n공유서비스 개발가이드KOSIS  138
+활용방법2.5.2 
+통계표 명칭2.5.2.1 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=TBL
+    ￭ 입력 변수
+    ￭ 출력 변수
+기관 명칭2.5.2.2 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=ORG
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표 ID 필수
+format String 결과유형(JSON, SDMX) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+TBL_NM 통계표 국문명 VARCHAR2(300)
+TBL_NM_ENG 통계표 영문명 VARCHAR2(300)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+format String 결과유형(JSON, SDMX) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+ORG_NM 기관 국문명 VARCHAR2(300)
+TORG_NM_ENG 기관 영문명 VARCHAR2(300)\n공유서비스 개발가이드KOSIS  139
+수록정보2.5.2.3 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=PRD
+    ￭ 입력 변수
+    ￭ 출력 변수
+분류 항목2.5.2.4 JSON ( / )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=ITM
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+format String 결과유형(JSON, SDMX) 필수
+detail String 전체시점 정보 제공 선택
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+PRD_SE 수록주기 VARCHAR2(300)
+PRD_DE 수록시점 VARCHAR2(8)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 코드 필수
+tblId String 통계표ID 필수
+objId String 분류코드 선택
+itmId String 자료코드 선택
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+OBJ_ID 분류 ID VARCHAR2(40)
+OBJ_NM 분류 국문명 VARCHAR2(3000)
+OBJ_NM_ENG 분류 영문명 VARCHAR2(3000)
+ITM_ID 자료코드 ID VARCHAR2(40)
+ITM_NM 자료코드 국문명 VARCHAR2(3000)
+ITM_NM_ENG 자료코드 영문명 VARCHAR2(3000)
+UP_ITM_ID 상위 자료코드 VARCHAR2(40)
+OBJ_ID_SN 분류값 순번 NUMBER(3)
+UNIT_ID 단위ID VARCHAR2(40)
+UNIT_NM 단위 국문명 VARCHAR2(1000)
+UNIT_ENG_NM 단위 영문명 VARCHAR2(1000)\n공유서비스 개발가이드KOSIS  140
+주석2.5.2.5 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=CMMT
+    ￭ 입력 변수
+    ￭ 출력 변수
+단위2.5.2.6 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=UNIT
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+format String 결과유형(JSON, SDMX) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+CMMT_NM 주석유형 VARCHAR2(40)
+CMMT_DC 주석 VARCHAR2(3000)
+OBJ_ID 분류 ID VARCHAR2(40)
+OBJ_NM 분류 명 VARCHAR2(3000)
+ITM_ID 자료코드 ID VARCHAR2(40)
+ITM_NM 자료코드 명 VARCHAR2(3000)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관코드 필수
+tblId String 통계표ID 필수
+format String 결과유형(JSON, SDMX) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+UNIT_NM 단위 국문명 VARCHAR2(1000)
+UNIT_NM_ENG 단위 영문명 VARCHAR2(1000)\n공유서비스 개발가이드KOSIS  141
+출처2.5.2.7 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=SOURCE
+    ￭ 입력 변수
+    ￭ 출력 변수
+가중치2.5.2.8 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=WGT
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+JOSA_NM 조사명 VARCHAR2(300)
+DEPT_NM 통계표 담당부서 VARCHAR2(300)
+DEPT_PHONE 단위 담당부서 전화번호 VARCHAR2(100)
+STAT_ID 통계조사ID VARCHAR2(40)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+분류코드 분류코드1~ 8 String 분류코드 분류코드1~ 8 선택
+ITEM String 항목 선택
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+C1 ~ C8 분류값 분류값 ID1 ~ ID8 VARCHAR2(40)
+C1_NM ~ C8_NM 분류값 명 분류값 명1 ~ 8 VARCHAR2(3000)
+ITM_ID 항목 ID VARCHAR2(40)
+ITM_NM 항목명 VARCHAR2(3000)
+WGT_CO 가중치 NUMBER(23,10)\n공유서비스 개발가이드KOSIS  142
+자료갱신일2.5.2.9 JSON ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=NCD
+   ￭ 입력 변수
+    ￭ 출력 변수
+통계표 명칭2.5.2.10 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=TBL
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+format String 결과유형(JSON, SDMX) 필수
+항목명 영문( ) 항목설명 형식
+tblNm 통계표 국문명 VARCHAR2(300)
+tblNmEng 통계표 영문명 VARCHAR2(300)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+prdSe String 수록주기 선택
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+ORG_NM 기관명 VARCHAR2(300)
+TBL_NM 통계표명 VARCHAR2(300)
+PRD_SE 수록주기 VARCHAR2(300)
+PRD_DE 수록시점 VARCHAR2(8)
+SEND_DE 자료갱신일 VARCHAR2(20)\n공유서비스 개발가이드KOSIS  143
+기관 명칭2.5.2.11 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=ORG
+    ￭ 입력 변수
+    ￭ 출력 변수
+수록정보2.5.2.12 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=PRD
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+format String 결과유형(JSON, SDMX) 필수
+항목명 영문( ) 항목설명 형식
+orgNm 기관 국문명 VARCHAR2(300)
+orgNmEng 기관 영문명 VARCHAR2(300)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+format String 결과유형(JSON, SDMX) 필수
+detail String 전체시점 정보 제공 선택
+항목명 영문( ) 항목설명 형식
+prdSe 수록주기 VARCHAR2(300)
+PrdDe 수록시점 VARCHAR2(8)\n공유서비스 개발가이드KOSIS  144
+분류 항목2.5.2.13 XML ( / )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=ITM
+    ￭ 입력 변수
+    ￭ 출력 변수
+주석2.5.2.14 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=CMMT
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+objId String 분류코드 선택
+itmId String 자료코드 선택
+format String 결과유형(JSON, SDMX) 필수
+항목명 영문( ) 항목설명 형식
+objId 분류 ID VARCHAR2(40)
+objNm 분류 국문명 VARCHAR2(3000)
+objNmEng 분류 영문명 VARCHAR2(3000)
+itmId 자료코드 ID VARCHAR2(40)
+itmNm 자료코드 국문명 VARCHAR2(3000)
+itmNmEng 자료코드 영문명 VARCHAR2(3000)
+upItmId 상위 자료코드 VARCHAR2(40)
+objIdSn 분류값 순번 NUMBER(3)
+unitId 단위ID VARCHAR2(40)
+unitNm 단위 국문명 VARCHAR2(1000)
+unitEngNm 단위 영문명 VARCHAR2(1000)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+format String 결과유형(JSON, SDMX) 필수
+항목명 영문( ) 항목설명 형식
+CMMT_NM 주석유형 VARCHAR2(40)
+CMMT_DC 주석 VARCHAR2(3000)
+OBJ_ID 분류 ID VARCHAR2(40)
+OBJ_NM 분류 명 VARCHAR2(3000)
+ITM_ID 자료코드 ID VARCHAR2(40)
+ITM_NM 자료코드 명 VARCHAR2(3000)\n공유서비스 개발가이드KOSIS  145
+단위2.5.2.15 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=UNIT
+    ￭ 입력 변수
+    ￭ 출력 변수
+출처2.5.2.16 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=SOURCE
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+unitId String 단위코드 필수
+format String 결과유형(JSON, SDMX) 필수
+항목명 영문( ) 항목설명 형식
+unitNm 단위 국문명 VARCHAR2(1000)
+unitNmEng 단위 영문명 VARCHAR2(1000)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+format String 결과유형(JSON, SDMX) 필수
+항목명 영문( ) 항목설명 형식
+josaNm 조사명 VARCHAR2(300)
+deptNm 통계표 담당부서 VARCHAR2(300)
+deptPhone 통계표 담당부서 전화번호 VARCHAR2(100)
+statId 통계조사 ID VARCHAR2(40)\n공유서비스 개발가이드KOSIS  146
+가중치2.5.2.17 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=WGT
+    ￭ 입력 변수
+    ￭ 출력 변수
+자료갱신일2.5.2.18 XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsData.do?method=getMeta&type=NCD
+      ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+분류코드 분류코드1~ 8 String 분류코드 분류코드1~ 8 선택
+ITEM String 항목 선택
+format String 결과유형(JSON, SDMX) 필수
+항목명 영문( ) 항목설명 형식
+C1 ~ C8 분류값 분류값 ID1 ~ ID8 VARCHAR2(40)
+C1_NM ~ C8_NM 분류값 명 분류값 명1 ~ 8 VARCHAR2(3000)
+ITM_ID 항목 ID VARCHAR2(40)
+ITM_NM 항목명 VARCHAR2(3000)
+WGT_CO 가중치 NUMBER(23,10)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+orgId String 기관 ID 필수
+tblId String 통계표ID 필수
+prdSe String 수록주기 선택
+format String 결과유형(json, xml) 필수
+항목명 영문( ) 항목설명 형식
+orgNm 기관명 VARCHAR2(300)
+tblNm 통계표명 VARCHAR2(300)
+prdSe 수록주기 VARCHAR2(300)
+prdDe 수록시점 VARCHAR2(8)
+sendDe 자료갱신일 VARCHAR2(20)\n공유서비스 개발가이드KOSIS  147
+통합검색2.6 KOSIS
+    ￭ 국가통계포털 의 통합검색결과 제공을 위한 입니다(www.kosis.kr) OpenAPI . 
+특징2.6.1 
+    ￭ 자료 제공형태 : JSON
+서비스 활용2.6.2 
+생성2.6.2.1 URL
+    ￭ 개발가이드 통합검색 생성> KOSIS > URL
+검색어 정렬 페이지번호 등 을 입력한 뒤 복사 결과값보기 중 원하는 서비스에 해당하‘ ’, ‘ ’, ‘ ’ ‘URL ’, ’ ’ 
+는 버튼을 누르면 결과값을 제공받을 수 있습니다.
+\n공유서비스 개발가이드KOSIS  148
+활용방법2.6.2 
+2.6.2.1 JSON
+    ￭ 호출 URL : http://kosis.kr/openapi/statisticsSearch.do?method=getList
+    ￭ 입력 변수
+    
+출력     ￭ 변수 
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수 
+searchNm String 검색명 필수
+sort String
+정렬
+비고 정확도 최신순 : RANK, DATE
+호출 파라미터에 없을 경우에는    sort ※ 
+자동으로 로 정렬   RANK 
+선택
+startCount String 페이지 번호 선택
+resultCount String
+데이터 출력 개수
+비고 : resultCount=20, startCount=1 :    
+번 결과 리턴                       1~20
+       resultCount=20, startCount=2 :    
+번 결과 리턴       21~40
+선택
+format String 결과유형(json) 필수 
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+ORG_ID 기관코드 VARCHAR2(40)
+ORG_NM 기관명 VARCHAR2(300)
+TBL_ID 통계표ID VARCHAR2(40)
+TBL_NM 통계표명 VARCHAR2(300)
+STAT_ID 조사코드 VARCHAR2(40)
+STAT_NM 조사명 VARCHAR2(400)
+VW_CD 목록구분 KOSIS VARCHAR2(40)
+MT_ATITLE 통계표 위치 KOSIS VARCHAR2(4000)
+FULL_PATH_ID 통계표 위치 VARCHAR2(400)
+CONTENTS 통계표 주요내용 CLOB
+STRT_PRD_DE 수록기간 시작일 VARCHAR2(20)
+END_PRD_DE 수록기간 종료일 VARCHAR2(20)
+ITEM03 통계표 주석 CLOB
+REC_TBL_SE 추천통계표 여부 VARCHAR2(10)
+TBL_VIEW_URL 통계표 이동 목록으로 이동URL (KOSIS ) VARCHAR2(4000)
+LINK_URL 통계표 이동 통계표로 이동URL (KOSIS ) VARCHAR2(4000)
+STAT_DB_CNT 검색결과 건수 VARCHAR2(4000)
+QUERY 검색어명 VARCHAR2(4000)\n공유서비스 개발가이드KOSIS  149
+통계주요지표2.7 
+    ￭ 지표 서비스를 이용하기 위한 기반의 데이터형식 요청변수 반환되는 코  Open API JSON, XML , , 
+드값을 제공합니다   .
+특징2.7.1 
+    ￭ 자료 제공형태 : XML, JSON
+서비스 활용2.7.2 
+생성2.7.2.1 URL
+    ￭ 개발가이드 통계주요지표 생성> > URL
+서비스선택 상세기능선택 을 선택한 뒤 생성 복사 중 원하는 서비스에 해당하는 버튼‘ ’, ‘ ’ ‘URL ’, ’URL ’ 
+을 누르면 결과값을 제공받을 수 있습니다.
+\n공유서비스 개발가이드KOSIS  150
+활용방법2.7.2 
+지표 고유번호별 설명자료조회2.7.2.1 JSON, XML ( )
+    ￭ 호출 URL : 
+        http://kosis.kr/openapi/pkNumberService.do?method=getList&service=1&serviceDetail=pkAll
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+jipyoId String 지표 ID 필수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                        1~20
+       numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+jipyoExplan 설명자료 제목 VARCHAR2(100)
+jipyoExplan1 개념 CLOB\n공유서비스 개발가이드KOSIS  151
+지표명별 설명자료조회2.7.2.2 JSON, XML ( )
+    ￭ 호출 URL : 
+       http://kosis.kr/openapi/indExpService.do?method=getList&service=2&serviceDetail=indAll
+   ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+jipyoNm String 지표명 필수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                        1~20
+       numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+jipyoExplan 설명자료 제목 VARCHAR2(100)
+jipyoExplan1 개념 CLOB\n공유서비스 개발가이드KOSIS  152
+목록별 지표조회2.7.2.3 JSON, XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/indiListService.do?method=getList&service=3
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+listId String 목록ID 필수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                        1~20
+       numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+listId 세부목록ID VARCHAR2(40)
+listNm 세부부문명 VARCHAR2(300)
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+unit 단위 VARCHAR2(200)
+areaTypeName 지역구분명 VARCHAR2(10)
+prdSeName 수록주기명 VARCHAR2(10)
+strtPrdDe 수록시작시점 VARCHAR2(8)
+endPrdDe 수록종료시점 VARCHAR2(8)
+rn 수록시점개수 NUMBER(5)
+listSn1 목록순서1 NUMBER(22)
+listSn2 목록순서2 NUMBER(22)
+prdDe 시점 VARCHAR2(100)
+repJipyoId 대표지표ID NUMBER(20)
+repJipyoNm 대표지표명 VARCHAR2(300)
+repJipyoUrl 대표지표URL VARCHAR2(3000)
+explainUrl 지표설명URL VARCHAR2(3000)\n공유서비스 개발가이드KOSIS  153
+지표명별 목록조회2.7.2.4 JSON, XML ( )
+    ￭ 호출 URL : 
+        http://kosis.kr/openapi/indListSearchRequest.do?method=getList&service=4&serviceDetail=indList
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+jipyoNm String 지표명 필수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                        1~20
+       numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml) 필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+unit 단위 VARCHAR2(200)
+areaTypeName 지역구분명 VARCHAR2(10)
+prdSeName 수록주기명 VARCHAR2(10)
+strtPrdDe 수록시작시점 VARCHAR2(8)
+endPrdDe 수록종료시점 VARCHAR2(8)
+rn 수록시점개수 NUMBER(5)
+prdDe 종료시점 주기명 + VARCHAR2(100)\n공유서비스 개발가이드KOSIS  154
+고유번호별 목록조회2.7.2.5 JSON,XML ( )
+    ￭ 호출 URL : 
+        http://kosis.kr/openapi/indListSearchRequest.do?method=getList&service=4&serviceDetail=indList
+    ￭ 입력 변수
+    ￭ 출력 변수
+ 
+ 
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+jipyoId String 지표ID 필수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                        1~20
+       numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml)  필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+unit 단위 VARCHAR2(200)
+areaTypeName 지역구분명 VARCHAR2(10)
+prdSeName 수록주기명 VARCHAR2(10)
+strtPrdDe 수록시작시점 VARCHAR2(8)
+endPrdDe 수록종료시점 VARCHAR2(8)
+rn 수록시점개수 NUMBER(5)
+prdDe 종료시점 주기명 + VARCHAR2(100)\n공유서비스 개발가이드KOSIS  155
+고유번호별 지표 상세조회2.7.2.6 JSON,XML ( )
+    ￭ 호출 URL : http://kosis.kr/openapi/indIdDetailSearchRequest.do?method=getList&service=4
+        &serviceDetail=indIdDetail
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+jipyoId String 지표ID 필수
+시점기준
+startPrdDe String 조회 시작 시점 선택
+endPrdDe String 조회 종료 시점
+최신자료기준
+rn String 조회 기준 시점 선택
+srvRn String 조회 시점 개수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                       1~20
+        numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml)  필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+prdSe 수록주기 VARCHAR2(20)
+prdDe 시점 VARCHAR2(8)
+itmNm 항목 VARCHAR2(300)
+val 통계수치 NUMBER(25,10)\n공유서비스 개발가이드KOSIS  156
+수록주기별 목록조회2.7.2.7 JSON,XML ( )
+    ￭ 호출 URL :
+       http://kosis.kr/openapi/prListSearchRequest.do?method=getList&service=4&serviceDetail=prList
+    ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 항목설명 형식
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+unit 단위 VARCHAR2(200)
+areaTypeName 지역구분명 VARCHAR2(10)
+prdSeName 수록주기명 VARCHAR2(10)
+strtPrdDe 수록시작시점 VARCHAR2(8)
+endPrdDe 수록종료시점 VARCHAR2(8)
+rn 수록시점개수 NUMBER(5)
+prdDe 종료시점 주기명 + VARCHAR2(100)
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+prdSe String 수록주기 필수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                        1~20
+       numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml)  필수
+content String 헤더 유형(html, json) 선택\n공유서비스 개발가이드KOSIS  157
+지표명별 상세조회2.7.2.8 JSON,XML ( )
+    ￭ 호출 URL :http://kosis.kr/openapi/indDetailSearchRequest.do?method=getList&service=4
+       &serviceDetail=indDetail
+   ￭ 입력 변수
+    ￭ 출력 변수
+항목명 영문( ) 변수타입 항목설명 비고 
+apiKey String 발급된 인증키 필수
+jipyoNm String 지표명 필수
+시점기준
+startPrdDe String 조회 시작 시점 선택
+endPrdDe String 조회 종료 시점
+최신자료기준
+rn String 조회 기준 시점 선택
+srvRn String 조회 시점 개수
+pageNo String 페이지 번호 선택
+numOfRows String
+데이터 출력 개수
+비고 : numOfRows=20, pageNo=1 :      
+번 결과 리턴                       1~20
+        numOfRows=20, pageNo=2 :
+번 결과 리턴       21~40
+호출 파라미터에 pageNo, numOfRows  ※ 
+없을경우에는 자동으로    pageNo=1,     
+으로 결과 리턴   numOfRows=10
+선택
+format String 결과유형(json, xml)  필수
+content String 헤더 유형(html, json) 선택
+항목명 영문( ) 항목설명 형식
+statJipyoId 지표ID NUMBER(20)
+statJipyoNm 지표명 VARCHAR2(300)
+prdSe 수록주기 VARCHAR2(20)
+prdDe 시점 VARCHAR2(8)
+itmNm 항목 VARCHAR2(300)
+val 통계수치 NUMBER(25,10)\n공유서비스 개발가이드KOSIS  158
+참고< > SDMX
+ 
+ 공유서비스 자료 제공형태 중에서 는 의 일종으로서 통계에 특화된 로 보시면 됩니다KOSIS SDMX XML XML .
+는 의 약어로 통계작성기구 기관 간의 다양한 형태의 통계 SDMX Statistical Data and Metadata eXchange ( )
+자료를 기반으로 제공하여 교환과 공유를 효율적으로 지원합니다XML .
+ 표준은 국제결제은행 유럽중앙은행 유럽통계처 국제통화기금 경제협력개발기구SDMX (BIS), , (Eurostat), (IMF), 
+( 통계국 및 세계은행의 국제기구들로부터 후원을 받고 있습니다OECD), UN .
+ 현재 은 년 월에 국제표준화기구 로 국제표준 인증을 받았으며 각 국의 국가데이Version 2.1 2013 1 ISO( ) 17369
+터처와 여러 국제기구에 이르기까지 사용범위가 점차 확대되고 있습니다 .
+ 표준 및 지침 개발도구 새로운 소식 등은 현재 SDMX , (software), sdmx.org웹사이트 링크 를 통해 제공되고 ( )  
+있습니다.
+파일에 대한 설명 SDMX (SDMX Version 2.1)※ 
+  
+구 분  설  명
+DSD
+의 약어로 통계자료에 대한 의미와 구조를 정의Data Structure Definition
+통계표를 예를 들면 통계표에 대한 설명과 통계표의 형태를 파악할 수 있는 통
+계표의 구성정보와 분류 분류값 단위 항목에 대한 상세정보 코드 및 명칭 를 담, , , ( )
+고 있음
+DATA
+파일은 에서 정의한 구성정보에 주기 시점에 따른 수치정보를 정의DATA DSD , 
+에서는 두 가지 포맷으로 나뉘어짐SDMX version 2.1 Generic, StructureSpecific 
+• 데이터를 담는 구성요소가 구조를 정의하는 메세지와 독립적인Generic : XML  
+형태로 이루어져 있으며 통계구성정보 및 수치정보가 각 요소 항Element( , 
+목 로 구성되어 있어 에 비해 파일 용량이 큼) StructureSpecific
+• 데이터를 담는 구성요소는 구조를 정의하는 메세지에StructureSpecific : XML  
+의존적인 형태로 이루어져 있으며 통계구성정보 및 수치정보는 하나의 
+요 소 항 목 에  속 성 로  나열 되 어 있 어  에 비 해 파 일  용 량 이Element( , ) Attribute( ) Generic 작음  

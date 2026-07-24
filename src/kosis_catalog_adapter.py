@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -15,6 +16,22 @@ except ImportError:
 
 def as_string_list(value: Any) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def source_name_from_record(record: dict[str, Any]) -> str | None:
+    """v4 SOURCE 응답의 조사명을 canonical source_name으로 보존한다."""
+    direct = str(record.get("source") or "").strip()
+    if direct:
+        return direct
+    for source in record.get("source_metadata", []):
+        if isinstance(source, dict) and str(source.get("JOSA_NM") or "").strip():
+            return str(source["JOSA_NM"]).strip()
+    return None
+
+
+def api_status_from_record(record: dict[str, Any]) -> dict[str, str]:
+    raw_status = record.get("api_status")
+    return {str(endpoint): str(status) for endpoint, status in raw_status.items()} if isinstance(raw_status, dict) else {}
 
 
 def adapt_record(record: dict[str, Any]) -> KOSISTable:
@@ -44,13 +61,15 @@ def adapt_record(record: dict[str, Any]) -> KOSISTable:
         dimensions=dimensions,
         items=record.get("items") if isinstance(record.get("items"), list) else [],
         units=as_string_list(record.get("units")),
-        source_name=str(record.get("source") or "") or None,
+        source_name=source_name_from_record(record),
         version_status=str(record.get("meta_status") or "") or None,
         document_text=str(record.get("doc_meta_text") or "") or None,
         doc_meta_text=str(record.get("doc_meta_text") or "") or None,
         doc_item_index=str(record.get("doc_item_index") or "") or None,
         catalog_version=str(record.get("catalog_version") or "") or None,
         value_parse_status="structured" if has_structured_values else "metadata_only",
+        category_path_status=str(record.get("category_path_status") or ("present" if category_path else "unresolved")),
+        api_status=api_status_from_record(record),
     )
 
 
@@ -76,6 +95,12 @@ def main() -> None:
             "structured": sum(table.value_parse_status == "structured" for table in tables),
             "metadata_only": sum(table.value_parse_status == "metadata_only" for table in tables),
         },
+        "version_status_counts": dict(sorted(Counter(str(table.version_status or "MISSING") for table in tables).items())),
+        "category_path_status_counts": dict(sorted(Counter(str(table.category_path_status or "MISSING") for table in tables).items())),
+        "source_name_available": sum(bool(table.source_name) for table in tables),
+        "api_status_counts": dict(sorted(Counter(
+            f"{endpoint}:{status}" for table in tables for endpoint, status in table.api_status.items()
+        ).items())),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -71,6 +71,21 @@ class ScopeDecision:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class OrgRoutingCandidate:
+    """검색 경로에 전달할 기관 후보.
+
+    현 단계는 기존의 검증된 정확 일치·별칭만 재사용한다. fuzzy 매칭으로
+    Top-N을 부풀리면 기관 라우팅이 정답 표를 제거할 수 있으므로, 확신 있는
+    후보가 하나일 때만 반환하고 나머지는 전역 검색 fallback으로 넘긴다.
+    """
+
+    org_id: str
+    org_name: str
+    confidence: float
+    evidence: str
+
+
 def normalize_org_name(value: object) -> str:
     """Normalize harmless typography without performing fuzzy matching."""
     if value is None:
@@ -127,3 +142,29 @@ def classify_source_scope(org_raw: object, catalog: Mapping[str, str]) -> ScopeD
     if DOMESTIC_PUBLIC_RE.search(raw):
         return ScopeDecision("공식기관_비KOSIS", reason="국내 공공기관 형식이나 KOSIS 사전 미등재")
     return ScopeDecision("민간기관", reason="기관명은 있으나 KOSIS·공공·해외 규칙에 미일치")
+
+
+def resolve_org_routing_candidates(
+    org_raw: object,
+    catalog: Mapping[str, str],
+    *,
+    max_candidates: int = 3,
+) -> list[OrgRoutingCandidate]:
+    """기존 출처 범위 판정을 검색용 기관 후보로 안전하게 재사용한다.
+
+    ``classify_source_scope``의 정확 일치/검증 별칭 결과만 1.0 신뢰도로
+    승격한다. API·검색 단계는 이 목록이 비었을 때 전역 후보 생성을 반드시
+    유지해야 한다. ``max_candidates``는 장래의 다중 근거 확장을 위한 계약이며,
+    현재 정밀도 우선 사전은 최대 한 후보만 돌려준다.
+    """
+    if max_candidates < 1:
+        raise ValueError("max_candidates must be at least 1")
+    decision = classify_source_scope(org_raw, catalog)
+    if decision.scope != "KOSIS등재" or not decision.matched_org_id:
+        return []
+    return [OrgRoutingCandidate(
+        org_id=decision.matched_org_id,
+        org_name=decision.matched_org_name,
+        confidence=1.0,
+        evidence=decision.reason,
+    )]

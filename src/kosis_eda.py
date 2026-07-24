@@ -3,7 +3,7 @@
 
 입력:
   data/kosis_catalog_v1.jsonl          (전체 통계표 265,094개, 트리 기반)
-  data/kosis_catalog_v2.jsonl          (메타 보강 표본 515개: 차원·항목·단위·주기)
+  data/kosis_catalog_v2_sample600.jsonl (메타 보강 표본 600개: 차원·항목·단위·주기)
   data/claims_v1.jsonl                 (뉴스 claim 구조화 결과, 대응 확인용)
 
 출력:
@@ -110,7 +110,7 @@ period_types = Counter()
 items_per = Counter()
 dim_value_counts = []
 n_v2 = 0
-for r in iter_jsonl(ROOT / "data" / "kosis_catalog_v2.jsonl"):
+for r in iter_jsonl(ROOT / "data" / "kosis_catalog_v2_sample600.jsonl"):
     n_v2 += 1
     dims = r.get("dimensions") or []
     dims_per[len(dims)] += 1
@@ -215,7 +215,7 @@ save(fig, "eda_fig04_dimensions.png")
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.4))
 pt = period_types.most_common()
 ax1.bar([k for k, _ in pt], [v for _, v in pt], color=BLUE, width=0.6)
-ax1.set_title("수록 주기 분포 (표본 515개)")
+ax1.set_title(f"수록 주기 분포 (표본 {n_v2}개)")
 ax1.set_ylabel("통계표 수")
 style_ax(ax1)
 

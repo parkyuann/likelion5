@@ -44,8 +44,11 @@
 import argparse
 import json
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -59,6 +62,7 @@ DEFAULT_OUTPUT = ROOT / "data" / "kosis_table_meta_v2.jsonl"
 # KOSIS 분당 호출 제한(200)에서 여유를 둔 값. 이 스크립트는 표당 2~3회(ITM+PRD+조건부 UNIT)를
 # 부르므로 아래 값은 '표 수'가 아니라 'API 호출 수' 기준이다.
 MAX_CALLS_PER_MIN = 180
+DEFAULT_WORKERS = 8  # 동시 요청 스레드 수. 호출 총량은 MAX_CALLS_PER_MIN이 별도로 캡한다.
 MAX_RETRY = 3
 RETRY_BACKOFF_SEC = 2.0
 RATE_LIMIT_COOLDOWN_SEC = 65  # 에러코드 40(분당 한도)을 만나면 다음 '분'까지 넘긴다
@@ -78,19 +82,25 @@ def format_elapsed(seconds: float) -> str:
 class RateLimiter:
     """API 호출 사이 최소 간격을 강제한다. 호출당 1회 wait() 한다.
 
-    응답 지연이 이미 간격을 채웠으면 추가로 자지 않는다 — 지연이 빠른 구간에서만
-    실제 대기가 걸린다.
+    스레드 병렬(워커 여러 개)에서도 '전체 합산' 호출 간격이 interval 이상이 되도록
+    잠금으로 다음 호출 슬롯을 원자적으로 예약한다 — 워커가 몇 개든 분당 호출 수가
+    per_min을 넘지 않아 KOSIS 분당 200 한도를 지킨다. 슬롯 예약(_next 전진)만 잠금
+    안에서 하고 실제 sleep은 잠금 밖에서 하므로, 한 워커가 응답을 기다리는 동안 다른
+    워커가 곧바로 다음 슬롯을 예약해 대기 시간이 겹쳐진다(순차 대비 처리량 향상).
     """
 
     def __init__(self, per_min: int) -> None:
         self.interval = 60.0 / max(1, per_min)
-        self._last = 0.0
+        self._next = 0.0
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
-        remaining = self.interval - (time.time() - self._last)
-        if remaining > 0:
-            time.sleep(remaining)
-        self._last = time.time()
+        with self._lock:
+            slot = max(time.time(), self._next)
+            self._next = slot + self.interval
+        delay = slot - time.time()
+        if delay > 0:
+            time.sleep(delay)
 
 
 def is_rate_limited(message: str) -> bool:
@@ -401,6 +411,10 @@ def main() -> None:
                         help="--per-category 랜덤 추출 시드 (기본 42, 재현용)")
     parser.add_argument("--max-per-min", type=int, default=MAX_CALLS_PER_MIN,
                         help=f"분당 최대 API 호출 수 (KOSIS 상한 200, 기본 {MAX_CALLS_PER_MIN})")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help=f"동시 요청 워커(스레드) 수 (기본 {DEFAULT_WORKERS}). 호출 총량은 "
+                             f"--max-per-min이 별도로 제한하므로 워커를 늘려도 분당 한도는 안 넘는다. "
+                             f"응답 느린 구간에서 한도를 채우려면 워커가 여러 개 필요하다")
     parser.add_argument("--skip-prd", action="store_true",
                         help="PRD(시점)를 건너뛴다")
     parser.add_argument("--skip-unit", action="store_true",
@@ -462,9 +476,11 @@ def main() -> None:
         flush=True,
     )
     if est_lo == est_hi:
-        print(f"[RATE] 분당 {args.max_per_min} 호출 | 예상 소요 {format_elapsed(est_hi)}", flush=True)
+        print(f"[RATE] 분당 {args.max_per_min} 호출 | 워커 {args.workers} | "
+              f"예상 소요 {format_elapsed(est_hi)}", flush=True)
     else:
-        print(f"[RATE] 분당 {args.max_per_min} 호출 | 표당 {base_calls}~{base_calls+unit_max}회 | "
+        print(f"[RATE] 분당 {args.max_per_min} 호출 | 워커 {args.workers} | "
+              f"표당 {base_calls}~{base_calls+unit_max}회 | "
               f"예상 소요 {format_elapsed(est_lo)} ~ {format_elapsed(est_hi)}", flush=True)
     if ckpt_path.exists():
         print(f"[CHECKPOINT] 이전 체크포인트 발견 — {ckpt_path.name} (이어서 진행)", flush=True)
@@ -508,46 +524,62 @@ def main() -> None:
             "params": run_params,
         })
 
-    with args.output.open("a", encoding="utf-8") as handle:
-        for i, table in enumerate(pending, start=1):
-            record = fetch_one(table, limiter, with_prd=with_prd, with_unit=with_unit,
-                               always_unit=args.always_unit, dump_raw=args.dump_raw)
-            if record.get("unit_source") in ("unit", "itm+unit") or "unit_error" in record:
-                unit_calls += 1
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-            handle.flush()
+    # 병렬 처리: 워커 여러 개가 동시에 요청을 보내되(대기 시간 겹침 → 처리량↑),
+    # 호출 간격은 공유 RateLimiter가 분당 한도로 캡한다. 파일 쓰기·집계·체크포인트는
+    # 메인 스레드 한 곳에서만 하므로(executor.map 결과를 순서대로 소비) 줄이 섞이거나
+    # 카운터가 경쟁하지 않는다. 재개는 출력 파일에 써진 table_key 기준이라(load_done_keys)
+    # 병렬로 순서가 뒤섞여 append돼도, 중간에 죽어 미기록 표가 생겨도 안전하다.
+    fetch = partial(fetch_one, limiter=limiter, with_prd=with_prd, with_unit=with_unit,
+                    always_unit=args.always_unit, dump_raw=args.dump_raw)
+    chunk_size = max(args.workers * 8, 200)  # 청크 단위로 제출 → 워커 재사용, 메모리 상한
+    processed = 0
+    aborted = False
+    with args.output.open("a", encoding="utf-8") as handle, \
+            ThreadPoolExecutor(max_workers=args.workers) as executor:
+        for start in range(0, len(pending), chunk_size):
+            chunk = pending[start:start + chunk_size]
+            # map은 제출 순서대로 결과를 돌려준다(내부적으로는 워커들이 동시에 처리).
+            for record in executor.map(fetch, chunk):
+                processed += 1
+                if record.get("unit_source") in ("unit", "itm+unit") or "unit_error" in record:
+                    unit_calls += 1
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.flush()
 
-            if record["status"] == "ok":
-                ok_count += 1
-                consecutive_errors = 0
-            else:
-                err_count += 1
-                consecutive_errors += 1
-                print(f"    [WARN] {record['table_key']} 실패: {record.get('error')}", flush=True)
-                if consecutive_errors >= ABORT_AFTER_CONSECUTIVE_ERRORS:
+                if record["status"] == "ok":
+                    ok_count += 1
+                    consecutive_errors = 0
+                else:
+                    err_count += 1
+                    consecutive_errors += 1
+                    print(f"    [WARN] {record['table_key']} 실패: {record.get('error')}", flush=True)
+                    if consecutive_errors >= ABORT_AFTER_CONSECUTIVE_ERRORS:
+                        print(
+                            f"[ABORT] 연속 {consecutive_errors}건 실패 — API 장애로 판단해 중단합니다. "
+                            f"재실행하면 이 지점부터 이어집니다.",
+                            flush=True,
+                        )
+                        save_checkpoint("aborted", processed, record["table_key"])
+                        aborted = True
+                        break
+
+                if processed % CHECKPOINT_EVERY == 0:
+                    save_checkpoint("running", processed, record["table_key"])
+
+                if processed % 50 == 0 or processed == len(pending):
+                    elapsed = time.time() - started_at
+                    rate = processed / elapsed if elapsed else 0
+                    remaining = (len(pending) - processed) / rate if rate else 0
                     print(
-                        f"[ABORT] 연속 {consecutive_errors}건 실패 — API 장애로 판단해 중단합니다. "
-                        f"재실행하면 이 지점부터 이어집니다.",
+                        f"[PROGRESS] {processed:,}/{len(pending):,} ({processed / len(pending) * 100:5.1f}%) | "
+                        f"성공 {ok_count:,} 실패 {err_count:,} | UNIT호출 {unit_calls:,} | "
+                        f"{rate:.1f}표/초 | 경과 {format_elapsed(elapsed)} | 예상 잔여 {format_elapsed(remaining)}",
                         flush=True,
                     )
-                    save_checkpoint("aborted", i, record["table_key"])
-                    break
-
-            if i % CHECKPOINT_EVERY == 0:
-                save_checkpoint("running", i, record["table_key"])
-
-            if i % 50 == 0 or i == len(pending):
-                elapsed = time.time() - started_at
-                rate = i / elapsed if elapsed else 0
-                remaining = (len(pending) - i) / rate if rate else 0
-                print(
-                    f"[PROGRESS] {i:,}/{len(pending):,} ({i / len(pending) * 100:5.1f}%) | "
-                    f"성공 {ok_count:,} 실패 {err_count:,} | UNIT호출 {unit_calls:,} | "
-                    f"{rate:.1f}표/초 | 경과 {format_elapsed(elapsed)} | 예상 잔여 {format_elapsed(remaining)}",
-                    flush=True,
-                )
-        else:
-            save_checkpoint("completed", len(pending), pending[-1]["table_key"] if pending else None)
+            if aborted:
+                break
+        if not aborted:
+            save_checkpoint("completed", processed, pending[processed - 1]["table_key"] if processed else None)
 
     print(
         f"\n=== 종료: 성공 {ok_count:,} | 실패 {err_count:,} | UNIT 추가호출 {unit_calls:,} | "

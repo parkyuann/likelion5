@@ -1,10 +1,41 @@
+import json
 import os
+import re
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 API_KEY = os.environ["KOSIS_API_KEY"]
+
+# KOSIS 응답에 섞이는 두 종류의 깨진 백슬래시를 교정하는 패턴.
+# 둘 다 영문명 필드(ITM_NM_ENG/OBJ_NM_ENG)에서 발생하며, KOSIS가 JSON 직렬화 때
+# 백슬래시를 규격대로(\\) 이스케이프하지 않아 생긴 서버측 버그다.
+#
+# ① 무효 이스케이프: 백슬래시 뒤에 규격 외 글자(\o 등). 예: "c\ondiments".
+#    유효한 이스케이프(\" \\ \/ \b \f \n \r \t \uXXXX)는 건드리지 않는다.
+_INVALID_ESCAPE = re.compile(r'\\(?![\\"/bfnrtu])')
+# ② 값 끝의 홑 백슬래시: 문자열이 백슬래시로 끝나(\") 닫는 따옴표가 이스케이프돼 버린 것.
+#    예: "...Trees\","ITM_ID"... → \" 를 종료자가 아니라 따옴표 글자로 읽어 'Expecting ,'.
+#    \" 뒤에 곧바로 구조 토큰(, } ])이 오면 종료 자리의 군더더기 백슬래시로 보고 \\" 로 고친다.
+_DANGLING_BACKSLASH = re.compile(r'\\"(?=\s*[,}\]])')
+
+
+def _loads_lenient(text: str):
+    """KOSIS 응답 JSON을 파싱한다. 표준 파싱이 실패하면 백슬래시를 교정해 재시도한다.
+
+    일부 표(주로 영문명 ITM_NM_ENG/OBJ_NM_ENG가 붙은 표)는 응답 안에 KOSIS가 규격대로
+    이스케이프하지 않은 백슬래시가 섞여 표준 json.loads가 실패한다(위 ①·②). 데이터
+    자체는 정상이므로, 깨진 백슬래시를 리터럴 백슬래시(\\\\)로 교정해 무손실로 파싱을
+    살린다(값은 그대로 보존, 우리는 영문명을 어차피 버린다). 이 fallback은 표준 파싱이
+    실패한 응답에서만 실행되므로 정상 응답의 동작은 바뀌지 않는다.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        patched = _INVALID_ESCAPE.sub(r'\\\\', text)
+        patched = _DANGLING_BACKSLASH.sub(r'\\\\"', patched)
+        return json.loads(patched)
 
 LIST_URL = "https://kosis.kr/openapi/statisticsList.do"
 DATA_URL = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
@@ -30,7 +61,7 @@ def search_tables(keyword: str, result_count: int = 10) -> list[dict]:
     }
     res = requests.get(SEARCH_URL, params=params, timeout=10)
     res.raise_for_status()
-    data = res.json()
+    data = _loads_lenient(res.text)
     if isinstance(data, dict) and "err" in data:
         raise RuntimeError(f"KOSIS API 오류: {data}")
     return data
@@ -48,7 +79,7 @@ def list_tables(vw_cd: str = "MT_ZTITLE", parent_id: str = "A") -> list[dict]:
     }
     res = requests.get(LIST_URL, params=params, timeout=10)
     res.raise_for_status()
-    return res.json()
+    return _loads_lenient(res.text)
 
 
 def get_data(org_id, tbl_id, obj_l1, itm_id, prd_se="Y",
@@ -67,7 +98,7 @@ def get_data(org_id, tbl_id, obj_l1, itm_id, prd_se="Y",
 
     res = requests.get(DATA_URL, params=params, timeout=10)
     res.raise_for_status()
-    data = res.json()
+    data = _loads_lenient(res.text)
     if isinstance(data, dict) and "err" in data:
         raise RuntimeError(f"KOSIS API 오류: {data}")
     return data
@@ -93,7 +124,7 @@ def get_meta(org_id: str, tbl_id: str, meta_type: str = "ITM", **extra_params) -
     }
     res = requests.get(META_URL, params=params, timeout=10)
     res.raise_for_status()
-    data = res.json()
+    data = _loads_lenient(res.text)
     if isinstance(data, dict) and "err" in data:
         raise RuntimeError(f"KOSIS API 오류: {data}")
     return data

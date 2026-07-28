@@ -56,8 +56,8 @@ from src.kosis_client import get_meta  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = ROOT / "data" / "kosis_table_tree.json"
-# 차원·항목·시점·단위까지 보강한 결과라 별도 파일(kosis_table_meta_v2.jsonl)에 쓴다.
-DEFAULT_OUTPUT = ROOT / "data" / "kosis_table_meta_v2.jsonl"
+# 차원·항목·시점·단위까지 보강한 결과라 트리를 덮지 않고 별도 파일(kosis_table_meta.jsonl)에 쓴다.
+DEFAULT_OUTPUT = ROOT / "data" / "kosis_table_meta.jsonl"
 
 # KOSIS 분당 호출 제한(200)에서 여유를 둔 값. 이 스크립트는 표당 2~3회(ITM+PRD+조건부 UNIT)를
 # 부르므로 아래 값은 '표 수'가 아니라 'API 호출 수' 기준이다.

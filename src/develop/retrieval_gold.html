@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>검색 gold 판정</title>
+<style>
+  :root{--bg:#fff;--fg:#16181d;--muted:#6b7280;--line:#dfe3e8;--chip:#f3f4f6;
+        --accent:#1d4ed8;--accent-bg:#e8effd;--warn:#b45309;--warn-bg:#fdf1e3;
+        --hl:#fde047;--ok:#15803d}
+  @media (prefers-color-scheme:dark){:root{--bg:#131519;--fg:#e9ebee;--muted:#98a1ad;
+        --line:#2a2f37;--chip:#20242b;--accent:#7ba6ff;--accent-bg:#1a2540;
+        --warn:#f3b25c;--warn-bg:#3a2c17;--hl:#a16207;--ok:#4ade80}}
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.65 "Malgun Gothic",system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);
+         padding:10px 20px;display:flex;gap:14px;align-items:center;z-index:5}
+  .grow{flex:1}
+  .pill{padding:3px 11px;border-radius:999px;background:var(--chip);font-size:13px}
+  main{max-width:1000px;margin:0 auto;padding:22px 20px 60px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+  h2{font-size:15px;margin:0 0 10px;color:var(--muted);font-weight:600}
+  #sentence{font-size:19px;line-height:1.9;padding:13px;background:var(--chip);border-radius:9px}
+  mark{background:var(--hl);color:inherit;padding:1px 4px;border-radius:4px;font-weight:700}
+  table.f{width:100%;border-collapse:collapse;font-size:14px}
+  table.f td{padding:4px 8px;border-top:1px solid var(--line);vertical-align:top}
+  table.f td:first-child{color:var(--muted);width:120px}
+  .cand{display:block;width:100%;text-align:left;border:1px solid var(--line);border-radius:9px;
+        padding:9px 13px;margin-bottom:7px;background:var(--bg);color:inherit;font:inherit;cursor:pointer}
+  .cand:hover{border-color:var(--accent)}
+  .cand.on{border-color:var(--accent);border-width:2px;background:var(--accent-bg)}
+  .cand .r{display:inline-block;min-width:24px;color:var(--muted);font-size:13px}
+  .cand .k{color:var(--muted);font-size:12px;margin-left:8px}
+  .acts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
+  .act{border:2px solid var(--line);border-radius:10px;padding:11px;background:var(--bg);
+       color:inherit;font:inherit;cursor:pointer;text-align:left}
+  .act:hover{border-color:var(--warn);background:var(--warn-bg)}
+  .act b{display:block;font-size:15px}
+  .act small{color:var(--muted);font-size:12px;display:block;margin-top:3px}
+  input[type=text]{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);
+                   border-radius:8px;background:var(--bg);color:var(--fg)}
+  button.nav{font:inherit;padding:6px 12px;border:1px solid var(--line);border-radius:8px;
+             background:var(--bg);color:var(--fg);cursor:pointer}
+  .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .muted{color:var(--muted)} .small{font-size:13px}
+  #bar{height:5px;background:var(--chip);border-radius:3px;overflow:hidden;flex:1;max-width:220px}
+  #barIn{height:100%;background:var(--ok);width:0}
+  #msg{padding:8px 12px;border-radius:8px;margin-bottom:12px;display:none}
+  #msg.show{display:block;background:rgba(21,128,61,.13);color:var(--ok)}
+  #msg.err{display:block;background:rgba(180,83,9,.15);color:var(--warn)}
+</style>
+</head>
+<body>
+<header>
+  <span id="pos" class="pill"></span>
+  <div id="bar"><div id="barIn"></div></div>
+  <span id="prog" class="pill"></span>
+  <span class="grow"></span>
+  <label class="muted small"><input type="checkbox" id="onlyTodo" checked> 미판정만</label>
+  <button class="nav" id="prev">← 이전</button>
+  <button class="nav" id="next">다음 →</button>
+</header>
+
+<main>
+  <div id="msg"></div>
+
+  <div class="card">
+    <h2 id="meta"></h2>
+    <div id="sentence"></div>
+    <table class="f" style="margin-top:12px">
+      <tr><td>지표</td><td id="f_ind"></td></tr>
+      <tr><td>기간</td><td id="f_per"></td></tr>
+      <tr><td>측정 유형</td><td id="f_meas"></td></tr>
+      <tr><td>모집단·품목</td><td id="f_pop"></td></tr>
+    </table>
+    <div class="muted small" style="margin-top:9px">
+      위 지표는 <b>구조화 층이 만든 것</b>이며 정확하지 않을 수 있습니다.
+      판단은 <b>노란 숫자가 어느 표에서 나온 값인가</b>로 하세요
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>이 수치가 담긴 KOSIS 표를 고르세요 — 어휘 검색 상위 10개</h2>
+    <div id="cands"></div>
+    <div class="muted small" style="margin:10px 0 6px">
+      맞는 표가 <b>하나도 없으면</b> 아래에서 고르세요. 억지로 고르면 gold가 망가집니다
+    </div>
+    <div class="acts">
+      <button class="act" data-s="후보 밖에 있음">
+        <b>후보 밖에 있음</b>
+        <small>KOSIS에는 있는데 이 10개에 없다</small></button>
+      <button class="act" data-s="표 없음">
+        <b>표 없음</b>
+        <small>KOSIS가 이 통계를 담지 않는다</small></button>
+      <button class="act" data-s="판단 보류">
+        <b>판단 보류</b>
+        <small>확인이 더 필요하다</small></button>
+    </div>
+    <div style="margin-top:12px">
+      <input type="text" id="note" placeholder="메모 (선택) — 후보 밖이면 아는 표 이름을 적어두세요">
+    </div>
+    <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+      <button class="nav primary" id="save">저장하고 다음</button>
+      <span id="state" class="muted small"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>판정 기준</h2>
+    <table class="f">
+      <tr><td>고르는 기준</td><td>표 <b>제목</b>이 이 수치를 담고 있을 만한가. 셀까지 확인하지 않습니다</td></tr>
+      <tr><td>차원값 불일치</td><td>표가 <code>보통휘발유</code>로 나뉘어 있고 주장은 <code>휘발유</code>여도 <b>맞는 표</b>입니다</td></tr>
+      <tr><td>기간 단위 불일치</td><td>표가 월 단위고 주장이 주 단위여도 <b>맞는 표</b>입니다. 메모에 적어주세요</td></tr>
+      <tr><td>왜 나누나</td><td><code>후보 밖에 있음</code>은 검색기가 못 찾은 것이고
+        <code>표 없음</code>은 KOSIS에 없는 것입니다. 합치면 이 작업의 목적이 사라집니다</td></tr>
+    </table>
+  </div>
+</main>
+
+<script>
+const S={rows:[],idx:0,statuses:[],pick:null,status:"",shown:null};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+function visible(){return $("onlyTodo").checked?S.rows.filter(r=>!r.gold_match_status):S.rows;}
+function cur(){return S.rows[S.idx];}
+function msg(t,err){const e=$("msg");e.textContent=t;e.className=err?"err":"show";
+  clearTimeout(msg._t);msg._t=setTimeout(()=>e.className="",2400);}
+
+function render(){
+  const r=cur(); if(!r){$("sentence").textContent="판정할 행이 없습니다.";$("cands").innerHTML="";return;}
+  $("meta").textContent=`기사 ${r.article_idx} · ${r.target_id}`;
+  const t=r.sentence_text||"", v=r.value_text||"", at=t.indexOf(v);
+  $("sentence").innerHTML = at>=0
+    ? esc(t.slice(0,at))+"<mark>"+esc(v)+"</mark>"+esc(t.slice(at+v.length)) : esc(t);
+  $("f_ind").textContent=r.indicator||"—";
+  $("f_per").textContent=(r.period||"—")+(r.period_absolute&&r.period_absolute!==r.period?`  (→ ${r.period_absolute})`:"");
+  $("f_meas").textContent=r.measurement_type||"—";
+  $("f_pop").textContent=[...(r.population||[]),...(r.item||[]),...(r.dimension||[])].join(", ")||"—";
+
+  // 행이 바뀔 때만 저장된 값에서 불러온다. 매번 불러오면 클릭으로 고른 선택이
+  // 저장 전에 되돌아가 아무 일도 일어나지 않는 것처럼 보인다.
+  if(S.shown!==r.target_id){
+    S.shown=r.target_id;
+    S.pick=r.gold_table_key||null;
+    S.status=r.gold_match_status||"";
+    $("note").value=r.adjudication_note||"";
+  }
+
+  $("cands").innerHTML=(r.candidates||[]).map(c=>{
+    const q=encodeURIComponent(c.tbl_name);
+    return `<button class="cand${S.pick===c.table_key?" on":""}" data-k="${esc(c.table_key)}">
+      <span class="r">${c.rank}.</span> <b>${esc(c.tbl_name)}</b>
+      <span class="k">${esc((c.category_paths||[]).join(" › "))} · ${esc(c.table_key)}</span>
+      </button>`;}).join("");
+  $("cands").querySelectorAll(".cand").forEach(el=>{
+    el.onclick=()=>{S.pick=el.dataset.k;S.status="후보에서 찾음";render();};
+  });
+  document.querySelectorAll(".act").forEach(el=>{
+    el.style.borderColor = (S.status===el.dataset.s)?"var(--warn)":"";
+    el.style.background  = (S.status===el.dataset.s)?"var(--warn-bg)":"";
+  });
+
+  const list=visible(), at2=list.indexOf(r);
+  $("pos").textContent=`${at2<0?"-":at2+1} / ${list.length}`;
+  $("state").textContent=r.gold_match_status
+    ? `기록됨: ${r.gold_match_status}${r.gold_tbl_name?" — "+r.gold_tbl_name:""}` : "미기록";
+}
+
+async function save(advance){
+  const r=cur(); if(!r) return;
+  if(!S.status){msg("판정을 고르세요 — 표를 클릭하거나 아래 버튼을 누르세요",true);return;}
+  const res=await fetch("/api/rows/"+encodeURIComponent(r.target_id),{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({gold_match_status:S.status,
+      gold_table_key:S.status==="후보에서 찾음"?S.pick:"",
+      adjudication_note:$("note").value})});
+  const out=await res.json();
+  if(!res.ok){msg("저장 실패 — "+out.error,true);return;}
+  S.rows[S.idx]=out.row;
+  $("prog").textContent=`${out.progress.done} / ${out.progress.total}`;
+  $("barIn").style.width=(100*out.progress.done/out.progress.total)+"%";
+  if(advance) go(1); else render();
+}
+
+function go(d){
+  const list=visible(); if(!list.length){render();return;}
+  let at=list.indexOf(cur());
+  if(at<0) at=0; else at=Math.min(Math.max(at+d,0),list.length-1);
+  S.idx=S.rows.indexOf(list[at]); render();
+}
+
+document.querySelectorAll(".act").forEach(el=>el.onclick=()=>{
+  S.status=el.dataset.s; S.pick=null; save(true);
+});
+$("save").onclick=()=>save(true);
+$("prev").onclick=()=>go(-1);
+$("next").onclick=()=>go(1);
+$("onlyTodo").onchange=()=>{const l=visible();if(l.length)S.idx=S.rows.indexOf(l[0]);render();};
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT") return;
+  if(e.key==="ArrowLeft") go(-1);
+  else if(e.key==="ArrowRight") go(1);
+  else if(e.key==="Enter") save(true);
+  else if(/^[1-9]$/.test(e.key)){
+    const c=(cur()?.candidates||[])[+e.key-1];
+    if(c){S.pick=c.table_key;S.status="후보에서 찾음";render();}
+  }
+});
+
+(async()=>{
+  const d=await (await fetch("/api/rows")).json();
+  S.rows=d.rows; S.statuses=d.statuses;
+  const p=await (await fetch("/api/progress")).json();
+  $("prog").textContent=`${p.done} / ${p.total}`;
+  $("barIn").style.width=(p.total?100*p.done/p.total:0)+"%";
+  const first=S.rows.findIndex(r=>!r.gold_match_status);
+  S.idx=first<0?0:first;
+  render();
+})();
+</script>
+</body>
+</html>

@@ -164,6 +164,7 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
     auto_indicator = field("indicator_raw")
     auto_population = field("population_raw", field("population"))
     auto_dimensions = json_object(row.get("dimension_json"))
+    context_resolution = json_object(row.get("context_resolution_json"))
     gold_indicator = field("gold_indicator_raw")
     gold_population = field("gold_population")
     claim = Claim(
@@ -177,6 +178,8 @@ def make_claim(row: pd.Series, row_number: int) -> Claim:
         article_title=clean(row.get("기사제목")),
         published_at=published_at,
         evidence_quote=str(row.get("claim_text", "")),
+        context_resolution=context_resolution,
+        retrieval_query_text=clean(row.get("retrieval_query_text")),
         indicator_raw=gold_indicator or auto_indicator,
         population_raw=gold_population or auto_population,
         auto_indicator_raw=auto_indicator,

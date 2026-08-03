@@ -52,3 +52,15 @@ def test_gold_fields_are_kept_separate_and_take_precedence_for_canonical_fields(
     assert claim.population_raw == "gold population"
     assert claim.auto_indicator_raw == "auto indicator"
     assert claim.auto_population_raw == "auto population"
+
+
+def test_context_audit_and_contextual_query_survive_csv_schema_conversion():
+    row = pd.Series({
+        "article_idx": "9", "claim_text": "보험료는 3.1% 상승했다.", "value_list": "3.1", "unit_list": "%",
+        "dimension_json": "{}", "context_resolution_json": json.dumps({"status": "RESOLVED", "resolved_terms": ["손해보험"]}, ensure_ascii=False),
+        "retrieval_query_text": "보험료는 3.1% 상승했다.\n문맥 확정 대상: 손해보험",
+    })
+    claim = make_claim(row, 2)
+    assert claim.context_resolution["resolved_terms"] == ["손해보험"]
+    assert claim.retrieval_query_text.endswith("손해보험")
+    assert validate_claim(claim) == []

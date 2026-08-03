@@ -108,6 +108,7 @@ _UNIT_ALT = (
     r"|세(?!대)|개월|년|위|대|개|채|척|마리|그루|병|잔|회|차례|편|곳|층|배"
     r"|시간|분(?!의|기|위)|초(?!반)|도|점"
 )
+from claim_context_resolver import augment_article_claim_rows  # noqa: E402
 
 # 표현 정규화: 잡힌 단위 표기를 기준 단위로 통일한다('%포인트'/'% 포인트' -> '%p').
 _UNIT_CANON = {"%포인트": "%p", "%p": "%p"}
@@ -284,12 +285,19 @@ def extract_structured_context(sentence: str) -> dict:
             vals.append({"raw": m.group(), "normalized": m.group(), "source_span": m.group(), "start": m.start(), "end": m.end()})
         if vals:
             dims[key] = vals
-    ind = list(re.finditer(r"[\uAC00-\uD7A3A-Za-z ]{1,30}?(?:\uACE0\uC6A9\uB960|\uCDE8\uC5C5\uC790\s*\uC218|\uC2E4\uC5C5\uB960|\uC99D\uAC00\uC728|\uBE44\uC728|\uBE44\uC911|\uC218|\uC561|\uAC00\uACA9|\uC9C0\uC218)", sentence))
+    ind = list(re.finditer(r"[\uAC00-\uD7A3A-Za-z ]{1,30}?(?:\uACE0\uC6A9\uB960|\uCDE8\uC5C5\uC790\s*\uC218|\uC2E4\uC5C5\uB960|\uC99D\uAC00\uC728|\uAC10\uC18C\uC728|\uBE44\uC728|\uBE44\uC911|\uC218|\uC561|\uAC00\uACA9|\uC9C0\uC218|\uBCF4\uD5D8\uB8CC|\uBCF4\uD5D8\uAE08|\uAE08\uB9AC|\uBCF4\uC0C1\uAE08|\uACC4\uC57D\uAC74\uC218|\uACC4\uC57D\uC790\s*\uC218|\uAC00\uC785\uC790\s*\uC218)", sentence))
     indicator = min(ind, key=lambda m: len(m.group().strip())).group().strip() if ind else None
-    for term in ("\uCDE8\uC5C5\uC790 \uC218", "\uACE0\uC6A9\uB960", "\uC2E4\uC5C5\uB960"):
+    for term in ("\uCDE8\uC5C5\uC790 \uC218", "\uACE0\uC6A9\uB960", "\uC2E4\uC5C5\uB960", "\uBCF4\uD5D8\uB8CC", "\uBCF4\uD5D8\uAE08", "\uAE08\uB9AC", "\uBCF4\uC0C1\uAE08", "\uACC4\uC57D\uAC74\uC218", "\uACC4\uC57D\uC790 \uC218", "\uAC00\uC785\uC790 \uC218"):
         if term in sentence:
             indicator = term
             break
+    # 일반 "보험료"보다 기사에 실제 나타난 subtype 결합 지표를 우선 보존한다.
+    insurance_indicators = re.findall(r"(?<![\uAC00-\uD7A3])([\uAC00-\uD7A3]{1,12}\uBCF4\uD5D8\uB8CC)", sentence)
+    if insurance_indicators:
+        indicator = max(insurance_indicators, key=len)
+    # "이 수치"/"그 수"의 일부를 지표 "이 수"로 보는 것은 문맥 보강을 우회하는 오탐이다.
+    if indicator in {"\uC774 \uC218", "\uADF8 \uC218", "\uD574\uB2F9 \uC218"}:
+        indicator = None
     pop = re.search(r"(?:\uCDE8\uC5C5\uC790|\uC2E4\uC5C5\uC790|\uADFC\uB85C\uC790|\uAC00\uAD6C|\uCCAD\uB144\uCE35)", sentence)
     return {"indicator_raw": indicator, "indicator_candidates": [], "population_raw": pop.group() if pop else None, "population_candidates": [], "dimension_json": dims}
 
@@ -355,7 +363,8 @@ def enrich_normalization(row: dict, published_at) -> dict:
 
 def extract_from_article(idx: int, title: str, date: str, label, text: str) -> list[dict]:
     rows = []
-    for sentence_index, char_start, char_end, sent in iter_sentence_spans(text):
+    sentence_records = list(iter_sentence_spans(text))
+    for sentence_index, char_start, char_end, sent in sentence_records:
         extracted = extract_from_sentence(sent)
         if extracted is None:
             continue
@@ -370,7 +379,7 @@ def extract_from_article(idx: int, title: str, date: str, label, text: str) -> l
         })
         enrich_normalization(extracted, date)
         rows.append(extracted)
-    return rows
+    return augment_article_claim_rows(rows, article_title=title, article_sentences=[record[3] for record in sentence_records])
 
 
 def extract_all_rows(raw_path: Path) -> list[dict]:

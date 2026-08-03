@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>KOSIS 조회 실측</title>
+<style>
+  :root{--bg:#fff;--fg:#16181d;--muted:#6b7280;--line:#dfe3e8;--chip:#f3f4f6;
+        --ok:#15803d;--ok-bg:#e7f5ec;--no:#b91c1c;--no-bg:#fdecec;
+        --maybe:#b45309;--maybe-bg:#fdf1e3;--accent:#1d4ed8;--hl:#fde047}
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#131519;--fg:#e9ebee;--muted:#98a1ad;--line:#2a2f37;--chip:#20242b;
+          --ok:#4ade80;--ok-bg:#14301f;--no:#f87171;--no-bg:#341a1a;
+          --maybe:#f3b25c;--maybe-bg:#3a2c17;--accent:#7ba6ff;--hl:#a16207}}
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.65 "Malgun Gothic",system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);
+         padding:10px 20px;display:flex;gap:14px;align-items:center;z-index:5}
+  .grow{flex:1}
+  .pill{padding:3px 11px;border-radius:999px;background:var(--chip);font-size:13px}
+  main{max-width:920px;margin:0 auto;padding:20px 20px 60px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:14px}
+  h2{margin:0 0 10px;font-size:13px;letter-spacing:.03em;color:var(--muted);text-transform:uppercase}
+  mark{background:var(--hl);color:inherit;padding:1px 4px;border-radius:4px;font-weight:700}
+  .sentence{font-size:18px;line-height:1.9;padding:12px;background:var(--chip);border-radius:8px}
+  table.f{width:100%;border-collapse:collapse;font-size:15px}
+  table.f td{padding:5px 8px;border-top:1px solid var(--line);vertical-align:top}
+  table.f td:first-child{width:120px;color:var(--muted);font-size:13px}
+  .q{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--accent);
+     color:var(--accent);border-radius:999px;padding:6px 14px;margin:4px 6px 4px 0;
+     text-decoration:none;font-size:15px}
+  .q:hover{background:var(--accent);color:#fff}
+  .q small{opacity:.75;font-size:12px}
+  .q.tried{opacity:.55}
+  .q.via{opacity:1;background:var(--accent);color:#fff;font-weight:700}
+  .verdicts{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .v4{border-color:var(--accent)} .v4:hover,.v4.on{background:var(--chip)}
+  .v{border:2px solid var(--line);border-radius:11px;padding:14px;cursor:pointer;
+     background:var(--bg);color:inherit;font:inherit;text-align:left}
+  .v b{display:block;font-size:17px;margin-bottom:3px}
+  .v small{color:var(--muted);font-size:13px;display:block;line-height:1.45}
+  .v kbd{display:inline-block;min-width:20px;text-align:center;border:1px solid var(--line);
+         border-radius:5px;padding:1px 5px;font-size:12px;margin-right:6px;background:var(--chip)}
+  .v1{border-color:var(--ok)} .v1:hover,.v1.on{background:var(--ok-bg)}
+  .v2{border-color:var(--no)} .v2:hover,.v2.on{background:var(--no-bg)}
+  .v3{border-color:var(--maybe)} .v3:hover,.v3.on{background:var(--maybe-bg)}
+  input[type=text]{width:100%;font:inherit;padding:9px 11px;border:1px solid var(--line);
+                   border-radius:8px;background:var(--bg);color:var(--fg)}
+  label.bf{display:inline-block;border:1px solid var(--line);border-radius:999px;
+           padding:5px 12px;margin:4px 6px 4px 0;cursor:pointer;font-size:14px}
+  label.bf input{margin-right:6px}
+  label.bf.on{border-color:var(--no);background:var(--no-bg)}
+  button{font:inherit;padding:7px 14px;border:1px solid var(--line);border-radius:8px;
+         background:var(--bg);color:var(--fg);cursor:pointer}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .muted{color:var(--muted)} .small{font-size:13px}
+  #bar{height:5px;background:var(--chip);border-radius:3px;overflow:hidden;flex:1;max-width:200px}
+  #barIn{height:100%;background:var(--ok);width:0}
+  #msg{padding:8px 12px;border-radius:8px;margin-bottom:12px;display:none}
+  #msg.show{display:block;background:var(--ok-bg);color:var(--ok)}
+  #blockWrap{display:none}
+</style>
+</head>
+<body>
+<header>
+  <span id="pos" class="pill"></span>
+  <span id="bucket" class="pill"></span>
+  <div id="bar"><div id="barIn"></div></div>
+  <span id="prog" class="pill"></span>
+  <span class="grow"></span>
+  <button id="prev">← 이전</button>
+  <button id="next">다음 →</button>
+</header>
+
+<main>
+  <div id="msg"></div>
+
+  <div class="card">
+    <h2>이 주장</h2>
+    <div class="sentence" id="sentence"></div>
+    <table class="f" style="margin-top:12px">
+      <tr><td>지표</td><td id="f_ind"></td></tr>
+      <tr><td>측정</td><td id="f_meas"></td></tr>
+      <tr><td>기간</td><td id="f_per"></td></tr>
+      <tr><td>모집단</td><td id="f_pop"></td></tr>
+      <tr><td>항목</td><td id="f_item"></td></tr>
+      <tr><td>출처</td><td id="f_src"></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>KOSIS에서 찾아보기 — 클릭하면 새 탭에서 열립니다</h2>
+    <div id="queries"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+      <input type="text" id="customQ" style="flex:1"
+             placeholder="검색어가 부적절하면 직접 입력 (예: 국세 수입) — Enter로 검색">
+      <button id="customGo">검색</button>
+    </div>
+    <div class="muted small" style="margin-top:5px">
+      직접 입력한 검색어도 <b>그대로 기록됩니다.</b> 생성된 검색어로는 못 찾고
+      직접 친 걸로 찾았다면, 그게 <b>필드가 잘못 만들어졌다는 가장 확실한 증거</b>입니다
+    </div>
+    <div id="viaState" class="muted small" style="margin-top:8px"></div>
+    <div style="margin-top:12px;padding:11px 13px;background:var(--chip);border-radius:8px">
+      <b style="font-size:15px">결과 <u>건수</u>만 보고 판정하세요. 표는 대부분 열 필요 없습니다.</b>
+      <table class="f" style="margin-top:8px">
+        <tr><td style="width:96px">0건</td><td>다음 칩(더 넓은 검색어)으로</td></tr>
+        <tr><td>1~20건</td><td>목록만 훑어보고 <b>찾음 / 못찾음</b></td></tr>
+        <tr><td>21~100건</td><td>상위 20개만 보고 판단</td></tr>
+        <tr><td>100건 이상</td><td><b>후보 과다</b> — 열어보지 마세요</td></tr>
+      </table>
+      <div class="muted small" style="margin-top:8px">
+        칩은 <b>좁은 것부터</b> 배열돼 있습니다. 첫 칩이 1~10건이면 거기서 끝납니다.
+        좁은 검색어는 0건인데 넓히면 나온다면 → 지표 표현이 걸림돌
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>이 주장을 검증할 표가 KOSIS에 있나요?</h2>
+    <div class="muted small" style="margin-bottom:10px;padding:9px 12px;
+         background:var(--chip);border-radius:8px">
+      <b>상위 20개만 보세요.</b> 그 안에 없으면 없는 겁니다 — 실제 시스템도
+      Top-K만 보고 리랭킹합니다. 끝까지 뒤지실 필요 없습니다.
+    </div>
+    <div class="verdicts">
+      <button class="v v1" data-v="찾음"><b><kbd>1</kbd>찾음</b>
+        <small><b>제목만 보고</b> 이 수치가 담겼을 표가 있다.
+          주기·차원값·셀은 확인하지 않는다</small></button>
+      <button class="v v4" data-v="후보 과다"><b><kbd>2</kbd>후보 과다</b>
+        <small>결과는 많은데 어느 게 맞는지 특정이 안 된다.
+          지표가 너무 넓다는 뜻이며 이것도 <b>유효한 결과</b>다</small></button>
+      <button class="v v2" data-v="못찾음"><b><kbd>3</kbd>못찾음</b>
+        <small>관련 표가 아예 없거나, 있어도 이 주장을 확인할 수 없다</small></button>
+      <button class="v v3" data-v="애매"><b><kbd>4</kbd>애매</b>
+        <small>비슷한 표는 있는데 판단이 안 선다</small></button>
+    </div>
+
+    <div style="margin-top:14px">
+      <div class="muted small" style="margin-bottom:5px">찾았다면 표 이름 (선택)</div>
+      <input type="text" id="tableName" placeholder="예: 경제활동인구조사 / 취업시간대별 취업자">
+    </div>
+
+    <div id="blockWrap" style="margin-top:14px">
+      <div class="muted small" style="margin-bottom:5px">
+        <b>걸림돌</b> — 어느 필드 때문이었나요? (복수 선택, 전부 선택)<br>
+        찾음이어도 <code>period 단위 불일치</code>는 눌러보셨다면 체크해 주세요.
+        <b>판정은 바뀌지 않습니다</b> — 따로 집계만 합니다
+      </div>
+      <div id="blockFields"></div>
+    </div>
+
+    <div style="margin-top:14px">
+      <input type="text" id="note" placeholder="메모 (선택) — 애매한 이유, 찾은 방법 등">
+    </div>
+
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+      <button class="primary" id="save">저장하고 다음</button>
+      <span id="state" class="muted small"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>판정 기준</h2>
+    <table class="f">
+      <tr><td style="color:var(--ok)"><b>표를 열지 않습니다</b></td><td>
+        검색 결과 <b>제목만</b> 보고 판정합니다. 제목에 그 지표가 있으면 찾음입니다</td></tr>
+      <tr><td>찾음</td><td>제목 기준으로 이 수치가 담겼을 표가 상위에 있다</td></tr>
+      <tr><td>못찾음</td><td>0건이거나 상위 20개 제목에 관련 표가 없다</td></tr>
+      <tr><td style="color:var(--ok)">따지지 않음</td><td>
+        <b>차원값·기간 단위·셀 존재 여부는 판정을 바꾸지 않습니다.</b>
+        표가 <code>보통휘발유</code>로 나뉘어도, <code>월 단위</code>뿐이어도 <b>찾음</b>입니다.
+        이 probe는 <u>필드가 검색어로 쓸 만한가</u>만 재고, 데이터가 실제로
+        존재하는지는 다음 단계(<code>Task 3-2</code>) 일입니다</td></tr>
+      <tr><td>주기 문제</td><td>주장이 <code>이달 첫 주</code>인데 표가 월 단위인 걸
+        <b>이미 확인하셨다면</b> 찾음 + <code>period 단위 불일치</code> 체크.
+        일부러 확인하러 들어가지는 마세요 — 별도 집계용이고 지표에 안 들어갑니다</td></tr>
+      <tr><td>후보 과다</td><td>`휘발유`처럼 넓은 말로 300개가 나오면 그게 결과입니다.
+        <b>끝까지 뒤지지 마세요.</b> 지표가 검색에 쓰기엔 너무 넓다는 뜻이고,
+        → <code>indicator 표현</code> 선택</td></tr>
+      <tr><td>왜 묻나</td><td>필드가 어느 정도 틀려도 표를 찾는지 알아야
+        구조화 단계의 합격선을 근거 있게 정할 수 있습니다</td></tr>
+    </table>
+  </div>
+</main>
+
+<script>
+const S={rows:[],idx:0,fields:[],verdict:"",blocking:new Set(),
+         tried:new Set(),custom:new Set(),via:""};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+const cur=()=>S.rows[S.idx];
+
+function msg(t){const e=$("msg");e.textContent=t;e.className="show";
+  clearTimeout(msg._t);msg._t=setTimeout(()=>e.className="",1800);}
+
+function render(){
+  const r=cur(); if(!r) return;
+  $("pos").textContent=`${S.idx+1} / ${S.rows.length}`;
+  $("bucket").textContent=r.bucket+" (confidence "+r.confidence+")";
+  const v=r.value||"";
+  const s=r.sentence||"";
+  const at=s.indexOf(v);
+  $("sentence").innerHTML = at>=0
+    ? esc(s.slice(0,at))+"<mark>"+esc(v)+"</mark>"+esc(s.slice(at+v.length))
+    : esc(s);
+  $("f_ind").textContent=r.indicator||"—";
+  $("f_meas").textContent=r.measurement||"—";
+  $("f_per").textContent=(r.period||"—")+(r.period_absolute&&r.period_absolute!==r.period?`  (→ ${r.period_absolute})`:"");
+  $("f_pop").textContent=(r.population||[]).join(", ")||"—";
+  $("f_item").textContent=(r.item||[]).join(", ")||"—";
+  $("f_src").textContent=r.source_subtype||"—";
+
+  const labels=["① 먼저 이것","② 0건이면","③ 그래도 0건이면","④ 마지막"];
+  S.tried=new Set(r.tried_terms||[]);
+  S.custom=new Set(r.custom_terms||[]);
+  S.via=r.found_via||"";
+  $("customQ").value="";
+  $("queries").innerHTML=(r.search_terms||[]).map((t,i)=>
+    `<a class="q" target="_blank" rel="noopener" data-t="${esc(t)}"
+        href="https://kosis.kr/search/search.do?query=${encodeURIComponent(t)}">
+       ${esc(t)} <small>${labels[i]||"더 넓게"}</small></a>`).join("");
+  $("queries").querySelectorAll("a.q").forEach(a=>{
+    // 마지막으로 연 검색어가 판정의 근거다. 좁은 것부터 누르므로
+    // 사람이 따로 고를 필요 없이 이것으로 확정된다.
+    a.onclick=()=>{S.tried.add(a.dataset.t);S.via=a.dataset.t;renderTried();};
+  });
+  renderTried();
+
+  S.verdict=r.kosis_table_found||"";
+  S.blocking=new Set(r.blocking_fields||[]);
+  $("tableName").value=r.kosis_table_name||"";
+  $("note").value=r.probe_note||"";
+  document.querySelectorAll(".v").forEach(b=>b.classList.toggle("on",b.dataset.v===S.verdict));
+  renderBlocking();
+  $("state").textContent=r.kosis_table_found?("기록됨: "+r.kosis_table_found):"미기록";
+}
+
+function renderTried(){
+  $("queries").querySelectorAll("a.q").forEach(a=>{
+    a.classList.toggle("tried",S.tried.has(a.dataset.t));
+    a.classList.toggle("via",a.dataset.t===S.via);
+  });
+  const own=[...S.custom].length?`  ·  직접 입력: ${[...S.custom].join(", ")}`:"";
+  $("viaState").textContent=(S.via?`판정 근거 검색어: ${S.via}`:
+    "검색어를 누르면 자동으로 기록됩니다")+own;
+}
+
+function runCustom(){
+  const t=$("customQ").value.trim();
+  if(!t) return;
+  S.custom.add(t); S.tried.add(t); S.via=t;
+  renderTried();
+  window.open("https://kosis.kr/search/search.do?query="+encodeURIComponent(t),"_blank","noopener");
+}
+
+function renderBlocking(){
+  // 찾음에도 노출한다 — period 단위 불일치는 판정을 바꾸지 않지만
+  // SRC-FALLBACK 범위를 정하려면 몇 건인지 세야 한다.
+  // "" 로 두면 인라인 스타일이 사라져 #blockWrap{display:none} 이 다시 이긴다.
+  $("blockWrap").style.display=S.verdict?"block":"none";
+  $("blockFields").innerHTML=S.fields.map(f=>
+    `<label class="bf${S.blocking.has(f)?" on":""}">
+       <input type="checkbox" data-f="${esc(f)}"${S.blocking.has(f)?" checked":""}>${esc(f)}</label>`).join("");
+  $("blockFields").querySelectorAll("input").forEach(el=>{
+    el.onchange=()=>{el.checked?S.blocking.add(el.dataset.f):S.blocking.delete(el.dataset.f);renderBlocking();};
+  });
+}
+
+async function save(advance){
+  const r=cur();
+  const res=await fetch("/api/rows/"+encodeURIComponent(r.probe_id),{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({kosis_table_found:S.verdict,
+      kosis_table_name:$("tableName").value,
+      blocking_fields:[...S.blocking],found_via:S.via,tried_terms:[...S.tried],
+      custom_terms:[...S.custom],probe_note:$("note").value})});
+  const out=await res.json();
+  if(!res.ok){msg("저장 실패 — "+out.error);return;}
+  S.rows[S.idx]=out.row;
+  $("prog").textContent=`${out.progress.done} / ${out.progress.total}`;
+  $("barIn").style.width=(100*out.progress.done/out.progress.total)+"%";
+  if(advance&&S.idx<S.rows.length-1){S.idx++;render();} else render();
+}
+
+document.querySelectorAll(".v").forEach(b=>b.onclick=()=>{
+  S.verdict=b.dataset.v;
+  document.querySelectorAll(".v").forEach(x=>x.classList.toggle("on",x===b));
+  renderBlocking();
+  if(S.verdict==="찾음") save(true);
+});
+$("customGo").onclick=runCustom;
+$("customQ").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();runCustom();}};
+$("save").onclick=()=>save(true);
+$("prev").onclick=()=>{if(S.idx>0){S.idx--;render();}};
+$("next").onclick=()=>{if(S.idx<S.rows.length-1){S.idx++;render();}};
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT") return;
+  if(["1","2","3","4"].includes(e.key)){
+    document.querySelectorAll(".v")[+e.key-1].click();
+  } else if(e.key==="ArrowLeft") $("prev").click();
+  else if(e.key==="ArrowRight") $("next").click();
+});
+
+(async()=>{
+  const d=await (await fetch("/api/rows")).json();
+  S.rows=d.rows; S.fields=d.blocking_fields;
+  const p=await (await fetch("/api/progress")).json();
+  $("prog").textContent=`${p.done} / ${p.total}`;
+  $("barIn").style.width=(p.total?100*p.done/p.total:0)+"%";
+  const first=S.rows.findIndex(r=>!r.kosis_table_found);
+  S.idx=first<0?0:first;
+  render();
+})();
+</script>
+</body>
+</html>

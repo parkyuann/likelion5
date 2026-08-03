@@ -37,8 +37,8 @@ from source_scope_classifier import (  # noqa: E402  source_scope는 LLM이 아�
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = ROOT / "data" / "evaluation" / "pilot120.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "hcx_experiments"
-DEFAULT_METRICS_LOG = ROOT / "data" / "hcx_experiment_metrics.jsonl"
-DEFAULT_SUMMARY_FILE = ROOT / "data" / "hcx_experiment_summary.csv"
+DEFAULT_METRICS_LOG = ROOT / "data" / "baseline" / "hcx_experiments" / "hcx_experiment_metrics.jsonl"
+DEFAULT_SUMMARY_FILE = ROOT / "data" / "baseline" / "hcx_experiments" / "hcx_experiment_summary.csv"
 MODEL_DEFAULT = "HCX-003"
 RLT_LATENCY_REF_MS_DEFAULT = 6112.722
 RLT_TOKENS_REF_DEFAULT = 412.746

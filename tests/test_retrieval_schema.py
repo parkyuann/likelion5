@@ -22,6 +22,8 @@ from retrieval_schema import (  # noqa: E402
     Claim,
     ClaimObservation,
     ClaimTableMapping,
+    CONTEXT_RESOLUTION_STATUSES,
+    MAPPING_ELIGIBILITIES,
     KOSISTable,
     compute_verifiability_prefilter,
     validate_claim,
@@ -216,6 +218,23 @@ def test_invalid_verify_scope_rejected():
 
 def test_default_verify_scope_is_unknown():
     assert make_observation().verify_scope == "unknown"
+
+
+def test_context_resolution_status_is_audited_on_claim():
+    assert "REFERENT_AMBIGUOUS" in CONTEXT_RESOLUTION_STATUSES
+    assert "REFERENT_CANDIDATE" in CONTEXT_RESOLUTION_STATUSES
+    resolved = make_claim(context_resolution={"status": "RESOLVED"})
+    assert validate_claim(resolved) == []
+    invalid = make_claim(context_resolution={"status": "GUESS"})
+    assert any("invalid context resolution status" in error for error in validate_claim(invalid))
+
+
+def test_mapping_eligibility_is_a_separate_validated_axis():
+    assert MAPPING_ELIGIBILITIES == {
+        "OUT_OF_SCOPE", "CONTEXT_EXPANDED", "CLAIM_ONLY_SAFE", "CONTEXT_REQUIRED_UNRESOLVED",
+    }
+    assert validate_claim(make_claim(mapping_eligibility="CLAIM_ONLY_SAFE")) == []
+    assert any("invalid mapping_eligibility" in error for error in validate_claim(make_claim(mapping_eligibility="MAYBE")))
 
 
 # --- 기존 게이트 유지 ------------------------------------------------------

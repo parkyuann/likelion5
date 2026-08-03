@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.select_hcx_model import select
+from src.baseline.select_hcx_model import select
 
 
 def test_selection_prefers_highest_rlt_score(tmp_path):

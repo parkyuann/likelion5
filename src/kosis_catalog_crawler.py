@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import time
 from collections import Counter, deque
 from datetime import datetime, timezone
@@ -54,11 +55,20 @@ def normalize_value(value: object) -> str:
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
     rows: list[dict[str, Any]] = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
-        value = json.loads(line)
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            # append 중 전원이 끊기면 마지막 JSONL 행만 불완전할 수 있다. 해당
+            # endpoint는 checkpoint에 없는 것으로 보고 다음 실행에서 안전하게 재호출한다.
+            if number == len(lines) and not text.endswith(("\n", "\r")):
+                break
+            raise
         if not isinstance(value, dict):
             raise ValueError(f"{path}:{number} is not a JSON object")
         rows.append(value)
@@ -73,7 +83,18 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text("".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def safe_error_message(error: Exception, api_key: str) -> str:
+    """체크포인트·상태 파일에 인증키나 query string이 남지 않게 오류를 축약한다."""
+    message = str(error)
+    if api_key:
+        message = message.replace(api_key, "***")
+    message = re.sub(r"(?i)(apiKey=)[^&\s'\"}]+", r"\1***", message)
+    return message[:1000]
 
 
 def read_dotenv_value(path: Path, key: str) -> str:
@@ -170,8 +191,9 @@ def discover(
         except Exception as error:
             # 실패 노드는 queue 뒤로 보내며 state에 남겨 다음 실행에서 다시 시도한다.
             queue.append(node)
-            save_json(state_path, {"queue": list(queue), "visited": sorted(visited), "last_error": str(error), "updated_at": utc_now()})
-            raise RuntimeError(f"discovery failed at {list_id}: {error}") from error
+            message = safe_error_message(error, api.api_key)
+            save_json(state_path, {"queue": list(queue), "visited": sorted(visited), "last_error": message, "updated_at": utc_now()})
+            raise RuntimeError(f"discovery failed at {list_id}: {message}") from error
         visited.add(list_id)
         processed += 1
         for child in children:
@@ -205,10 +227,14 @@ def canonical_seed(row: dict[str, Any]) -> dict[str, Any]:
     tbl_id = str(row.get("tbl_id") or row.get("TBL_ID") or "")
     if not org_id or not tbl_id:
         raise ValueError("seed requires org_id/ORG_ID and tbl_id/TBL_ID")
+    expected_table_key = f"{org_id}:{tbl_id}"
+    supplied_table_key = str(row.get("table_key") or "")
+    if supplied_table_key and supplied_table_key != expected_table_key:
+        raise ValueError(f"seed table_key mismatch: expected {expected_table_key}, got {supplied_table_key}")
     raw_path = row.get("category_path") or row.get("path") or []
     category_path = [str(value) for value in raw_path] if isinstance(raw_path, list) else []
     return {
-        "table_key": str(row.get("table_key") or f"{org_id}:{tbl_id}"),
+        "table_key": supplied_table_key or expected_table_key,
         "org_id": org_id,
         "tbl_id": tbl_id,
         "tbl_name": str(row.get("tbl_name") or row.get("TBL_NM") or ""),
@@ -242,7 +268,7 @@ def endpoint_record(seed: dict[str, Any], endpoint: str, api: KosisOpenAPI) -> d
             "table_key": seed["table_key"], "org_id": seed["org_id"], "tbl_id": seed["tbl_id"],
             "endpoint": endpoint, "status": "ERROR", "retrieved_at": retrieved_at,
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-            "error_type": type(error).__name__, "error_message": str(error),
+            "error_type": type(error).__name__, "error_message": safe_error_message(error, api.api_key),
         }
 
 
@@ -250,7 +276,17 @@ def latest_records(raw_rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict
     result: dict[tuple[str, str], dict[str, Any]] = {}
     for row in raw_rows:
         key = (str(row.get("table_key") or ""), str(row.get("endpoint") or ""))
-        if all(key):
+        if not all(key):
+            continue
+        previous = result.get(key)
+        if previous is None:
+            result[key] = row
+            continue
+        current_time = str(row.get("retrieved_at") or "")
+        previous_time = str(previous.get("retrieved_at") or "")
+        # 같은 shard를 재개한 append 순서와 여러 checkpoint를 합친 경우 모두에서
+        # ISO-8601 조회시점이 더 최신인 record를 선택한다. 과거 파일은 기존 순서를 유지한다.
+        if (current_time and (not previous_time or current_time >= previous_time)) or (not current_time and not previous_time):
             result[key] = row
     return result
 
@@ -289,7 +325,19 @@ def make_catalog_record(seed: dict[str, Any], results: dict[str, dict[str, Any]]
     units = sorted({item["unit_nm"] for item in items if item["unit_nm"]})
     source_names = [str(row.get("JOSA_NM") or "") for row in source_rows if isinstance(row, dict) and row.get("JOSA_NM")]
     status = {endpoint: results.get(endpoint, {}).get("status", "NOT_CALLED") for endpoint in META_TYPES}
-    meta_status = "enriched" if all(value == "OK" for value in status.values()) else "partial"
+    readiness_missing: list[str] = []
+    if not table_name:
+        readiness_missing.append("table_name")
+    if not items:
+        readiness_missing.append("items")
+    if not dimensions:
+        readiness_missing.append("dimensions")
+    elif any(not dimension.get("values") for dimension in dimensions):
+        readiness_missing.append("dimension_values")
+    if not periods:
+        readiness_missing.append("periods")
+    metadata_ready = not readiness_missing
+    meta_status = "enriched" if all(value == "OK" for value in status.values()) and metadata_ready else "partial"
     meta_terms = [table_name, *seed["category_path"], *source_names]
     item_terms = [item["itm_nm"] for item in items] + [str(dimension["obj_nm"]) for dimension in dimensions]
     return {
@@ -301,6 +349,7 @@ def make_catalog_record(seed: dict[str, Any], results: dict[str, dict[str, Any]]
         "period_types": period_types, "latest_period": latest_period or None,
         "source_metadata": source_rows, "latest_change": results.get("NCD", {}).get("response", {}).get("latest_send_date"),
         "api_status": status, "meta_status": meta_status,
+        "metadata_readiness": {"cell_query_ready": metadata_ready, "missing": readiness_missing},
         # 검색 문서는 값 목록을 넣지 않는다. 고카디널리티 값은 별도 side index가 맡는다.
         "doc_meta_text": " | ".join(term for term in meta_terms if term),
         "doc_item_index": " ".join(term for term in item_terms if term),
@@ -339,6 +388,9 @@ def enrich(
 ) -> dict[str, Any]:
     """seed 표의 API 메타데이터를 수집해 v4 catalog와 value side index를 만든다."""
     seeds = [canonical_seed(row) for row in read_jsonl(seeds_path)]
+    duplicate_seed_keys = sorted(key for key, count in Counter(seed["table_key"] for seed in seeds).items() if count > 1)
+    if duplicate_seed_keys:
+        raise ValueError(f"duplicate seed table_key values: {', '.join(duplicate_seed_keys[:10])}")
     if max_tables is not None:
         seeds = seeds[:max_tables]
     cached = latest_records(read_jsonl(raw_output))
@@ -377,6 +429,7 @@ def enrich(
     endpoint_status = Counter(f"{row['endpoint']}:{row['status']}" for row in new_records)
     manifest = {
         "generated_at": utc_now(), "input_seeds": len(seeds), "new_api_calls": len(new_records),
+        "input_seed_sha256": json_hash(seeds),
         "endpoint_status_counts": dict(sorted(endpoint_status.items())),
         "catalog_status_counts": dict(sorted(Counter(profile["meta_status"] for profile in profiles).items())),
         "value_side_index_rows": len(side_rows), "catalog_version": "kosis-api-catalog-v4",

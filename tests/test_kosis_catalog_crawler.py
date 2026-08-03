@@ -1,7 +1,10 @@
 import json
 
+import pytest
+
 from src.kosis_catalog_crawler import (
-    KosisOpenAPI, crawl_progress, get_api_key, make_catalog_record, make_value_side_index, split_itm_rows,
+    KosisOpenAPI, canonical_seed, crawl_progress, endpoint_record, get_api_key, latest_records,
+    make_catalog_record, make_value_side_index, read_jsonl, split_itm_rows,
 )
 
 
@@ -68,6 +71,42 @@ def test_catalog_record_keeps_values_out_of_bm25_document_and_in_side_index():
     side_index = make_value_side_index(record)
     assert side_index[0]["normalized_value"] == "남자"
     assert side_index[0]["value_id"] == "2"
+    assert record["metadata_readiness"] == {"cell_query_ready": True, "missing": []}
+
+
+def test_catalog_record_does_not_mark_empty_required_metadata_as_enriched():
+    seed = {"table_key": "101:DT_TEST", "org_id": "101", "tbl_id": "DT_TEST", "tbl_name": "", "stat_id": "", "category_path": [], "sample_source": "test"}
+    results = {endpoint: {"status": "OK", "response": []} for endpoint in ("TBL", "ITM", "PRD", "SOURCE")}
+    results["NCD"] = {"status": "OK", "response": {}}
+    record = make_catalog_record(seed, results)
+    assert record["meta_status"] == "partial"
+    assert set(record["metadata_readiness"]["missing"]) == {"table_name", "items", "dimensions", "periods"}
+
+
+def test_checkpoint_error_redacts_api_key_and_query_parameter():
+    class _FailingAPI:
+        api_key = "secret-value"
+
+        def get_meta(self, *_):
+            raise ConnectionError("https://kosis.kr/?apiKey=secret-value&tblId=DT_TEST")
+
+    record = endpoint_record({"table_key": "101:DT_TEST", "org_id": "101", "tbl_id": "DT_TEST"}, "ITM", _FailingAPI())
+    assert record["status"] == "ERROR"
+    assert "secret-value" not in record["error_message"]
+    assert "apiKey=***" in record["error_message"]
+
+
+def test_seed_key_mismatch_and_duplicate_checkpoint_order_are_detected(tmp_path):
+    with pytest.raises(ValueError, match="table_key mismatch"):
+        canonical_seed({"table_key": "101:WRONG", "org_id": "101", "tbl_id": "RIGHT"})
+    latest = latest_records([
+        {"table_key": "101:T", "endpoint": "ITM", "status": "OK", "retrieved_at": "2026-07-24T10:00:00+00:00"},
+        {"table_key": "101:T", "endpoint": "ITM", "status": "ERROR", "retrieved_at": "2026-07-24T09:00:00+00:00"},
+    ])
+    assert latest[("101:T", "ITM")]["status"] == "OK"
+    raw = tmp_path / "raw.jsonl"
+    raw.write_text('{"table_key":"1:T"}\n{"table_key":', encoding="utf-8")
+    assert read_jsonl(raw) == [{"table_key": "1:T"}]
 
 
 def test_progress_uses_latest_raw_endpoint_record_and_counts_errors(tmp_path):

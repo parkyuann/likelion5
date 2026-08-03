@@ -41,6 +41,17 @@ RELATION_TYPES = {"primary", "comparison_base", "component", "total", "rank_peer
 
 # Claim.overall_status — 최종 verdict. UNVERIFIABLE은 abstention(확인 불가) 명시용.
 OVERALL_STATUSES = {"VERIFIED", "REFUTED", "UNVERIFIABLE", "PARTIAL"}
+# 문장 밖 문맥으로 지시 대상(예: "해당 보험")을 보강한 결과. 모호한 상태는
+# 검색 recall을 위해 원문 claim으로만 후보를 찾을 수는 있어도 셀 정렬을 확정하면 안 된다.
+CONTEXT_RESOLUTION_STATUSES = {
+    "NOT_APPLICABLE", "EXPLICIT", "RESOLVED", "REFERENT_CANDIDATE", "REFERENT_AMBIGUOUS", "CONTEXT_MISSING",
+}
+
+# 문맥 referent 판정과 KOSIS 표·셀 매핑 가능성은 다른 축이다. 예를 들어
+# CONTEXT_MISSING이라도 지표·기간·대상이 자족하면 claim-only 검색은 가능할 수 있다.
+MAPPING_ELIGIBILITIES = {
+    "OUT_OF_SCOPE", "CONTEXT_EXPANDED", "CLAIM_ONLY_SAFE", "CONTEXT_REQUIRED_UNRESOLVED",
+}
 
 # ClaimTableMapping.align_status — 차원·시점 셀 정렬 결과(실패 유형 분류).
 # list_alignment_status(결정론 검증)와는 다른 축이다.
@@ -142,6 +153,11 @@ class Claim:
     article_title: str | None = None
     published_at: str | None = None
     evidence_quote: str | None = None
+    # 문맥 보강은 원문 claim을 덮어쓰지 않는다. resolver가 상태·근거 sentence/span·
+    # retrieval query 확장 여부를 이 audit object에 보존한다.
+    context_resolution: dict[str, Any] = field(default_factory=dict)
+    retrieval_query_text: str | None = None
+    mapping_eligibility: str | None = None
 
     # 검색 키 — 주장 대표 지표/모집단(관측값별 세부 지표는 observation.indicator_norm)
     indicator_raw: str | None = None
@@ -308,6 +324,12 @@ def validate_claim(claim: Claim) -> list[str]:
         errors.append(f"invalid list_alignment_status: {claim.list_alignment_status}")
     if claim.overall_status and claim.overall_status not in OVERALL_STATUSES:
         errors.append(f"invalid overall_status: {claim.overall_status}")
+    if claim.context_resolution:
+        context_status = claim.context_resolution.get("status")
+        if context_status not in CONTEXT_RESOLUTION_STATUSES:
+            errors.append(f"invalid context resolution status: {context_status}")
+    if claim.mapping_eligibility and claim.mapping_eligibility not in MAPPING_ELIGIBILITIES:
+        errors.append(f"invalid mapping_eligibility: {claim.mapping_eligibility}")
     for attribution in claim.attributions:
         if attribution.role not in SOURCE_ROLES:
             errors.append(f"invalid source role: {attribution.role}")

@@ -6,8 +6,13 @@ import re
 from typing import Any
 
 
-PERIOD_CODES = {"년": "Y", "월": "M", "분기": "Q", "year": "Y", "month": "M", "quarter": "Q"}
+PERIOD_CODES = {
+    "년": "Y", "연": "Y", "year": "Y", "annual": "Y",
+    "월": "M", "month": "M", "monthly": "M",
+    "분기": "Q", "quarter": "Q", "quarterly": "Q",
+}
 TOTAL_VALUE_NAMES = {"계", "총계", "전체", "합계", "전국"}
+ITEM_TERMINAL_PARTICLES = ("은", "는", "이", "가", "을", "를", "의")
 
 
 def normalized(value: object) -> str:
@@ -17,6 +22,34 @@ def normalized(value: object) -> str:
 def exact_matches(rows: list[dict[str, Any]], field: str, term: str) -> list[dict[str, Any]]:
     target = normalized(term)
     return [row for row in rows if normalized(row.get(field)) == target]
+
+
+def item_matches(items: list[dict[str, Any]], term: str) -> tuple[list[dict[str, Any]], str | None]:
+    """항목명은 완전 일치가 원칙이며, 문장 종결 조사만 제한적으로 제거한다.
+
+    복합어의 일부 일치(예: ``보험료``와 ``자동차보험료``)나 약어 확장은 서로 다른
+    KOSIS 항목을 같은 것으로 볼 위험이 있어 허용하지 않는다. 이 함수가 반환하는
+    ``item_match_basis``는 이후 감사 기록에서 자동 정렬의 근거가 된다.
+    """
+    direct = exact_matches(items, "itm_nm", term)
+    if len(direct) == 1:
+        return direct, "normalized_exact"
+    if len(direct) > 1:
+        return direct, None
+    target = normalized(term)
+    for particle in ITEM_TERMINAL_PARTICLES:
+        if not target.endswith(particle) or len(target) <= len(particle) + 1:
+            continue
+        stripped = target[:-len(particle)]
+        matches = [item for item in items if normalized(item.get("itm_nm")) == stripped]
+        if len(matches) == 1:
+            return matches, f"terminal_particle_stripped:{particle}"
+    return [], None
+
+
+def period_code(period_type: object) -> str | None:
+    """KOSIS/claim의 동의 기간 단위를 비교 가능한 코드로 바꾼다."""
+    return PERIOD_CODES.get(normalized(period_type))
 
 
 def default_dimension_value(values: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -30,7 +63,7 @@ def default_dimension_value(values: list[dict[str, Any]]) -> dict[str, Any] | No
 def normalize_period_for_api(period: str, period_type: str) -> str | None:
     """현재 월·연 단위만 확정적으로 API 파라미터 형태로 변환한다."""
     compact = re.sub(r"[^0-9]", "", str(period or ""))
-    code = PERIOD_CODES.get(period_type)
+    code = period_code(period_type)
     if code == "Y" and len(compact) == 4:
         return compact
     if code == "M" and len(compact) == 6:
@@ -44,8 +77,8 @@ def align_profile(
 ) -> dict[str, Any]:
     """표 하나 안에서 항목·차원값·기간을 모두 코드로 정렬하거나 중단 사유를 돌려준다."""
     items = profile.get("items") if isinstance(profile.get("items"), list) else []
-    item_matches = exact_matches(items, "itm_nm", item_term)
-    if len(item_matches) != 1:
+    matched_items, item_match_basis = item_matches(items, item_term)
+    if len(matched_items) != 1:
         return {"align_status": "ITEM_AMBIGUOUS", "matched_item_id": None, "matched_dimensions": {}, "reason": "item_exact_match_required"}
     dimensions = profile.get("dimensions") if isinstance(profile.get("dimensions"), list) else []
     requested = dimension_terms or {}
@@ -61,31 +94,32 @@ def align_profile(
         if requested_value is not None:
             matches = exact_matches(values, "value_name", requested_value)
             if len(matches) != 1:
-                return {"align_status": "DIM_MISSING", "matched_item_id": item_matches[0].get("itm_id"), "matched_dimensions": matched_dimensions,
-                        "reason": f"dimension_value_exact_match_required:{obj_name}"}
+                return {"align_status": "DIM_MISSING", "matched_item_id": matched_items[0].get("itm_id"), "matched_dimensions": matched_dimensions,
+                        "item_match_basis": item_match_basis, "reason": f"dimension_value_exact_match_required:{obj_name}"}
             matched_dimensions[obj_id] = str(matches[0].get("value_id") or "")
             continue
         default = default_dimension_value(values)
         if default is None:
-            return {"align_status": "DIM_MISSING", "matched_item_id": item_matches[0].get("itm_id"), "matched_dimensions": matched_dimensions,
-                    "reason": f"dimension_condition_missing:{obj_name}"}
+            return {"align_status": "DIM_MISSING", "matched_item_id": matched_items[0].get("itm_id"), "matched_dimensions": matched_dimensions,
+                    "item_match_basis": item_match_basis, "reason": f"dimension_condition_missing:{obj_name}"}
         matched_dimensions[obj_id] = str(default.get("value_id") or "")
         defaults[obj_id] = str(default.get("value_name") or "")
-    profile_period_types = {str(value) for value in profile.get("period_types", [])}
+    profile_period_codes = {code for value in profile.get("period_types", []) if (code := period_code(value))}
     if period is not None:
-        if not period_type or period_type not in PERIOD_CODES or period_type not in profile_period_types:
-            return {"align_status": "PERIOD_MISMATCH", "matched_item_id": item_matches[0].get("itm_id"), "matched_dimensions": matched_dimensions,
-                    "reason": "period_type_not_available"}
+        if not period_type or (claim_period_code := period_code(period_type)) not in profile_period_codes:
+            return {"align_status": "PERIOD_MISMATCH", "matched_item_id": matched_items[0].get("itm_id"), "matched_dimensions": matched_dimensions,
+                    "item_match_basis": item_match_basis, "reason": "period_type_not_available"}
         api_period = normalize_period_for_api(period, period_type)
         if api_period is None:
-            return {"align_status": "PERIOD_MISMATCH", "matched_item_id": item_matches[0].get("itm_id"), "matched_dimensions": matched_dimensions,
-                    "reason": "period_format_not_supported"}
+            return {"align_status": "PERIOD_MISMATCH", "matched_item_id": matched_items[0].get("itm_id"), "matched_dimensions": matched_dimensions,
+                    "item_match_basis": item_match_basis, "reason": "period_format_not_supported"}
     else:
         api_period = None
     return {
-        "align_status": "ALIGNED", "matched_item_id": str(item_matches[0].get("itm_id") or ""),
+        "align_status": "ALIGNED", "matched_item_id": str(matched_items[0].get("itm_id") or ""),
         "matched_dimensions": matched_dimensions, "defaulted_dimensions": defaults,
         "matched_period": api_period, "period_type": period_type,
+        "item_match_basis": item_match_basis,
     }
 
 
@@ -94,8 +128,8 @@ def build_cell_query(profile: dict[str, Any], alignment: dict[str, Any]) -> dict
     if alignment.get("align_status") != "ALIGNED":
         raise ValueError("cell query requires align_status=ALIGNED")
     period_type = str(alignment.get("period_type") or "")
-    period_code = PERIOD_CODES.get(period_type)
-    if not period_code or not alignment.get("matched_period"):
+    prd_se = period_code(period_type)
+    if not prd_se or not alignment.get("matched_period"):
         raise ValueError("cell query requires a supported aligned period")
     levels: dict[str, str] = {}
     for position, dimension in enumerate(profile.get("dimensions", []), start=1):
@@ -108,7 +142,7 @@ def build_cell_query(profile: dict[str, Any], alignment: dict[str, Any]) -> dict
         raise ValueError("KOSIS table-selection API requires at least objL1")
     return {
         "org_id": str(profile.get("org_id") or ""), "tbl_id": str(profile.get("tbl_id") or ""),
-        "itm_id": str(alignment["matched_item_id"]), "prd_se": period_code,
+        "itm_id": str(alignment["matched_item_id"]), "prd_se": prd_se,
         "start_prd_de": str(alignment["matched_period"]), "end_prd_de": str(alignment["matched_period"]),
         "obj_levels": levels,
     }
@@ -120,7 +154,7 @@ def build_probe_alignment(profile: dict[str, Any]) -> dict[str, Any]:
     if not items or not str(items[0].get("itm_nm") or ""):
         return {"align_status": "ITEM_AMBIGUOUS", "reason": "probe_item_missing"}
     periods = profile.get("periods") if isinstance(profile.get("periods"), list) else []
-    supported = [period for period in periods if isinstance(period, dict) and str(period.get("PRD_SE") or "") in PERIOD_CODES]
+    supported = [period for period in periods if isinstance(period, dict) and period_code(period.get("PRD_SE"))]
     if not supported:
         return {"align_status": "PERIOD_MISMATCH", "reason": "probe_supported_period_missing"}
     chosen = max(supported, key=lambda period: str(period.get("END_PRD_DE") or ""))

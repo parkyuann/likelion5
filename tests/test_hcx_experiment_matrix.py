@@ -1,6 +1,6 @@
 import json
 
-from src.run_hcx_experiment_matrix import resolve
+from src.baseline.run_hcx_experiment_matrix import resolve
 
 
 def test_matrix_config_contains_versioned_model_settings(tmp_path):

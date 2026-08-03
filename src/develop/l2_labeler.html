@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>L2 라벨링 도우미</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --line: #d9dde3;
+    --accent: #2563eb; --accent-soft: #e8f0fe; --ok: #15803d; --warn: #b45309;
+    --err: #b91c1c; --chip: #f3f4f6; --sel: #fde68a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e8eaed; --muted: #9aa3af; --line: #2b3038;
+      --accent: #60a5fa; --accent-soft: #1e293b; --ok: #4ade80; --warn: #fbbf24;
+      --err: #f87171; --chip: #21252b; --sel: #7c5e10;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.6 "Malgun Gothic", system-ui, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg);
+           border-bottom: 1px solid var(--line); padding: 10px 16px;
+           display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+          margin-bottom: 14px; }
+  .card h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: .02em;
+             color: var(--muted); text-transform: uppercase; }
+  #sentence { font-size: 20px; line-height: 1.9; padding: 14px;
+              background: var(--chip); border-radius: 8px; user-select: text;
+              cursor: text; white-space: pre-wrap; }
+  #sentence::selection, #sentence *::selection { background: var(--sel); }
+  button { font: inherit; padding: 6px 12px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--fg); border-radius: 7px;
+           cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.chip { background: var(--chip); border-radius: 999px; padding: 5px 12px; }
+  button.chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.small { padding: 3px 9px; font-size: 13px; }
+  select, input[type=text] { font: inherit; padding: 6px 9px; border-radius: 7px;
+           border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  input[type=text] { width: 100%; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .scope { border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+           margin-bottom: 10px; }
+  .scope.active { border-color: var(--accent); background: var(--accent-soft); }
+  .lbl { font-size: 13px; color: var(--muted); min-width: 74px; }
+  .muted { color: var(--muted); }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px;
+          background: var(--chip); font-size: 12px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  #msg { padding: 9px 12px; border-radius: 8px; margin-bottom: 12px;
+         display: none; white-space: pre-wrap; }
+  #msg.show { display: block; }
+  #msg.e { background: rgba(185,28,28,.12); color: var(--err); }
+  #msg.s { background: rgba(21,128,61,.12); color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { border-top: 1px solid var(--line); padding: 5px 7px;
+           vertical-align: top; text-align: left; }
+  tr.cur td { background: var(--accent-soft); }
+  .ctx { max-height: 260px; overflow: auto; }
+  code { background: var(--chip); padding: 1px 5px; border-radius: 4px;
+         font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <button id="prev">← 이전</button>
+  <button id="next">다음 →</button>
+  <select id="jump" style="max-width:250px"></select>
+  <span id="reason" class="pill"></span>
+  <span id="rowBadge" class="pill"></span>
+  <span class="grow"></span>
+  <label class="muted">보기
+    <select id="filter">
+      <option value="ALL">전체</option>
+      <option value="GAP">주 필드 빈 행만</option>
+      <option value="TODO">미검토만</option>
+      <option value="CONTEXT_REGION_INHERITANCE">상속 59</option>
+      <option value="MULTI_INDICATOR_BOUNDARY">경계 28</option>
+      <option value="OUT_OF_SCOPE_SUBTYPE">비대상 9</option>
+      <option value="REGION_CONFLICT_RESOLUTION">충돌 2</option>
+    </select>
+  </label>
+  <label class="muted" title="끄면 저장 후 그 행에 머뭅니다">
+    <input type="checkbox" id="autoNext" checked> 저장 후 자동 이동
+  </label>
+  <span id="prog" class="pill"></span>
+  <button id="validate">전체 검증</button>
+</header>
+
+<main>
+  <div id="msg"></div>
+
+  <div class="card" id="guideCard" style="border-color:var(--accent)">
+    <h2>이 행에서 할 일</h2>
+    <div id="guide"></div>
+  </div>
+
+  <div class="card" id="noteCard" style="display:none; border-color:var(--warn)">
+    <h2>이 행에 남기신 메모</h2>
+    <div id="priorNote" style="font-size:17px"></div>
+    <div class="muted" style="margin-top:8px">
+      메모에 판단이 적혀 있다면 아래 드롭다운/입력으로 <b>옮겨 주세요.</b>
+      메모는 채점 대상이 아니라서 비워진 필드는 미판정으로 집계됩니다.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>원문 · 드래그해서 근거 표현을 고르세요</h2>
+    <div class="muted" style="margin-bottom:8px" id="meta"></div>
+    <div id="sentence"></div>
+    <div class="row" style="margin-top:10px">
+      <span class="lbl">선택</span>
+      <code id="selText">—</code>
+      <span id="selInfo" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card" id="dominantCard">
+    <h2>이 문장을 지배하는 출처 region</h2>
+    <div class="row" style="margin-bottom:8px">
+      <button class="primary" id="quickNone">지배 없음 + 저장</button>
+      <button id="quickUndecided">판단 불가 + 저장</button>
+      <span class="muted">해설·코멘트·사례·캡션이면 왼쪽 버튼 하나로 끝납니다.</span>
+    </div>
+    <div class="row">
+      <select id="dominant" style="min-width:340px"></select>
+    </div>
+  </div>
+
+  <div class="card" id="scopeCard">
+    <h2>지표 scope</h2>
+    <div id="scopes"></div>
+    <div class="row">
+      <button id="addScope">+ 지표 추가</button>
+      <span class="muted">지표를 고른 뒤 아래 값 칩을 눌러 연결하세요.</span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <span class="lbl">값 후보</span>
+      <span id="chips" class="row"></span>
+    </div>
+  </div>
+
+  <div class="card" id="regionCard">
+    <h2>이 문장이 새로 도입하는 출처 region</h2>
+    <div class="row" id="subtypeQuick" style="margin-bottom:10px"></div>
+    <div id="regions"></div>
+    <button id="addRegion">+ region 추가</button>
+  </div>
+
+  <div class="card">
+    <h2>메모 · 저장</h2>
+    <div class="row" id="extraToggle" style="margin-bottom:10px"></div>
+    <div class="row" style="margin-bottom:6px">
+      <input type="text" id="note"
+        placeholder="비워도 됩니다. 판단이 애매했거나 확신이 없을 때만 이유를 적으세요">
+    </div>
+    <div class="muted" style="margin-bottom:10px; font-size:13px">
+      메모 예: “출처가 통계청인지 고용노동부인지 문장만으로 불분명” /
+      “값이 두 지표에 모두 걸릴 수 있어 앞쪽으로 배정” /
+      “추정치인지 확정치인지 판단 불가”. 확신이 없으면 <b>빈칸으로 두고 메모만
+      남기세요</b> — 추측해서 채우면 gold가 오염됩니다.
+    </div>
+    <div class="row">
+      <button class="primary" id="saveDone">저장하고 검토완료 (Ctrl+S)</button>
+      <button id="savePending">임시 저장 (미검토 유지)</button>
+      <span id="rowState" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>기사 문맥</h2>
+    <div class="ctx"><table id="ctx"></table></div>
+  </div>
+</main>
+
+<script>
+const S = { rows: [], idx: 0, subtypes: [], sel: null, dec: null, active: 0 };
+const $ = id => document.getElementById(id);
+
+function msg(text, kind) {
+  const el = $("msg");
+  el.textContent = text;
+  el.className = "show " + (kind || "s");
+  if (kind !== "e") setTimeout(() => (el.className = ""), 2500);
+}
+
+function primaryMissing(r) {
+  const s = r.saved || {};
+  const has = f => { try { return JSON.parse(s[f] || "[]").length > 0; } catch { return false; } };
+  const dom = (s.dominant_region_decision || "").trim();
+  if (r.review_reason === "CONTEXT_REGION_INHERITANCE") return !dom;
+  if (r.review_reason === "MULTI_INDICATOR_BOUNDARY") {
+    if (!has("indicator_scopes_json")) return true;
+    // scopes exist but nothing is linked while the sentence offers values
+    if ((r.value_chips || []).length > 0 && !has("clause_value_boundaries_json")) return true;
+    // Gate L2 also grades source region on these sentences, so a sentence
+    // that carries indicators still needs to say which source governs it.
+    return !dom && !has("source_regions_json");
+  }
+  return !has("source_regions_json") && !dom;
+}
+
+function visible() {
+  const f = $("filter").value;
+  return S.rows.filter(r =>
+    f === "ALL" ? true :
+    f === "GAP" ? primaryMissing(r) :
+    f === "TODO" ? r.review_status !== "검토완료" :
+    r.review_reason === f);
+}
+
+function cur() { return S.rows[S.idx]; }
+
+function blankDecision(row) {
+  const saved = row.saved || {};
+  const parse = v => { try { return v ? JSON.parse(v) : []; } catch { return []; } };
+  const scopes = parse(saved.indicator_scopes_json);
+  const bounds = parse(saved.clause_value_boundaries_json);
+  scopes.forEach(s => {
+    const b = bounds.find(x => x.scope_id === s.scope_id);
+    s.value_span_ids = b ? b.target_value_span_ids : [];
+    if (b && b.clause_text) s.clause_text = b.clause_text;
+  });
+  return {
+    scopes,
+    regions: parse(saved.source_regions_json),
+    periods: parse(saved.period_contexts_json),
+    dominant_region_decision: saved.dominant_region_decision || "",
+    reviewer_note: row.reviewer_note || ""
+  };
+}
+
+function render() {
+  const row = cur();
+  if (!row) return;
+  S.dec = S.dec || blankDecision(row);
+  renderJump();
+  $("reason").textContent = row.review_reason;
+  const prior = String(row.reviewer_note || "").trim();
+  $("noteCard").style.display = (prior && primaryMissing(row)) ? "" : "none";
+  $("priorNote").textContent = prior;
+  const done = row.review_status === "검토완료";
+  const gap = primaryMissing(row);
+  const badge = $("rowBadge");
+  badge.textContent = gap ? "⚠ 주 필드 비어 있음" : (done ? "✓ 검토완료" : "미검토");
+  badge.style.background = gap ? "rgba(180,83,9,.18)"
+    : (done ? "rgba(21,128,61,.18)" : "var(--chip)");
+  badge.style.color = gap ? "var(--warn)" : (done ? "var(--ok)" : "var(--muted)");
+  $("meta").textContent =
+    `기사 ${row.article_idx} · 문장 ${row.sentence_id} · 발행 ${row.published_at || "-"} · ${row.title || ""}`;
+  $("sentence").textContent = row.text || "";
+  $("note").value = S.dec.reviewer_note || "";
+  $("rowState").textContent = row.review_status === "검토완료" ? "검토완료" : "미검토";
+  $("rowState").className = row.review_status === "검토완료" ? "ok" : "muted";
+
+  const dom = $("dominant");
+  dom.innerHTML = "";
+  const opts = [
+    { v: "", t: "— 선택 —" },
+    { v: "지배 없음", t: "지배 없음 (해설·코멘트·배경 — 출처 구역에 속하지 않음)" },
+    { v: "판단 불가", t: "판단 불가 (문맥을 봐도 정하지 못함 — 메모 필수)" }]
+    .concat(row.region_choices.map(c => ({
+      v: c.region_id,
+      t: `${c.region_id} · ${c.source_subtype} · ${c.origin} · ${c.text}`
+    })));
+  opts.forEach(o => {
+    const el = document.createElement("option");
+    el.value = o.v; el.textContent = o.t;
+    dom.appendChild(el);
+  });
+  dom.value = S.dec.dominant_region_decision || "";
+
+  const reason = row.review_reason;
+  applyLayout(reason);
+  renderScopes(row);
+  renderRegions();
+  renderChips(row);
+  renderCtx(row);
+}
+
+const GUIDE = {
+  CONTEXT_REGION_INHERITANCE: {
+    primary: ["dominantCard"],
+    html: `<b>질문 하나입니다 — 이 문장의 내용은 어느 출처의 것인가?</b>
+      <ol style="margin:8px 0 0 18px">
+        <li>앞 문장에서 <code>통계청에 따르면</code>처럼 출처를 밝혔고 이 문장이
+            그 내용을 이어가면 → <b>그 region</b>을 고릅니다.</li>
+        <li>해설·전문가 코멘트·배경 설명·용어 풀이·원인 분석이면
+            → <b>지배 없음</b>. 이것도 <b>답입니다.</b> 비워두지 마세요.</li>
+        <li>문맥을 다 봐도 못 정하겠으면 → <b>판단 불가</b> + 메모.</li>
+      </ol>
+      <div class="warn" style="margin-top:8px">이 질문은
+      <b>“KOSIS에서 조회되는가”가 아닙니다.</b> 그건 뒤 단계가 판단합니다.
+      여기서는 <b>이 문장이 누구 자료를 말하고 있나</b>만 정하면 됩니다.</div>
+      <div class="muted" style="margin-top:6px">이 문장이 새 출처를 처음
+      밝히는 경우에만 아래 'region 추가'를 쓰세요. 대부분은 필요 없습니다.</div>`
+  },
+  MULTI_INDICATOR_BOUNDARY: {
+    primary: ["scopeCard"],
+    html: `<b>이 문장에 지표가 둘 이상 섞여 있습니다. 어느 숫자가 어느 지표의
+      값인지 갈라 주세요.</b>
+      <ol style="margin:8px 0 0 18px">
+        <li><b>+ 지표 추가</b> → 지표명을 씁니다
+            (예: <code>단기 근로자 비율</code>).</li>
+        <li>원문에서 그 지표가 드러난 표현을 <b>드래그</b> →
+            <b>선택 영역을 근거로</b>.
+            지표명을 어디서 읽었는지 표시하는 것입니다.</li>
+        <li>그 지표에 붙는 <b>값 칩</b>을 클릭합니다. 여러 개면 여러 개.</li>
+        <li>지표 수만큼 1~3을 반복합니다.</li>
+      </ol>
+      <div class="muted" style="margin-top:8px">지표명이 앞 문장에서 이미
+      나왔다면 유형을 <b>앞에서 상속</b>으로 바꾸고 그 scope를 고르세요.
+      근거 드래그는 필요 없습니다.</div>`
+  },
+  OUT_OF_SCOPE_SUBTYPE: {
+    primary: ["regionCard"],
+    html: `<b>이 문장의 수치는 KOSIS 집계가 아닙니다. 무엇인지 종류를 정해 주세요.</b>
+      <ol style="margin:8px 0 0 18px">
+        <li><b>+ region 추가</b> → 출처 유형을 고릅니다.</li>
+        <li>원문에서 그 근거가 되는 표현을 <b>드래그</b> →
+            <b>선택 영역을 근거로</b>.</li>
+      </ol>
+      <table style="margin-top:8px">
+        <tr><td><code>민간조사</code></td><td>협회·연구소·기업의 설문·집계
+          (예: <code>한국경영자총협회 조사</code>, <code>CEO스코어</code>)</td></tr>
+        <tr><td><code>정책목표</code></td><td>정부 사업·계획·목표치
+          (예: <code>노인 일자리 사업</code>)</td></tr>
+        <tr><td><code>법정기준</code></td><td>법령이 정한 기준값
+          (예: <code>현행법상 주 15시간</code>)</td></tr>
+        <tr><td><code>잠정추산</code></td><td>확정 전 추정치
+          (예: <code>추정한 올해 1~8월</code>)</td></tr>
+      </table>`
+  },
+  REGION_CONFLICT_RESOLUTION: {
+    primary: ["regionCard"],
+    html: `<b>이 문장은 자동 파생이 판단하지 못했습니다. 직접 정리해 주세요.</b>
+      <ol style="margin:8px 0 0 18px">
+        <li>출처가 둘 이상 섞여 있으면 <b>region을 여러 개</b> 추가해 각각
+            유형과 근거를 지정합니다.</li>
+        <li>검증 대상 수치가 아니라고 판단되면 region을 만들지 말고
+            <b>지배 없음</b>을 고른 뒤 <b>메모에 이유</b>를 남기세요.</li>
+      </ol>`
+  }
+};
+
+function renderJump() {
+  const sel = $("jump");
+  const list = visible();
+  sel.innerHTML = "";
+  list.forEach(r => {
+    const o = document.createElement("option");
+    o.value = r.sentence_review_id;
+    const mark = primaryMissing(r) ? "⚠" : (r.review_status === "검토완료" ? "✓" : "·");
+    o.textContent = `${mark} ${r.sentence_review_id}  ${(r.text || "").slice(0, 22)}`;
+    sel.appendChild(o);
+  });
+  sel.value = cur().sentence_review_id;
+  const done = list.filter(r => r.review_status === "검토완료").length;
+  sel.title = `현재 보기 ${done} / ${list.length} 완료`;
+}
+
+function applyLayout(reason) {
+  const conf = GUIDE[reason] || { primary: [], html: "" };
+  $("guide").innerHTML = conf.html;
+  ["dominantCard", "scopeCard", "regionCard"].forEach(id => {
+    const primary = conf.primary.includes(id);
+    const hasData =
+      (id === "scopeCard" && S.dec.scopes.length) ||
+      (id === "regionCard" && S.dec.regions.length) ||
+      (id === "dominantCard" && S.dec.dominant_region_decision);
+    const card = $(id);
+    card.style.display = (primary || hasData) ? "" : "none";
+    card.style.borderColor = primary ? "var(--accent)" : "var(--line)";
+    card.style.opacity = primary ? "1" : "0.85";
+  });
+  const extra = $("extraToggle");
+  extra.innerHTML = "";
+  ["dominantCard", "scopeCard", "regionCard"].forEach(id => {
+    if ($(id).style.display !== "none") return;
+    const label = { dominantCard: "지배 출처 region", scopeCard: "지표 scope",
+                    regionCard: "새 출처 region" }[id];
+    const b = document.createElement("button");
+    b.className = "small";
+    b.textContent = "+ " + label + " 열기";
+    b.onclick = () => { $(id).style.display = ""; b.remove(); };
+    extra.appendChild(b);
+  });
+}
+
+function renderScopes(row) {
+  const box = $("scopes");
+  box.innerHTML = "";
+  S.dec.scopes.forEach((s, i) => {
+    const d = document.createElement("div");
+    d.className = "scope" + (i === S.active ? " active" : "");
+    d.onclick = () => { S.active = i; renderScopes(row); renderChips(row); };
+    s.attribution_type = "이 문장에서 도입";
+    d.innerHTML = `
+      <div class="row">
+        <span class="lbl">지표명</span>
+        <input type="text" style="flex:1" value="${esc(s.indicator_label || "")}" data-k="indicator_label" data-i="${i}">
+        <button class="small" data-act="del" data-i="${i}">삭제</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <span class="lbl">근거</span>
+        <code>${esc(s.source_span_text || "—")}</code>
+        <button class="small" data-act="span" data-i="${i}">선택 영역을 근거로</button>
+        <button class="small" data-act="label" data-i="${i}">선택 영역을 지표명으로</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <span class="lbl">연결된 값</span>
+        <span class="muted">${(s.value_span_ids || []).length
+          ? esc((s.value_span_ids || []).join(", ")) : "없음"}</span>
+      </div>`;
+    box.appendChild(d);
+  });
+  box.querySelectorAll("input,select").forEach(el => {
+    el.onclick = e => e.stopPropagation();
+    el.onchange = () => {
+      const i = +el.dataset.i;
+      S.dec.scopes[i][el.dataset.k] = el.value;
+      if (el.dataset.k === "attribution_type") {
+        // Drop an ID borrowed from the inheritance dropdown so a newly
+        // introduced scope never reuses another sentence's scope_id.
+        if (el.value === "이 문장에서 도입") delete S.dec.scopes[i].scope_id;
+        render();
+      }
+    };
+    el.oninput = () => { S.dec.scopes[+el.dataset.i][el.dataset.k] = el.value; };
+  });
+  box.querySelectorAll("button[data-act]").forEach(b => {
+    b.onclick = e => {
+      e.stopPropagation();
+      const i = +b.dataset.i, act = b.dataset.act;
+      if (act === "del") { S.dec.scopes.splice(i, 1); S.active = 0; }
+      else if (!S.sel) { msg("먼저 원문에서 표현을 드래그하세요.", "e"); return; }
+      else if (act === "span") {
+        S.dec.scopes[i].source_span_text = S.sel.text;
+        S.dec.scopes[i].source_char_start = S.sel.start;
+      } else if (act === "label") {
+        S.dec.scopes[i].indicator_label = S.sel.text;
+      }
+      render();
+    };
+  });
+}
+
+function renderSubtypeQuick() {
+  const box = $("subtypeQuick");
+  box.innerHTML = '<span class="lbl">빠른 추가</span>';
+  S.subtypes.forEach(t => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = "+ " + t;
+    b.onclick = () => {
+      S.dec.regions.push({ source_subtype: t });
+      render();
+    };
+    box.appendChild(b);
+  });
+}
+
+function renderRegions() {
+  renderSubtypeQuick();
+  const box = $("regions");
+  box.innerHTML = "";
+  S.dec.regions.forEach((r, i) => {
+    const d = document.createElement("div");
+    d.className = "scope";
+    const opts = S.subtypes.map(t =>
+      `<option${t === r.source_subtype ? " selected" : ""}>${esc(t)}</option>`).join("");
+    d.innerHTML = `
+      <div class="row">
+        <span class="lbl">출처 유형</span>
+        <select data-k="source_subtype" data-i="${i}"><option value="">— 선택 —</option>${opts}</select>
+        <button class="small" data-act="rdel" data-i="${i}">삭제</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <span class="lbl">근거</span>
+        <code>${esc(r.source_span_text || "—")}</code>
+        <button class="small" data-act="rspan" data-i="${i}">선택 영역을 근거로</button>
+      </div>`;
+    box.appendChild(d);
+  });
+  box.querySelectorAll("select").forEach(el => {
+    el.onchange = () => { S.dec.regions[+el.dataset.i][el.dataset.k] = el.value; };
+  });
+  box.querySelectorAll("button[data-act]").forEach(b => {
+    b.onclick = () => {
+      const i = +b.dataset.i;
+      if (b.dataset.act === "rdel") S.dec.regions.splice(i, 1);
+      else if (!S.sel) { msg("먼저 원문에서 표현을 드래그하세요.", "e"); return; }
+      else {
+        S.dec.regions[i].source_span_text = S.sel.text;
+        S.dec.regions[i].source_char_start = S.sel.start;
+      }
+      render();
+    };
+  });
+}
+
+function renderChips(row) {
+  const box = $("chips");
+  box.innerHTML = "";
+  if (!row.value_chips.length) {
+    box.innerHTML = '<span class="muted">이 문장에는 값 후보가 없습니다.</span>';
+    return;
+  }
+  const active = S.dec.scopes[S.active];
+  row.value_chips.forEach(c => {
+    const on = active && (active.value_span_ids || []).includes(c.span_id);
+    const b = document.createElement("button");
+    b.className = "chip" + (on ? " on" : "");
+    b.textContent = c.value;
+    b.title = c.span_id;
+    b.onclick = () => {
+      if (!active) { msg("먼저 '지표 추가'로 지표를 만드세요.", "e"); return; }
+      active.value_span_ids = active.value_span_ids || [];
+      const at = active.value_span_ids.indexOf(c.span_id);
+      if (at >= 0) active.value_span_ids.splice(at, 1);
+      else active.value_span_ids.push(c.span_id);
+      render();
+    };
+    box.appendChild(b);
+  });
+}
+
+function renderCtx(row) {
+  const t = $("ctx");
+  t.innerHTML = "<tr><th>문장</th><th>구분</th><th>참조 ID</th><th>원문</th></tr>";
+  row.article_context.forEach(c => {
+    const tr = document.createElement("tr");
+    if (c.sentence_review_id === row.sentence_review_id) tr.className = "cur";
+    tr.innerHTML = `<td>${c.sentence_id}</td><td>${esc(c.row_kind || "")}</td>
+      <td>${esc([c.scope_id, c.region_id].filter(Boolean).join(" / "))}
+      ${c.source_subtype ? "<br><span class='muted'>" + esc(c.source_subtype) + "</span>" : ""}</td>
+      <td>${esc(c.text || "")}</td>`;
+    t.appendChild(tr);
+  });
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g,
+    m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+}
+
+$("sentence").addEventListener("mouseup", () => {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const r = sel.getRangeAt(0);
+  if (!$("sentence").contains(r.commonAncestorContainer)) return;
+  const text = sel.toString();
+  if (!text.trim()) return;
+  S.sel = { text, start: r.startOffset };
+  $("selText").textContent = text;
+  const n = (cur().text.split(text).length - 1);
+  $("selInfo").textContent =
+    `위치 ${r.startOffset}` + (n > 1 ? ` · 이 표현은 문장에 ${n}번 나오며 선택한 위치로 확정됩니다` : "");
+});
+
+function go(delta) {
+  const list = visible();
+  if (!list.length) return;
+  const here = list.findIndex(r => r === cur());
+  const nextRow = list[Math.min(Math.max((here < 0 ? 0 : here) + delta, 0), list.length - 1)];
+  S.idx = S.rows.indexOf(nextRow);
+  S.dec = null; S.sel = null; S.active = 0;
+  $("selText").textContent = "—"; $("selInfo").textContent = "";
+  render();
+}
+
+async function save(status) {
+  const row = cur();
+  S.dec.reviewer_note = $("note").value;
+  S.dec.dominant_region_decision = $("dominant").value;
+  const body = Object.assign({}, S.dec, { review_status: status });
+  const res = await fetch("/api/rows/" + encodeURIComponent(row.sentence_review_id), {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const out = await res.json();
+  if (!res.ok) { msg("저장 실패 — " + out.error, "e"); return; }
+  const savedId = row.sentence_review_id;
+  S.rows[S.idx] = out.row;
+  S.dec = null;
+  $("prog").textContent = `완료 ${out.progress.done} / ${out.progress.total}`;
+  const advance = status === "검토완료" && $("autoNext").checked;
+  msg(status === "검토완료"
+    ? `${savedId} 검토완료로 저장했습니다 (${out.progress.done}/${out.progress.total})`
+      + (advance ? " · 다음 행으로 이동합니다" : "")
+    : `${savedId} 임시 저장했습니다 — 미검토 상태 유지`);
+  if (advance) go(1); else render();
+}
+
+$("prev").onclick = () => go(-1);
+$("next").onclick = () => go(1);
+$("jump").onchange = () => {
+  const target = S.rows.find(r => r.sentence_review_id === $("jump").value);
+  if (!target) return;
+  S.idx = S.rows.indexOf(target);
+  S.dec = null; S.sel = null; S.active = 0;
+  $("selText").textContent = "—"; $("selInfo").textContent = "";
+  render();
+};
+$("filter").onchange = () => { const l = visible(); if (l.length) { S.idx = S.rows.indexOf(l[0]); S.dec = null; render(); } };
+$("addScope").onclick = () => {
+  S.dec.scopes.push({ indicator_label: "", attribution_type: "이 문장에서 도입", value_span_ids: [] });
+  S.active = S.dec.scopes.length - 1; render();
+};
+$("addRegion").onclick = () => { S.dec.regions.push({ source_subtype: "" }); render(); };
+$("saveDone").onclick = () => save("검토완료");
+$("quickNone").onclick = () => {
+  S.dec.dominant_region_decision = "지배 없음";
+  $("dominant").value = "지배 없음";
+  save("검토완료");
+};
+$("quickUndecided").onclick = () => {
+  if (!$("note").value.trim()) {
+    msg("판단 불가는 이유를 메모에 남겨야 합니다.", "e");
+    $("note").focus();
+    return;
+  }
+  S.dec.dominant_region_decision = "판단 불가";
+  $("dominant").value = "판단 불가";
+  save("검토완료");
+};
+$("savePending").onclick = () => save("미검토");
+$("dominant").onchange = () => { S.dec.dominant_region_decision = $("dominant").value; };
+$("validate").onclick = async () => {
+  const out = await (await fetch("/api/validate")).json();
+  msg(out.status === "VALID"
+    ? `검증 통과 — span ${out.resolved_span_count}개 해석, scope ${out.scope_definition_count} / region ${out.region_definition_count}`
+    : "검증 실패\n" + (out.errors || []).slice(0, 25).join("\n"),
+    out.status === "VALID" ? "s" : "e");
+};
+document.addEventListener("keydown", e => {
+  if (e.ctrlKey && e.key === "s") { e.preventDefault(); save("검토완료"); }
+  if (e.altKey && e.key === "ArrowRight") go(1);
+  if (e.altKey && e.key === "ArrowLeft") go(-1);
+});
+
+(async () => {
+  const data = await (await fetch("/api/rows")).json();
+  S.rows = data.rows; S.subtypes = data.source_region_subtypes;
+  const p = await (await fetch("/api/progress")).json();
+  $("prog").textContent = `완료 ${p.done} / ${p.total}`;
+  const first = S.rows.findIndex(r => r.review_status !== "검토완료");
+  S.idx = first < 0 ? 0 : first;
+  render();
+})();
+</script>
+</body>
+</html>

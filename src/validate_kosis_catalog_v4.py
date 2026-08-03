@@ -101,11 +101,19 @@ def validate_v4(
     unexpected_catalog_keys = sorted(catalog_key_set - seed_key_set)
     missing_index_values = sorted(expected_values - indexed_values)
     orphan_index_values = sorted(indexed_values - expected_values)
+    metadata_not_ready = sorted(
+        key for key, record in catalog_by_key.items()
+        if record.get("meta_status") == "enriched" and (
+            not record.get("tbl_name") or not record.get("items") or not record.get("dimensions") or
+            not record.get("periods") or any(not dimension.get("values") for dimension in record.get("dimensions", []) if isinstance(dimension, dict))
+        )
+    )
 
     blocking_failure_count = sum((
         len(missing_catalog_keys), len(unexpected_catalog_keys), len(duplicate_catalog_keys),
         len(missing_checkpoint_records), len(non_source_errors), len(priority_not_enriched),
         len(missing_index_values), len(orphan_index_values), duplicate_index_rows,
+        len(metadata_not_ready),
     ))
     return {
         "seed_tables": len(seed_keys),
@@ -138,6 +146,7 @@ def validate_v4(
             "duplicate_catalog_table_keys": duplicate_catalog_keys,
             "missing_side_index_values": ["|".join(value) for value in missing_index_values],
             "orphan_side_index_values": ["|".join(value) for value in orphan_index_values],
+            "enriched_but_not_cell_query_ready": metadata_not_ready,
         },
         "blocking_failure_count": blocking_failure_count,
         "quality_gate": "PASS" if not blocking_failure_count else "FAIL",

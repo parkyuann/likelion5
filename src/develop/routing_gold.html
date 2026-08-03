@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>routing gold 판정</title>
+<style>
+  :root {
+    --bg:#fff; --fg:#16181d; --muted:#6b7280; --line:#dfe3e8; --chip:#f3f4f6;
+    --kosis:#1d4ed8; --kosis-bg:#e8effd;
+    --oos:#b45309; --oos-bg:#fdf1e3;
+    --notclaim:#4b5563; --notclaim-bg:#eef0f2;
+    --hl:#fde047; --ok:#15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#131519; --fg:#e9ebee; --muted:#98a1ad; --line:#2a2f37; --chip:#20242b;
+      --kosis:#7ba6ff; --kosis-bg:#1a2540;
+      --oos:#f3b25c; --oos-bg:#3a2c17;
+      --notclaim:#a6adb8; --notclaim-bg:#23272e;
+      --hl:#a16207; --ok:#4ade80;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.65 "Malgun Gothic",system-ui,sans-serif;
+       background:var(--bg);color:var(--fg)}
+  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);
+         padding:10px 20px;display:flex;gap:14px;align-items:center;z-index:5}
+  .grow{flex:1}
+  .pill{padding:3px 11px;border-radius:999px;background:var(--chip);font-size:13px}
+  main{max-width:900px;margin:0 auto;padding:22px 20px 60px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+  #ctxBefore,#ctxAfter{color:var(--muted);font-size:15px;line-height:1.8}
+  #sentence{font-size:21px;line-height:1.95;margin:14px 0;padding:14px;
+            background:var(--chip);border-radius:9px}
+  mark{background:var(--hl);color:inherit;padding:1px 4px;border-radius:4px;font-weight:700}
+  .attr{text-decoration:underline;text-decoration-color:var(--kosis);
+        text-decoration-thickness:2px;text-underline-offset:3px}
+  .value{font-size:30px;font-weight:700;letter-spacing:-.01em}
+  .choices{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:6px}
+  .choice{border:2px solid var(--line);border-radius:11px;padding:14px;cursor:pointer;
+          background:var(--bg);text-align:left;font:inherit;color:inherit}
+  .choice:hover{border-color:var(--muted)}
+  .choice b{display:block;font-size:17px;margin-bottom:4px}
+  .choice small{color:var(--muted);font-size:13px;line-height:1.5;display:block}
+  .choice kbd{display:inline-block;min-width:22px;text-align:center;border:1px solid var(--line);
+              border-radius:5px;padding:1px 6px;font-size:12px;margin-right:6px;background:var(--chip)}
+  .c1{border-color:var(--kosis)} .c1:hover{background:var(--kosis-bg)}
+  .c2{border-color:var(--oos)}   .c2:hover{background:var(--oos-bg)}
+  .c3{border-color:var(--notclaim)} .c3:hover{background:var(--notclaim-bg)}
+  .picked1{background:var(--kosis-bg)} .picked2{background:var(--oos-bg)}
+  .picked3{background:var(--notclaim-bg)}
+  input[type=text]{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);
+                   border-radius:8px;background:var(--bg);color:var(--fg)}
+  button{font:inherit;padding:6px 12px;border:1px solid var(--line);border-radius:8px;
+         background:var(--bg);color:var(--fg);cursor:pointer}
+  .muted{color:var(--muted)} .small{font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td{padding:3px 6px;vertical-align:top;border-top:1px solid var(--line)}
+  #bar{height:5px;background:var(--chip);border-radius:3px;overflow:hidden;flex:1;max-width:220px}
+  #barIn{height:100%;background:var(--ok);width:0}
+  #msg{padding:8px 12px;border-radius:8px;margin-bottom:12px;display:none}
+  #msg.show{display:block;background:rgba(21,128,61,.13);color:var(--ok)}
+</style>
+</head>
+<body>
+<header>
+  <span id="pos" class="pill"></span>
+  <div id="bar"><div id="barIn"></div></div>
+  <span id="prog" class="pill"></span>
+  <span class="grow"></span>
+  <label class="muted small"><input type="checkbox" id="onlyTodo" checked> 미판정만</label>
+  <button id="prev">← 이전 (←)</button>
+  <button id="next">다음 (→)</button>
+</header>
+
+<main>
+  <div id="msg"></div>
+
+  <div class="card">
+    <div class="muted small" id="meta"></div>
+    <div id="ctxBefore"></div>
+    <div id="sentence"></div>
+    <div id="ctxAfter"></div>
+    <div class="muted small" style="margin-top:10px">
+      노란 표시가 판정할 숫자입니다. <span class="attr">밑줄</span>은 출처를 밝히는 표현입니다.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="muted small" style="margin-bottom:6px" id="valueHead">판정할 값</div>
+    <div id="chips"></div>
+    <div class="muted small" id="scopeState" style="margin:8px 0 12px"></div>
+    <div class="choices">
+      <button class="choice c1" data-k="KOSIS_CANDIDATE">
+        <b><kbd>1</kbd>KOSIS 대상</b>
+        <small>정부·공공기관이 정기적으로 집계·공표하는 통계 수치.
+          취업자 수, 물가 상승률, 수출액, 출생아 수 …</small>
+      </button>
+      <button class="choice c2" data-k="OUT_OF_SCOPE">
+        <b><kbd>2</kbd>비대상</b>
+        <small>수치 주장이지만 KOSIS 집계가 아님.
+          민간 조사·설문, 전망·목표치, 법정 기준, 개별 기업 실적, 해외기관 …</small>
+      </button>
+      <button class="choice c3" data-k="NOT_CLAIM">
+        <b><kbd>3</kbd>주장 아님</b>
+        <small>애초에 통계 주장이 아닌 숫자.
+          날짜·나이·순번·횟수, 집단 정의용 기준값, 분모로만 쓰인 수 …</small>
+      </button>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <input type="text" id="note" placeholder="애매하면 이유를 적어두세요 (선택)">
+    </div>
+    <div class="muted small" style="margin-top:8px">
+      <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 판정 후 자동으로 다음 ·
+      <kbd>←</kbd><kbd>→</kbd> 문장 이동 · <kbd>Z</kbd> 직전 판정 취소<br>
+      값이 여러 개인 문장은 <b>한 번에 전부</b> 판정됩니다.
+      하나만 다르면 <b>그 값을 클릭</b>한 뒤 판정하세요
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="muted small" style="margin-bottom:6px">헷갈릴 때</div>
+    <table>
+      <tr><td class="muted">순서대로</td>
+          <td>① 숫자인가 주장인가 → ② 집계통계인가 → ③ 공공기관 것인가</td></tr>
+      <tr><td class="muted">묻지 않는 것</td>
+          <td>KOSIS에 <b>그 표가 실제로 있는지</b>는 판단하지 않습니다. 검색 단계의 일입니다</td></tr>
+      <tr><td class="muted">출처가 앞 문장에</td>
+          <td>한국어 기사는 출처를 한 번만 씁니다. 위 문맥의 밑줄을 보세요</td></tr>
+      <tr><td class="muted">같은 문장에 여러 값</td>
+          <td>한 번에 전부 판정됩니다. <b>다른 판정이 필요한 값만</b> 클릭해서 따로 고치세요 —
+              분모로만 쓰인 수는 <b>주장 아님</b>일 수 있습니다</td></tr>
+    </table>
+  </div>
+</main>
+
+<script>
+// 판정 단위는 값이 아니라 문장이다. holdout-1 값 246개 중 79%가 다른 값과
+// 문장을 공유하고, 한 문장의 값은 거의 언제나 같은 판정을 받는다
+// (`26.2%에서 18.6%로`는 같은 판단을 두 번 적는 것이다).  묶으면 판단 횟수가
+// 128번으로 절반이 되고, 표본은 246 그대로라 통계력은 깎이지 않는다.
+const S={rows:[],groups:[],gidx:0,sel:null,last:null};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+const CLS={KOSIS_CANDIDATE:1,OUT_OF_SCOPE:2,NOT_CLAIM:3};
+const CLS_KO={KOSIS_CANDIDATE:"KOSIS 대상",OUT_OF_SCOPE:"비대상",NOT_CLAIM:"주장 아님"};
+
+function buildGroups(){
+  const by=new Map();
+  for(const r of S.rows){
+    const k=r.article_idx+"|"+r.sentence_id;
+    if(!by.has(k)) by.set(k,[]);
+    by.get(k).push(r);
+  }
+  S.groups=[...by.values()];
+  for(const g of S.groups) g.sort((a,b)=>(a.value_char_start||0)-(b.value_char_start||0));
+}
+function visible(){
+  return $("onlyTodo").checked
+    ? S.groups.filter(g=>g.some(r=>!r.judged_class)) : S.groups;
+}
+function cur(){return S.groups[S.gidx];}
+
+function msg(t){const e=$("msg");e.textContent=t;e.className="show";
+  clearTimeout(msg._t);msg._t=setTimeout(()=>e.className="",1800);}
+
+function markSentence(group){
+  const t=group[0].sentence_text||"";
+  const spans=group
+    .filter(r=>typeof r.value_char_start==="number"&&typeof r.value_char_end==="number")
+    .map(r=>[r.value_char_start,r.value_char_end,r.judgement_id])
+    .sort((x,y)=>x[0]-y[0]);
+  let out="",at=0;
+  for(const [a,b,id] of spans){
+    if(a<at) continue;
+    const on=S.sel===id?' style="outline:2px solid var(--fg)"':'';
+    out+=esc(t.slice(at,a))+`<mark${on}>`+esc(t.slice(a,b))+"</mark>";
+    at=b;
+  }
+  return out+esc(t.slice(at));
+}
+
+function render(){
+  const g=cur();
+  if(!g){$("sentence").textContent="판정할 문장이 없습니다.";$("chips").innerHTML="";return;}
+  const r=g[0];
+  $("meta").textContent=`기사 ${r.article_idx} · 문장 ${r.sentence_id} · ${r.published_at||""} · ${r.article_title||""}`;
+  $("sentence").innerHTML=markSentence(g);
+
+  const before=(r.context||[]).filter(c=>c.position==="before");
+  const after=(r.context||[]).filter(c=>c.position==="after");
+  const line=c=>`<div${c.has_attribution?' class="attr"':''}>[${c.sentence_id}] ${esc(c.text)}</div>`;
+  $("ctxBefore").innerHTML=before.map(line).join("");
+  $("ctxAfter").innerHTML=after.map(line).join("");
+
+  $("valueHead").textContent=g.length>1
+    ? `판정할 값 ${g.length}개 — 한 번에 전부 판정됩니다`
+    : "판정할 값";
+  $("chips").innerHTML=g.map(v=>{
+    const n=CLS[v.judged_class]||0;
+    const on=S.sel===v.judgement_id?";outline:2px solid var(--fg)":"";
+    return `<button class="choice${n?" picked"+n:""}" data-id="${esc(v.judgement_id)}"
+      style="display:inline-block;width:auto;margin:0 8px 8px 0;padding:9px 14px${on}">
+      <b style="font-size:22px;margin:0">${esc(v.value_text)}</b>
+      <small style="margin-top:3px">${v.judged_class?esc(CLS_KO[v.judged_class]):"미판정"}</small>
+      </button>`;}).join("");
+  $("chips").querySelectorAll("button").forEach(el=>{
+    el.onclick=()=>{S.sel=(S.sel===el.dataset.id)?null:el.dataset.id;render();};
+  });
+
+  $("scopeState").innerHTML=S.sel
+    ? `<b>이 값 하나만</b> 판정합니다 — 다시 클릭하면 문장 전체로 돌아갑니다`
+    : (g.length>1?"문장의 값 전부에 같은 판정이 들어갑니다":"");
+
+  $("note").value=r.judge_note||"";
+  const shown=S.sel?g.find(v=>v.judgement_id===S.sel):g[0];
+  document.querySelectorAll(".choices .choice").forEach((el,i)=>{
+    el.classList.remove("picked1","picked2","picked3");
+    if(shown&&shown.judged_class===el.dataset.k) el.classList.add("picked"+(i+1));
+  });
+
+  const list=visible();
+  const at=list.indexOf(g);
+  $("pos").textContent=`문장 ${at<0?"-":at+1} / ${list.length}  ·  기사 ${r.article_idx}`;
+}
+
+async function post(id,body){
+  const res=await fetch("/api/rows/"+encodeURIComponent(id),{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)});
+  const out=await res.json();
+  if(!res.ok){msg("저장 실패 — "+out.error);return null;}
+  for(const row of out.rows||[out.row]){
+    const at=S.rows.findIndex(x=>x.judgement_id===row.judgement_id);
+    if(at>=0) S.rows[at]=row;
+  }
+  buildGroups();
+  setProgress(out.progress);
+  return out;
+}
+
+async function judge(cls){
+  const g=cur(); if(!g) return;
+  const note=$("note").value;
+  if(S.sel){
+    const out=await post(S.sel,{judged_class:cls,judge_note:note});
+    if(out){S.last=[S.sel];S.sel=null;render();}
+    return;
+  }
+  const out=await post(g[0].judgement_id,
+    {judged_class:cls,judge_note:note,scope:"sentence"});
+  if(out){S.last=(out.rows||[]).map(r=>r.judgement_id);go(1);}
+}
+
+function setProgress(p){
+  $("prog").textContent=`값 ${p.done} / ${p.total}`;
+  $("barIn").style.width=(p.total?100*p.done/p.total:0)+"%";
+}
+
+function go(d){
+  const list=visible();
+  if(!list.length){S.gidx=0;render();return;}
+  let at=list.indexOf(cur());
+  if(at<0) at=0; else at=Math.min(Math.max(at+d,0),list.length-1);
+  S.gidx=S.groups.indexOf(list[at]);
+  S.sel=null;
+  render();
+}
+
+async function undo(){
+  if(!S.last||!S.last.length){msg("취소할 판정이 없습니다.");return;}
+  for(const id of S.last) await post(id,{judged_class:"",judge_note:""});
+  const at=S.groups.findIndex(g=>g.some(r=>S.last.includes(r.judgement_id)));
+  if(at>=0) S.gidx=at;
+  S.last=null; S.sel=null; render();
+  msg("직전 판정을 취소했습니다.");
+}
+
+document.querySelectorAll(".choices .choice").forEach(el=>el.onclick=()=>judge(el.dataset.k));
+$("prev").onclick=()=>go(-1);
+$("next").onclick=()=>go(1);
+$("onlyTodo").onchange=()=>{const l=visible();if(l.length)S.gidx=S.groups.indexOf(l[0]);S.sel=null;render();};
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT"&&e.key!=="Escape") return;
+  if(e.key==="1") judge("KOSIS_CANDIDATE");
+  else if(e.key==="2") judge("OUT_OF_SCOPE");
+  else if(e.key==="3") judge("NOT_CLAIM");
+  else if(e.key==="ArrowLeft") go(-1);
+  else if(e.key==="ArrowRight") go(1);
+  else if(e.key==="Escape"){S.sel=null;render();}
+  else if(e.key.toLowerCase()==="z") undo();
+});
+
+(async()=>{
+  S.rows=(await (await fetch("/api/rows")).json()).rows;
+  buildGroups();
+  setProgress(await (await fetch("/api/progress")).json());
+  const first=S.groups.findIndex(g=>g.some(r=>!r.judged_class));
+  S.gidx=first<0?0:first;
+  render();
+})();
+</script>
+</body>
+</html>

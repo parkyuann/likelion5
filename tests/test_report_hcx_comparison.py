@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.report_hcx_comparison import write_report
+from src.baseline.report_hcx_comparison import write_report
 
 
 def test_report_includes_precision_recall_and_f1(tmp_path):

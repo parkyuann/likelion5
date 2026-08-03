@@ -5,7 +5,10 @@ def _catalog(table_key="1:T1", status="enriched"):
     return {
         "table_key": table_key, "meta_status": status, "category_path_status": "present",
         "category_paths": [["A"]],
+        "tbl_name": "Test table",
+        "items": [{"itm_id": "T1", "itm_nm": "Test item"}],
         "dimensions": [{"obj_id": "REGION", "values": [{"value_id": "11", "value_name": "Seoul"}]}],
+        "periods": [{"PRD_SE": "년", "END_PRD_DE": "2025"}],
     }
 
 
@@ -34,3 +37,11 @@ def test_v4_quality_gate_rejects_missing_side_index_and_checkpoint():
     assert report["quality_gate"] == "FAIL"
     assert report["blocking_failure_count"] == 2
     assert report["side_index"]["missing_values"] == 1
+
+
+def test_v4_quality_gate_rejects_enriched_profile_without_cell_query_metadata():
+    catalog = _catalog()
+    catalog["items"] = []
+    report = validate_v4([{"table_key": "1:T1"}], [catalog], _raw(), [{"table_key": "1:T1", "obj_id": "REGION", "value_id": "11"}])
+    assert report["quality_gate"] == "FAIL"
+    assert report["exceptions"]["enriched_but_not_cell_query_ready"] == ["1:T1"]

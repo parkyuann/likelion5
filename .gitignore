@@ -39,3 +39,8 @@ eda.ipynb
 archive/**
 !archive/**/
 !archive/**/.gitkeep
+
+# 실험 임시 산출물 (pytest basetemp 등) — 재생성 가능, 커밋 금지
+.tmp/
+.tmp_*/
+.pytest_cache/

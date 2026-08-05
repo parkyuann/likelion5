@@ -1,5 +1,8 @@
 """Configurable HCX claim-extraction experiment runner.
 
+팀 인계: 과거·실험용 HCX 실행기와 API key 조회 보조 모듈이다. 현재 r17 L2 실행은
+``src/develop/run_l2_segmentation.py``에서 시작한다.
+
 This is the canonical experiment entry point for the current workflow:
 rule-based candidate CSV -> HCX structured extraction -> Codex silver comparison.
 Each run is isolated by experiment_id and records latency, token usage, estimated

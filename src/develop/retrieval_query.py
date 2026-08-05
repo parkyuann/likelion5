@@ -1,5 +1,8 @@
 """Turn the structured fields into the queries the retrieval stage runs.
 
+팀 인계: 주장 구조화와 KOSIS 통계표 검색을 잇는 경계 모듈이다. 지표·품목·원문
+문장 질의를 역할별로 분리해 출력한다.
+
 This is the boundary artefact.  Everything upstream decides *what* a value
 measures; this decides *what strings the retriever is asked to match*, and the
 retriever team consumes it.  Keeping it in its own module means the query

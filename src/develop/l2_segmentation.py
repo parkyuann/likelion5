@@ -1,5 +1,8 @@
 """L2 — article-level segmentation contract.
 
+팀 인계: 현재 파이프라인에서 HCX를 호출하는 유일한 층이다. 기사 단위의 지표,
+출처 영역, 기간 문맥을 반환하며 최종 검색 필드는 생성하지 않는다.
+
 The layer answers three questions per sentence and nothing else:
 
 1. which indicator governs it, marked by a span copied from the sentence,

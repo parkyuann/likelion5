@@ -1,5 +1,8 @@
 """L5 — decide whether a value goes to KOSIS retrieval.
 
+팀 인계: 현재 검증 대상 선별 관문이다. 모든 수치 후보에 routing class·확신도·사유를
+기록하며, 불확실한 값을 조용히 버리지 않는다.
+
 The previous contract made this decision with 161 status codes and 627 Korean
 literals, and blocked at 0.330 precision: it discarded two verifiable claims
 for every correct block.  Here the decision reads the source region L2 already

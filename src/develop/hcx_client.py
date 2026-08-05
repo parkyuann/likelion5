@@ -1,5 +1,8 @@
 """HCX chat-completions client.
 
+팀 인계: prompt와 structured output schema를 HCX에 전송하고 응답을 정규화한다.
+주장 판단 로직은 포함하지 않는 인프라 모듈이다.
+
 Infrastructure, not a layer.  It sat inside ``article_claim_pipeline.py``, so
 L2 — whose only model call this is — had to import the whole r16i contract to
 reach it, and importing any layer pulled in ``requests``.

@@ -1,5 +1,8 @@
 """L3 — assign a role to every value by reading the L2 layout.
 
+팀 인계: L1의 각 수치에 그 수치를 지배하는 L2 지표·출처·기간 문맥을 연결한다.
+모델 호출 없이 결정론적으로 동작한다.
+
 r11~r16i derived the six retrieval fields independently for each claim.  The
 individual fields reached 0.12~0.61 while all six together reached 0.009,
 because independent derivation makes the errors independent too.

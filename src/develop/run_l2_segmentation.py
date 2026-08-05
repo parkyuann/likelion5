@@ -1,5 +1,8 @@
 """Run the L2 segmentation layer over the frozen 6-article gold set.
 
+팀 인계: HCX L2 추론과 실행 manifest 생성을 담당하는 CLI 진입점이다. 새로운
+L2 prediction 파일을 만들 때 사용한다.
+
 One HCX call per article, not per claim.  The r16i contract called the model
 once per value candidate chunk; the layer contract asks for the article's
 layout once, so the run is cheap enough to repeat when a layer changes.

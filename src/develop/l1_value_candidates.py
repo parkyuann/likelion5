@@ -1,5 +1,8 @@
 """L1 — extract value, time and dimension candidates from an article.
 
+팀 인계: 현재 주장 파이프라인의 첫 단계다. 기사에 등장하는 모든 수치 후보와
+원문 span을 보존하며, 해당 값이 KOSIS 검증 대상인지는 판단하지 않는다.
+
 CLAUDE.md 6.4절 names this a layer and freezes it at recall 0.968, but it had
 no module: the code sat inside ``article_claim_pipeline.py`` alongside the
 r11~r16i contract that 6.5절 forbids extending.  Every layer above it therefore

@@ -1,5 +1,8 @@
 """Derive L2 review span offsets from human-entered span text.
 
+팀 인계: 근거 텍스트를 결정론적인 문자 span으로 변환한다. 사람 검토자와 모델이
+문자 offset을 직접 입력하지 않도록 하는 모듈이다.
+
 Contract v2 required the reviewer to type ``source_char_start`` and
 ``source_char_end`` for every indicator scope, source region and period
 context.  Counting those offsets by hand inside a spreadsheet cell is both

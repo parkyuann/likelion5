@@ -1,5 +1,8 @@
 """L4 — compose the six retrieval fields from the L2 layout and L3 assignment.
 
+팀 인계: 라우팅과 통계표 검색·정렬 단계가 사용하는 정규화 검색 필드를
+결정론적으로 생성한다.
+
 The model never emits these fields.  r11~r16i asked it to, and the six-field
 joint accuracy was 0.009 while the individual fields reached 0.12~0.61: each
 field was derived on its own, so each failed on its own.

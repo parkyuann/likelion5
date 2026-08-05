@@ -1,5 +1,8 @@
 """Run L3→L4→L5 over one split's L2 predictions and score against gold.
 
+팀 인계: HCX 이후 단계를 결정론적으로 재현하는 실행 진입점이다. 고정된 기사와
+L2 결과를 입력받아 routing 및 검색 질의를 다시 생성한다.
+
 Gate B is measured once, so the measurement has to be reproducible from
 artefacts rather than from a scratch script.  Everything after L2 is
 deterministic, so this reruns to the same numbers given the same inputs.

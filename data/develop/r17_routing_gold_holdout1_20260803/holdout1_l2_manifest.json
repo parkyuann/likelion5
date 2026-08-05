@@ -1,0 +1,50 @@
+{
+  "contract_version": "l2_segmentation_v1",
+  "model": "HCX-007",
+  "articles": 12,
+  "sentences_predicted": 202,
+  "total_tokens": 56411,
+  "latency_ms_total": 360425.5,
+  "errors": [
+    {
+      "article_idx": "1736",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 2
+    },
+    {
+      "article_idx": "439",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 6
+    },
+    {
+      "article_idx": "2664",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 3
+    },
+    {
+      "article_idx": "325",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 1
+    },
+    {
+      "article_idx": "458",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 2
+    },
+    {
+      "article_idx": "2421",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 3
+    },
+    {
+      "article_idx": "1964",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 3
+    },
+    {
+      "article_idx": "555",
+      "kind": "UNRESOLVED_SPANS",
+      "count": 4
+    }
+  ]
+}

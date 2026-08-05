@@ -30,6 +30,12 @@ CHANGE_RATE = "CHANGE_RATE"
 CHANGE_POINT = "CHANGE_POINT"
 INDEX_LEVEL = "INDEX_LEVEL"
 
+YOY = "YOY"
+MOM = "MOM"
+QOQ = "QOQ"
+PERIOD_TO_PERIOD = "PERIOD_TO_PERIOD"
+NO_BASIS = "NONE"
+
 # Suffixes that make an indicator a rate by itself, independent of the unit.
 _CHANGE_SUFFIX_RE = re.compile(
     r"(?:증가율|감소율|상승률|하락률|증감률|변화율|성장률)$"
@@ -44,6 +50,35 @@ _CHANGE_PREDICATE_RE = re.compile(
     r"확대|축소|뛰|떨어)"
 )
 _POINT_UNIT_RE = re.compile(r"(?:%?포인트|%p|%P)")
+
+# These are grammatical comparison markers, not subject-matter vocabulary.
+# Multiple distinct markers in one sentence are deliberately ambiguous: e.g.
+# ``전년 동월 ... 전월보다`` compares two different things, so choosing one
+# would be worse than returning NONE and letting alignment abstain.
+_YOY_RE = re.compile(
+    r"(?:전년\s*(?:동월|동기|같은\s*기간)?(?:\s*대비|보다)?|"
+    r"지난해\s*같은\s*기간(?:\s*대비|보다)?|1년\s*전(?:\s*대비|보다)?)"
+)
+_MOM_RE = re.compile(
+    r"(?:전월(?:\s*\([^)]*\))?(?:\s*대비|보다)?|"
+    r"한\s*달\s*(?:전|만에)|지난달보다)"
+)
+_QOQ_RE = re.compile(r"(?:전분기|직전\s*분기)(?:\s*대비|보다)?")
+_PERIOD_TO_PERIOD_RE = re.compile(
+    r"(?:\d+\s*년\s*전|\d{4}년(?:\s*\d+분기|\s*\d+월)?)"
+    r"[^.]{0,40}?(?:비교|보다)"
+)
+_BASELINE_ONLY_RE = re.compile(
+    r"\s*(?:전년\s*(?:동월|동기|같은\s*기간)?|지난해\s*같은\s*기간|"
+    r"1년\s*전|전월(?:\s*\([^)]*\))?|한\s*달\s*전|전분기|직전\s*분기)"
+    r"(?:\s*대비|보다)?\s*"
+)
+_EXPLICIT_PERIOD_RE = re.compile(
+    r"(?:올해|지난해|작년)\s*\d+\s*분기|"
+    r"\d{4}년(?:\s*\d+\s*분기|\s*\d+\s*월)?|"
+    r"(?:올해|지난해|작년|지난달|이달)|(?<!\d)\d{1,2}월"
+)
+_DURATION_ONLY_RE = re.compile(r"\s*(?:최근|지난)?\s*\d+\s*(?:년|개월|분기|주)\s*(?:간|동안)?\s*")
 
 # Population nouns the retrieval layer can filter a table by.
 _POPULATION_RE = re.compile(
@@ -163,6 +198,161 @@ def absolute_period(period_raw: object, published_at: object) -> str:
     return str(resolved or text)
 
 
+def comparison_basis(
+    sentence_text: object,
+    measurement: object,
+) -> tuple[str, str, int | None]:
+    """Return a deterministic basis, its raw marker and marker position.
+
+    A comparison basis only applies to change observations.  A level value in
+    the same sentence may carry the comparison wording as context, but it does
+    not require a second cell to verify that level.
+    """
+    if measurement not in {CHANGE_RATE, CHANGE_POINT}:
+        return NO_BASIS, "", None
+    text = str(sentence_text or "")
+    matches: list[tuple[str, re.Match[str]]] = []
+    for basis, pattern in (
+        (YOY, _YOY_RE), (MOM, _MOM_RE), (QOQ, _QOQ_RE),
+        (PERIOD_TO_PERIOD, _PERIOD_TO_PERIOD_RE),
+    ):
+        match = pattern.search(text)
+        if match:
+            matches.append((basis, match))
+    distinct = {basis for basis, _ in matches}
+    if len(distinct) != 1:
+        return NO_BASIS, "", None
+    basis, match = min(matches, key=lambda item: item[1].start())
+    return basis, match.group().strip(), match.start()
+
+
+def _canonical_absolute(value: object) -> str:
+    """Canonicalise only periods that actually resolved to a date bucket."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    quarter = re.search(r"(\d{4})\s*(?:년|[-.]?)\s*[Qq]?\s*([1-4])\s*분기", text)
+    if not quarter:
+        quarter = re.search(r"(\d{4})-Q([1-4])", text, re.IGNORECASE)
+    if quarter:
+        return f"{quarter.group(1)}-Q{quarter.group(2)}"
+    month = re.search(r"(\d{4})\s*(?:년|[.\-/ ])\s*(\d{1,2})\s*월?", text)
+    if month and 1 <= int(month.group(2)) <= 12:
+        return f"{month.group(1)}-{int(month.group(2)):02d}"
+    year = re.fullmatch(r"\s*(\d{4})(?:년)?\s*", text)
+    return year.group(1) if year else ""
+
+
+def resolved_absolute_period(period_raw: object, published_at: object) -> str:
+    """Resolve a raw period, returning empty instead of echoing unresolved text."""
+    if not period_raw or not published_at:
+        return ""
+    return _canonical_absolute(absolute_period(period_raw, published_at))
+
+
+def _shift_period(absolute: str, amount: int) -> str:
+    month = re.fullmatch(r"(\d{4})-(\d{2})", absolute)
+    if month:
+        serial = int(month.group(1)) * 12 + int(month.group(2)) - 1 + amount
+        return f"{serial // 12:04d}-{serial % 12 + 1:02d}"
+    quarter = re.fullmatch(r"(\d{4})-Q([1-4])", absolute)
+    if quarter:
+        serial = int(quarter.group(1)) * 4 + int(quarter.group(2)) - 1 + amount
+        return f"{serial // 4:04d}-Q{serial % 4 + 1}"
+    year = re.fullmatch(r"(\d{4})", absolute)
+    if year:
+        return str(int(year.group(1)) + amount)
+    return ""
+
+
+def _granularity(*texts: object) -> str:
+    joined = " ".join(str(text or "") for text in texts)
+    if re.search(r"분기", joined):
+        return "quarter"
+    if re.search(r"동월|전월|지난달|이달|\d{1,2}월", joined):
+        return "month"
+    return "year"
+
+
+def _publication_bucket(published_at: object, granularity: str) -> str:
+    match = re.match(r"(\d{4})-(\d{1,2})", str(published_at or ""))
+    if not match:
+        return ""
+    year, month = int(match.group(1)), int(match.group(2))
+    if granularity == "month":
+        return f"{year:04d}-{month:02d}"
+    if granularity == "quarter":
+        return f"{year:04d}-Q{(month - 1) // 3 + 1}"
+    return f"{year:04d}"
+
+
+def _preceding_measurement_raw(sentence: str, comparison_start: int | None) -> str:
+    if comparison_start is None:
+        return ""
+    prefix = sentence[:comparison_start]
+    matches = list(_EXPLICIT_PERIOD_RE.finditer(prefix))
+    return matches[-1].group().strip() if matches else ""
+
+
+def period_pair(
+    period_raw: object,
+    sentence_text: object,
+    measurement: object,
+    published_at: object,
+) -> dict[str, Any]:
+    """Build measurement/baseline periods without inventing an unknown basis."""
+    raw = str(period_raw or "").strip()
+    sentence = str(sentence_text or "")
+    basis, baseline_marker, comparison_start = comparison_basis(sentence, measurement)
+    baseline_only = bool(raw and _BASELINE_ONLY_RE.fullmatch(raw))
+    measurement_raw = (
+        _preceding_measurement_raw(sentence, comparison_start)
+        if baseline_only else raw
+    )
+    if basis == PERIOD_TO_PERIOD and _DURATION_ONLY_RE.fullmatch(measurement_raw):
+        # ``5년 간`` is a distance between cells, not the measurement cell.
+        # The legacy period_raw alias still preserves it as source evidence.
+        measurement_raw = ""
+    baseline_raw = raw if baseline_only and basis != NO_BASIS else baseline_marker
+
+    granularity = _granularity(measurement_raw, baseline_raw, sentence)
+    measurement_absolute = resolved_absolute_period(measurement_raw, published_at)
+    baseline_absolute = ""
+
+    if basis != NO_BASIS:
+        # When L3 supplied only ``전월(8월)``, the concrete 8월 is the baseline
+        # and the measurement is one bucket later.  Otherwise a missing local
+        # measurement falls back to the publication bucket, visibly recorded
+        # by an empty raw field rather than a fabricated source phrase.
+        if baseline_only:
+            baseline_absolute = resolved_absolute_period(raw, published_at)
+        if not measurement_absolute and baseline_absolute:
+            forward = {YOY: 12 if granularity == "month" else 4 if granularity == "quarter" else 1,
+                       MOM: 1, QOQ: 1}.get(basis)
+            if forward is not None:
+                measurement_absolute = _shift_period(baseline_absolute, forward)
+        if not measurement_absolute and basis != PERIOD_TO_PERIOD:
+            measurement_absolute = _publication_bucket(published_at, granularity)
+        if not baseline_absolute:
+            backward = {
+                YOY: -12 if granularity == "month" else -4 if granularity == "quarter" else -1,
+                MOM: -1,
+                QOQ: -1,
+            }.get(basis)
+            if backward is not None:
+                baseline_absolute = _shift_period(measurement_absolute, backward)
+        # PERIOD_TO_PERIOD needs two explicit anchors.  A duration plus the
+        # publication date is not enough evidence for the exact KOSIS cells.
+        if basis == PERIOD_TO_PERIOD:
+            baseline_absolute = ""
+
+    return {
+        "measurement": {"raw": measurement_raw, "absolute": measurement_absolute},
+        "baseline": {"raw": baseline_raw, "absolute": baseline_absolute},
+        "basis": basis,
+    }
+
+
 def _terms(pattern: re.Pattern[str], *sources: object) -> list[str]:
     found: list[str] = []
     for source in sources:
@@ -224,15 +414,18 @@ def compose_fields(
         # The layout left the period empty but the indicator carried one, so
         # the information is moved rather than discarded.
         period_raw = stripped_periods[0]
+    kind = measurement_type(
+        indicator, unit, sentence, assignment.get("value_char_end")
+    )
+    pair = period_pair(period_raw, sentence, kind, published_at)
     fields = {
         "indicator": indicator,
-        "measurement_type": measurement_type(
-            indicator, unit, sentence, assignment.get("value_char_end")
-        ),
-        # Gold records the article's own wording (``지난해``) and adds the
-        # comparison basis (``·전년동기비``).  The absolute form is what
-        # retrieval queries with, so both are kept and neither is discarded.
-        "period": period_raw,
+        "measurement_type": kind,
+        "period": pair,
+        # Transitional aliases for existing audit/evaluation artifacts.  New
+        # query-plan code consumes the nested pair above; these preserve the
+        # pre-R1 raw evidence instead of deleting it during the contract move.
+        "period_raw": period_raw,
         "period_absolute": absolute_period(period_raw, published_at),
         "population": population_terms(indicator, sentence),
         "item": item_terms(indicator),
@@ -250,6 +443,7 @@ def compose_fields(
             "indicator_projection_marker": bool(stripped_modifiers["projection"]),
             "indicator": assignment.get("indicator_source", "NONE"),
             "period": assignment.get("period_source", "NONE"),
+            "period_pair_method": "DETERMINISTIC_COMPARISON_EXPRESSION_V1",
             "source_subtype": assignment.get("source_subtype", ""),
             # A facet dictionary cannot produce the classification criterion a
             # statistic is actually broken down by (``주당 36시간 미만``,

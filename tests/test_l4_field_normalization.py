@@ -4,11 +4,14 @@ from src.develop.l4_field_normalization import (
     INDEX_LEVEL,
     LEVEL,
     absolute_period,
+    comparison_basis,
     compose_fields,
     dimension_terms,
     item_terms,
     measurement_type,
     population_terms,
+    period_pair,
+    resolved_absolute_period,
 )
 
 
@@ -89,7 +92,7 @@ def test_stripped_period_fills_an_empty_period_field():
     )
 
     assert composed["retrieval_fields"]["indicator"] == "근로소득세 수입"
-    assert composed["retrieval_fields"]["period"] == "지난해"
+    assert composed["retrieval_fields"]["period"]["measurement"]["raw"] == "지난해"
 
 
 def test_an_existing_period_field_is_not_overwritten():
@@ -99,7 +102,7 @@ def test_an_existing_period_field_is_not_overwritten():
         published_at=None,
     )
 
-    assert composed["retrieval_fields"]["period"] == "5월 셋째 주"
+    assert composed["retrieval_fields"]["period"]["measurement"]["raw"] == "5월 셋째 주"
     assert composed["retrieval_fields"]["indicator"] == "휘발유 평균 판매가"
 
 
@@ -190,6 +193,66 @@ def test_empty_period_stays_empty():
     assert absolute_period("", "2025-10-09") == ""
 
 
+def test_period_pair_resolves_yoy_month_cells_from_explicit_measurement():
+    pair = period_pair(
+        "올해 9월", "올해 9월 물가는 전년 동월 대비 3.2% 상승했다.",
+        CHANGE_RATE, "2025-10-02",
+    )
+
+    assert pair == {
+        "measurement": {"raw": "올해 9월", "absolute": "2025-09"},
+        "baseline": {"raw": "전년 동월 대비", "absolute": "2024-09"},
+        "basis": "YOY",
+    }
+
+
+def test_baseline_only_expression_uses_publication_bucket_without_faking_raw():
+    pair = period_pair(
+        "전년 동월 대비", "식품 물가가 전년 동월 대비 3.2% 상승했다.",
+        CHANGE_RATE, "2025-10-02",
+    )
+
+    assert pair["measurement"] == {"raw": "", "absolute": "2025-10"}
+    assert pair["baseline"] == {"raw": "전년 동월 대비", "absolute": "2024-10"}
+    assert pair["basis"] == "YOY"
+
+
+def test_preceding_quarter_beats_publication_fallback():
+    pair = period_pair(
+        "전년 동기 대비",
+        "지난해 3분기 근로소득은 전년 같은 기간보다 2.6% 늘었다.",
+        CHANGE_RATE,
+        "2025-11-10",
+    )
+
+    assert pair["measurement"]["raw"] == "지난해 3분기"
+    assert pair["measurement"]["absolute"] == "2024-Q3"
+    assert pair["baseline"]["absolute"] == "2023-Q3"
+
+
+def test_two_different_comparison_bases_abstain():
+    basis, raw, position = comparison_basis(
+        "전년 동월 대비 3.4% 상승하며 전월보다 확대됐다.", CHANGE_RATE,
+    )
+
+    assert (basis, raw, position) == ("NONE", "", None)
+
+
+def test_no_comparison_expression_does_not_guess_a_baseline():
+    pair = period_pair(
+        "지난달", "지난달 생활물가지수가 2.5% 상승했다.",
+        CHANGE_RATE, "2025-10-09",
+    )
+
+    assert pair["measurement"]["absolute"] == "2025-09"
+    assert pair["baseline"] == {"raw": "", "absolute": ""}
+    assert pair["basis"] == "NONE"
+
+
+def test_unresolved_duration_is_not_echoed_as_an_absolute_date():
+    assert resolved_absolute_period("8개월", "2025-10-09") == ""
+
+
 def test_population_prefers_the_indicator_over_the_sentence():
     assert population_terms("단기 근로자 비율", "기업 조사 결과다.") == ["근로자"]
 
@@ -228,7 +291,7 @@ def test_compose_fields_builds_all_six():
 
     fields = composed["retrieval_fields"]
     assert set(fields) == {
-        "indicator", "measurement_type", "period", "period_absolute",
+        "indicator", "measurement_type", "period", "period_raw", "period_absolute",
         "population", "item", "dimension",
     }
     assert fields["measurement_type"] == CHANGE_RATE
@@ -244,5 +307,5 @@ def test_period_keeps_the_article_wording_and_adds_the_absolute_form():
     )
 
     fields = composed["retrieval_fields"]
-    assert fields["period"] == "지난달"
+    assert fields["period"]["measurement"]["raw"] == "지난달"
     assert fields["period_absolute"].startswith("2025")

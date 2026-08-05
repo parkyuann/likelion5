@@ -20,8 +20,17 @@ except ImportError:  # pragma: no cover - exercised only in minimal test runtime
     requests = None  # type: ignore[assignment]
 
 
+# The HCX-007 documentation advertises a higher generic output ceiling, but
+# the structured-output endpoint used by this service app rejects 8,000 with
+# HTTP 400 while the same dev request succeeds at 4,000.  This is transport
+# compatibility, not a change to the L2 prompt or schema contract.
+MAX_COMPLETION_TOKENS = 4000
+
+
 def call_hcx_json(*, system_prompt: str, user_prompt: str, schema: dict[str, Any], api_key: str,
-                  model: str, timeout: int) -> tuple[dict[str, Any], dict[str, Any], float]:
+                  model: str, timeout: int, temperature: float = 0.1,
+                  top_p: float = 0.8, seed: int | None = None,
+                  max_completion_tokens: int = MAX_COMPLETION_TOKENS) -> tuple[dict[str, Any], dict[str, Any], float]:
     if not api_key:
         raise ValueError("HCX API key is required")
     if requests is None:
@@ -29,14 +38,16 @@ def call_hcx_json(*, system_prompt: str, user_prompt: str, schema: dict[str, Any
     url = f"https://clovastudio.stream.ntruss.com/v3/chat-completions/{model.upper()}"
     body = {
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        "temperature": 0.1, "topP": 0.8, "topK": 0, "repetitionPenalty": 1.1,
-        # A whole article can contain many independently grounded item claims;
-        # 4,000 tokens truncated the JSON response before its closing brace in
-        # the 2680 calibration article.  Keep the response schema-constrained
-        # but allow the complete audit array to be returned.
-        "maxCompletionTokens": 8000, "thinking": {"effort": "none"},
+        "temperature": temperature, "topP": top_p, "topK": 0,
+        "repetitionPenalty": 1.1,
+        # L2 chunks at 15 sentences so the response remains within the actual
+        # structured-output limit observed for this service app.
+        "maxCompletionTokens": max_completion_tokens,
+        "thinking": {"effort": "none"},
         "responseFormat": {"type": "json", "schema": schema},
     }
+    if seed is not None:
+        body["seed"] = seed
     started = time.perf_counter()
     response = requests.post(url, headers={
         "Authorization": f"Bearer {api_key}", "X-NCP-CLOVASTUDIO-REQUEST-ID": str(uuid.uuid4()),

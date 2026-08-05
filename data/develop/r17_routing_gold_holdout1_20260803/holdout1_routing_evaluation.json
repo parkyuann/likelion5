@@ -1,0 +1,18 @@
+{
+ "true_positive": 183,
+ "false_positive": 50,
+ "false_negative": 0,
+ "true_negative": 13,
+ "values_missing_from_prediction": 0,
+ "precision": 0.7854077253218884,
+ "recall": 1.0,
+ "f1": 0.8798076923076923,
+ "abstention_precision": 1.0,
+ "confusion": {
+  "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 183,
+  "NOT_CLAIM->KOSIS_CANDIDATE": 18,
+  "OUT_OF_SCOPE->KOSIS_CANDIDATE": 32,
+  "NOT_CLAIM->OUT_OF_SCOPE": 2,
+  "OUT_OF_SCOPE->OUT_OF_SCOPE": 11
+ }
+}

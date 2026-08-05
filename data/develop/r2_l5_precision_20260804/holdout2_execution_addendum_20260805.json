@@ -1,0 +1,62 @@
+{
+  "contract_version": "r2-l5-holdout2-execution-addendum-v1",
+  "recorded_at": "2026-08-05",
+  "gold_sha256": "3d99c6f49654441232e4673683e463c5af953ce61d800fb55d2dc03212c54327",
+  "gold_rows": 225,
+  "gold_reviewed_rows": 225,
+  "gold_class_counts": {
+    "KOSIS_CANDIDATE": 73,
+    "OUT_OF_SCOPE": 144,
+    "NOT_CLAIM": 8
+  },
+  "gold_note_status": {
+    "nonempty": 225,
+    "language": "English",
+    "used_as_metric_input": false
+  },
+  "pre_measurement_sha_checks": {
+    "input": true,
+    "l4_field_normalization": true,
+    "l5_routing": true
+  },
+  "failed_operational_attempt": {
+    "predictions_written": 0,
+    "sentences_predicted": 0,
+    "errors": {
+      "HTTP_400_BAD_REQUEST": 11,
+      "READ_TIMEOUT": 1
+    },
+    "result_visibility": false,
+    "classification_metrics_computed": false
+  },
+  "dev_transport_probe": {
+    "split": "dev",
+    "semantic_prompt_changed": false,
+    "response_schema_changed": false,
+    "max_completion_tokens_8000_status": 400,
+    "max_completion_tokens_4000_status": 200
+  },
+  "compatibility_change": {
+    "file": "src/develop/hcx_client.py",
+    "field": "maxCompletionTokens",
+    "before": 8000,
+    "after": 4000,
+    "changed_layer": "transport only",
+    "l4_or_l5_rule_changed": false,
+    "holdout_threshold_changed": false
+  },
+  "retry_policy": "One operational retry is allowed because the failed attempt produced zero predictions and no metrics. The retry must use the same input, L2 semantic prompt/schema, L4, L5, threshold, and human gold.",
+  "completed_retry": {
+    "sentences_predicted": 265,
+    "total_tokens": 76526,
+    "latency_ms_total": 424844.0,
+    "call_failed_n": 0,
+    "missing_sentence_n": 5,
+    "unresolved_span_n": 25,
+    "prediction_sha256": "0714535c84aa2ca7faa0a3304419b3526cb2469869368234130c778ff9fb2e0a",
+    "routed_sha256": "16b0d460db582653882ec2e72835e50c84fd0c04e304013753d863f595e4640f",
+    "comparison_sha256": "d36c860ba4afcf5cb809e1edc2272cb09241b843c992d0a81354cc82b7171d95"
+  },
+  "holdout_status": "consumed",
+  "adoption": "PROVISIONAL_SMALL_N"
+}

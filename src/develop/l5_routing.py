@@ -14,6 +14,7 @@ than being discarded, and the threshold decides.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 KOSIS_CANDIDATE = "KOSIS_CANDIDATE"
@@ -28,6 +29,21 @@ OUT_OF_SCOPE_SUBTYPES = frozenset({
 DEFAULT_THRESHOLD = 0.5
 
 
+def indicator_repeats_value(assignment: dict[str, Any]) -> bool:
+    """Whether a value candidate was copied into its own indicator label.
+
+    ``소득 하위 20%`` and ``1달러=1코인`` use the number as a category or
+    definition, not as the observation the surrounding sentence reports.  The
+    check is structural and corpus-independent: no subject vocabulary is added.
+    """
+    value = re.sub(r"\s+", "", str(assignment.get("value_text") or ""))
+    indicator = re.sub(
+        r"\s+", "",
+        str((assignment.get("retrieval_fields") or {}).get("indicator") or ""),
+    )
+    return bool(value and re.search(r"\d", value) and value in indicator)
+
+
 def route_value(assignment: dict[str, Any]) -> dict[str, Any]:
     """Return the routing class, its confidence and the reason."""
     subtype = str(assignment.get("source_subtype") or "").strip()
@@ -38,6 +54,12 @@ def route_value(assignment: dict[str, Any]) -> dict[str, Any]:
             "routing_class": OUT_OF_SCOPE,
             "confidence": 1.0,
             "reason": f"SOURCE_SUBTYPE_{subtype}",
+        }
+    if indicator_repeats_value(assignment):
+        return {
+            "routing_class": NOT_CLAIM,
+            "confidence": 1.0,
+            "reason": "VALUE_REPEATED_INSIDE_INDICATOR",
         }
     if subtype == OFFICIAL_SUBTYPE:
         return {

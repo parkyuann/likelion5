@@ -1,0 +1,84 @@
+{
+  "contract_version": "l2-full-dev12-v2",
+  "artifact_status": "DRAFT_NEEDS_HUMAN_ADJUDICATION",
+  "review_rows": 256,
+  "context_rows": 256,
+  "articles": 12,
+  "value_candidates": 226,
+  "routing_gold_counts": {
+    "KOSIS_CANDIDATE": 167,
+    "OUT_OF_SCOPE": 37,
+    "NOT_CLAIM": 22
+  },
+  "routing_gold_source": "r17 dev12 human routing adjudication",
+  "review_reason_counts": {
+    "FULL_DEV12_GATE_B": 256
+  },
+  "per_article_sentences": {
+    "1866": 18,
+    "2604": 36,
+    "627": 31,
+    "2643": 10,
+    "2679": 8,
+    "2161": 6,
+    "2505": 30,
+    "2020": 14,
+    "353": 41,
+    "1526": 35,
+    "1347": 12,
+    "1945": 15
+  },
+  "per_article_values": {
+    "1866": 27,
+    "2604": 33,
+    "627": 42,
+    "2643": 2,
+    "2679": 9,
+    "2161": 3,
+    "2505": 18,
+    "2020": 19,
+    "353": 24,
+    "1526": 17,
+    "1347": 11,
+    "1945": 21
+  },
+  "human_file_prefills_suggestions": false,
+  "suggestions_are_gold": false,
+  "contains_model_output": false,
+  "auto_confirmed_context_rows": 0,
+  "id_uniqueness_scope": "article",
+  "scope_id_format": "{article_idx}-SC{nn}",
+  "region_id_format": "{article_idx}-R{nn}",
+  "source_region_subtypes": [
+    "공식집계",
+    "민간조사",
+    "정책목표",
+    "잠정추산",
+    "법정기준"
+  ],
+  "scope_attribution_types": [
+    "이 문장에서 도입",
+    "앞에서 상속"
+  ],
+  "dominance_values": [
+    "REGION_ID",
+    "지배 없음"
+  ],
+  "label_provenance_values": [
+    "UNREVIEWED",
+    "AUTO_DERIVED",
+    "HUMAN_CONFIRMED"
+  ],
+  "span_resolution_rule": "Reviewers select source_span_text; offsets are derived and are never human input.",
+  "boundary_reference_rule": "target_value_span_ids must come from the row's deterministic L1 span list",
+  "field_gold_rule": "Every human-routed KOSIS_CANDIDATE value must be linked to exactly one human indicator scope and have measurement_gold plus period_gold; the explicit period answer 없음 is valid.",
+  "measurement_gold_values": [
+    "INDEX_LEVEL",
+    "LEVEL",
+    "CHANGE_RATE",
+    "CHANGE_POINT"
+  ],
+  "reference_integrity_rule": "dominant and inherited IDs must be defined in the same article",
+  "disagreement_rule": "No row is auto-confirmed in the full review artifact",
+  "measurement_note": "The roadmap said 255 sentences; the current frozen dev input and current sentence splitter produce 256. No sentence is dropped to fit the stale count."
+}

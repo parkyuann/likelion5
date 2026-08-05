@@ -1,0 +1,25 @@
+{
+  "candidates": 225,
+  "articles": 12,
+  "per_article": {
+    "382": 26,
+    "1342": 36,
+    "880": 44,
+    "1545": 5,
+    "277": 7,
+    "888": 13,
+    "2037": 20,
+    "1335": 13,
+    "2608": 20,
+    "296": 16,
+    "736": 13,
+    "2357": 12
+  },
+  "sentences_with_attribution": 34,
+  "classes": [
+    "KOSIS_CANDIDATE",
+    "OUT_OF_SCOPE",
+    "NOT_CLAIM"
+  ],
+  "contains_model_output": false
+}

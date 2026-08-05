@@ -1,0 +1,43 @@
+{
+  "contract_version": "r2-l5-holdout2-preregistration-v1",
+  "registered_at": "2026-08-04",
+  "split": "sealed_holdout_2",
+  "input_sha256": "73e7cbbd8cd569281af1f803bd537781ae5302e8c7ba343ef99889f1a3489cb7",
+  "l5_routing_sha256": "c2a8f2a2f00945bea064e132636a7a4b1758c6cf117e53372611488e2e9d6e36",
+  "l4_field_normalization_sha256": "dc7c7d6309369320c39d77cb0de13367b8eae464fdc4f410d7f1019a3eb56130",
+  "changed_layer": "L5",
+  "rule": {
+    "name": "VALUE_REPEATED_INSIDE_INDICATOR",
+    "definition": "compact value_text contains a digit and is an exact substring of compact retrieval_fields.indicator",
+    "decision": "NOT_CLAIM",
+    "threshold_change": false,
+    "lexical_rule_added": false
+  },
+  "dev_input": {
+    "articles": 12,
+    "values": 226,
+    "baseline": {"tp": 148, "fp": 53, "fn": 19, "tn": 6},
+    "changed": {"tp": 148, "fp": 49, "fn": 19, "tn": 10},
+    "new_blocks": 4,
+    "correct_new_blocks": 4,
+    "lost_kosis": 0,
+    "effect_size_note": "n=4; improvement is not established"
+  },
+  "required_holdout_metrics": [
+    "precision", "recall", "f1", "abstention_precision",
+    "new_block_correct_n", "new_block_total_n", "kosis_loss_n"
+  ],
+  "adoption_rule": {
+    "registered_before_prediction_and_gold_completion": true,
+    "if_kosis_loss_n_gt_0": "reject hard block; do not tune on holdout; evaluate a soft penalty below the routing threshold only in a new development cycle",
+    "if_kosis_loss_n_eq_0": "report as provisional when new_block_total_n is too small for a stable independent estimate; do not mark complete on zero observed loss alone",
+    "holdout_threshold_tuning_allowed": false
+  },
+  "one_shot": true,
+  "prediction_visibility_before_gold": false,
+  "holdout_status": "not_run",
+  "blockers": [
+    "human routing gold is not yet labelled",
+    "NCP_CLOVASTUDIO_API_KEY is absent, so L2 predictions cannot be generated"
+  ]
+}

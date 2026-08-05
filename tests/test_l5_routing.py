@@ -41,6 +41,32 @@ def test_no_indicator_and_no_region_is_not_a_claim():
     assert decision["routing_class"] == NOT_CLAIM
 
 
+def test_value_repeated_inside_indicator_is_a_dimension_not_an_observation():
+    """`하위 20%` describes the group; the observed income is another value."""
+    row = {
+        "source_subtype": "공식집계",
+        "indicator_label": "소득 하위 20% 가구의 월평균 소득 비율",
+        "value_text": "20%",
+        "retrieval_fields": {"indicator": "소득 하위 20% 가구의 월평균 소득 비율"},
+    }
+
+    decision = route_value(row)
+
+    assert decision["routing_class"] == NOT_CLAIM
+    assert decision["reason"] == "VALUE_REPEATED_INSIDE_INDICATOR"
+
+
+def test_a_different_observed_value_is_not_blocked_by_the_dimension_rule():
+    row = {
+        "source_subtype": "공식집계",
+        "indicator_label": "소득 하위 20% 가구의 월평균 소득",
+        "value_text": "114만원",
+        "retrieval_fields": {"indicator": "소득 하위 20% 가구의 월평균 소득"},
+    }
+
+    assert route_value(row)["routing_class"] == KOSIS_CANDIDATE
+
+
 def test_threshold_demotes_low_confidence_routing():
     assignments = [{"source_subtype": "", "indicator_label": "취업자 수"}]
 

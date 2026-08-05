@@ -1,0 +1,37 @@
+{
+ "articles": 12,
+ "threshold": 0.5,
+ "assignment": {
+  "values": 225,
+  "with_indicator": 225,
+  "indicator_source": {
+   "LOCAL": 222,
+   "INHERITED": 3
+  },
+  "with_source_subtype": 134,
+  "source_subtype": {
+   "(없음)": 91,
+   "공식집계": 123,
+   "민간조사": 11
+  },
+  "with_period": 136
+ },
+ "routing": {
+  "values": 225,
+  "classes": {
+   "KOSIS_CANDIDATE": 212,
+   "NOT_CLAIM": 2,
+   "OUT_OF_SCOPE": 11
+  },
+  "reasons": {
+   "INDICATOR_WITHOUT_RESOLVED_REGION": 91,
+   "OFFICIAL_AGGREGATE_REGION": 121,
+   "VALUE_REPEATED_INSIDE_INDICATOR": 2,
+   "SOURCE_SUBTYPE_민간조사": 11
+  },
+  "confidence": {
+   "0.5": 91,
+   "1.0": 134
+  }
+ }
+}

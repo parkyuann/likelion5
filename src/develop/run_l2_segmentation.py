@@ -37,14 +37,20 @@ def run(
     retries: int = 2,
     pause_seconds: float = 1.0,
     contract: str = "single",
+    generation_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     call = (
         call_hcx_l2_split if contract == "split" else call_hcx_l2_segmentation
     )
     predictions: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    usage_total = {"total_tokens": 0}
+    usage_total = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
     latency_total = 0.0
+    article_runs: list[dict[str, Any]] = []
     for article in articles:
         article_idx = str(article.get("article_idx"))
         title = str(article.get("title") or article.get("기사제목") or "")
@@ -52,15 +58,30 @@ def run(
         last_error: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                resolved, usage, latency_ms = call(
-                    title, body, api_key=api_key, model=model
-                )
+                call_kwargs = {"api_key": api_key, "model": model}
+                if generation_config:
+                    call_kwargs["generation_config"] = generation_config
+                resolved, usage, latency_ms = call(title, body, **call_kwargs)
             except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
                 last_error = exc
                 time.sleep(pause_seconds * (attempt + 1))
                 continue
             latency_total += latency_ms
-            usage_total["total_tokens"] += int(usage.get("totalTokens") or 0)
+            article_usage = {
+                "prompt_tokens": int(usage.get("promptTokens") or 0),
+                "completion_tokens": int(
+                    usage.get("completionTokens") or 0
+                ),
+                "total_tokens": int(usage.get("totalTokens") or 0),
+            }
+            for key, value in article_usage.items():
+                usage_total[key] += value
+            article_runs.append({
+                "article_idx": article_idx,
+                "attempts": attempt + 1,
+                "latency_ms": round(latency_ms, 1),
+                **article_usage,
+            })
             for sentence in resolved["sentences"]:
                 predictions.append({
                     "article_idx": article_idx,
@@ -86,6 +107,11 @@ def run(
                 "kind": "CALL_FAILED",
                 "detail": str(last_error)[:300],
             })
+            article_runs.append({
+                "article_idx": article_idx,
+                "attempts": retries + 1,
+                "status": "CALL_FAILED",
+            })
         time.sleep(pause_seconds)
 
     manifest = {
@@ -97,9 +123,18 @@ def run(
         "model": model,
         "articles": len(articles),
         "sentences_predicted": len(predictions),
+        "prompt_tokens": usage_total["prompt_tokens"],
+        "completion_tokens": usage_total["completion_tokens"],
         "total_tokens": usage_total["total_tokens"],
         "latency_ms_total": round(latency_total, 1),
+        "article_runs": article_runs,
         "errors": errors,
+        "generation_config": generation_config or {
+            "temperature": 0.1,
+            "top_p": 0.8,
+            "seed": None,
+            "max_completion_tokens": 4000,
+        },
     }
     return predictions, manifest
 
@@ -110,6 +145,10 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--model", default="HCX-007")
+    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--top-p", type=float, default=0.8)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--max-completion-tokens", type=int, default=4000)
     parser.add_argument(
         "--contract", choices=("single", "split"), default="single"
     )
@@ -124,6 +163,12 @@ def main() -> None:
         api_key=api_key,
         model=args.model,
         contract=args.contract,
+        generation_config={
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "seed": args.seed,
+            "max_completion_tokens": args.max_completion_tokens,
+        },
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

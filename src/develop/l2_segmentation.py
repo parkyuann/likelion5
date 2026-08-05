@@ -356,9 +356,14 @@ def call_hcx_l2_segmentation(
     model: str = "HCX-007",
     timeout: int = 180,
     chunk_size: int = SENTENCE_CHUNK_SIZE,
+    generation_config: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], float]:
     merged: list[dict[str, Any]] = []
-    total_tokens = 0
+    usage_total = {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0,
+    }
     latency_ms = 0.0
     for target_ids in chunk_sentence_ids(article_text, chunk_size):
         if not target_ids:
@@ -370,13 +375,15 @@ def call_hcx_l2_segmentation(
             api_key=api_key,
             model=model,
             timeout=timeout,
+            **(generation_config or {}),
         )
         merged.extend(prediction.get("sentences") or [])
-        total_tokens += int(usage.get("totalTokens") or 0)
+        for key in usage_total:
+            usage_total[key] += int(usage.get(key) or 0)
         latency_ms += chunk_latency
     return (
         resolve_prediction(article_text, {"sentences": merged}),
-        {"totalTokens": total_tokens},
+        usage_total,
         latency_ms,
     )
 
@@ -450,6 +457,7 @@ def call_hcx_l2_split(
     model: str = "HCX-007",
     timeout: int = 180,
     chunk_size: int = SENTENCE_CHUNK_SIZE,
+    generation_config: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], float]:
     """Ask about source and indicator separately, then merge per sentence.
 
@@ -459,7 +467,11 @@ def call_hcx_l2_split(
     keep its own best contract.
     """
     merged: dict[int, dict[str, Any]] = {}
-    total_tokens = 0
+    usage_total = {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "totalTokens": 0,
+    }
     latency_ms = 0.0
     for pass_name, system_prompt, key in (
         ("source", L2_SOURCE_SYSTEM_PROMPT, "source_region"),
@@ -477,8 +489,10 @@ def call_hcx_l2_split(
                 api_key=api_key,
                 model=model,
                 timeout=timeout,
+                **(generation_config or {}),
             )
-            total_tokens += int(usage.get("totalTokens") or 0)
+            for usage_key in usage_total:
+                usage_total[usage_key] += int(usage.get(usage_key) or 0)
             latency_ms += chunk_latency
             for item in prediction.get("sentences") or []:
                 sentence_id = item.get("sentence_id")
@@ -499,7 +513,7 @@ def call_hcx_l2_split(
             article_text,
             {"sentences": [merged[key] for key in sorted(merged)]},
         ),
-        {"totalTokens": total_tokens},
+        usage_total,
         latency_ms,
     )
 

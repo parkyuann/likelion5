@@ -1,0 +1,19 @@
+{
+ "true_positive": 70,
+ "false_positive": 142,
+ "false_negative": 3,
+ "true_negative": 10,
+ "values_missing_from_prediction": 0,
+ "precision": 0.330188679245283,
+ "recall": 0.958904109589041,
+ "f1": 0.49122807017543857,
+ "abstention_precision": 0.7692307692307693,
+ "confusion": {
+  "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 70,
+  "OUT_OF_SCOPE->KOSIS_CANDIDATE": 134,
+  "OUT_OF_SCOPE->NOT_CLAIM": 2,
+  "NOT_CLAIM->KOSIS_CANDIDATE": 8,
+  "OUT_OF_SCOPE->OUT_OF_SCOPE": 8,
+  "KOSIS_CANDIDATE->OUT_OF_SCOPE": 3
+ }
+}

@@ -12,7 +12,11 @@ def _stub(resolved, calls=None):
     def call(title, body, *, api_key, model="HCX-007"):
         if calls is not None:
             calls.append(title)
-        return resolved, {"totalTokens": 100}, 12.5
+        return resolved, {
+            "promptTokens": 60,
+            "completionTokens": 40,
+            "totalTokens": 100,
+        }, 12.5
     return call
 
 
@@ -36,6 +40,16 @@ def test_run_flattens_sentences_with_article_idx(monkeypatch):
     assert predictions[0]["article_idx"] == "380"
     assert manifest["sentences_predicted"] == 1
     assert manifest["total_tokens"] == 100
+    assert manifest["prompt_tokens"] == 60
+    assert manifest["completion_tokens"] == 40
+    assert manifest["article_runs"] == [{
+        "article_idx": "380",
+        "attempts": 1,
+        "latency_ms": 12.5,
+        "prompt_tokens": 60,
+        "completion_tokens": 40,
+        "total_tokens": 100,
+    }]
     assert manifest["errors"] == []
 
 
@@ -75,3 +89,24 @@ def test_run_retries_then_records_failure(monkeypatch):
     assert len(attempts) == 3
     assert manifest["errors"][0]["kind"] == "CALL_FAILED"
     assert "429" in manifest["errors"][0]["detail"]
+
+
+def test_run_forwards_explicit_generation_config(monkeypatch):
+    captured = {}
+
+    def call(title, body, *, api_key, model="HCX-007", generation_config=None):
+        captured.update(generation_config or {})
+        return {
+            "sentences": [], "missing_sentence_ids": [],
+            "unresolved_spans": 0,
+        }, {}, 1.0
+
+    monkeypatch.setattr(run_l2_segmentation, "call_hcx_l2_segmentation", call)
+
+    _, manifest = run_l2_segmentation.run(
+        [ARTICLE], api_key="x", pause_seconds=0,
+        generation_config={"temperature": 0.0, "seed": 1201},
+    )
+
+    assert captured == {"temperature": 0.0, "seed": 1201}
+    assert manifest["generation_config"] == captured

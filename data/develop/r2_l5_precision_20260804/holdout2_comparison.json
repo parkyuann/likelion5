@@ -1,0 +1,48 @@
+{
+  "contract_version": "r2-l5-holdout2-comparison-v1",
+  "registered_reason": "VALUE_REPEATED_INSIDE_INDICATOR",
+  "baseline": {
+    "true_positive": 70,
+    "false_positive": 144,
+    "false_negative": 3,
+    "true_negative": 8,
+    "values_missing_from_prediction": 0,
+    "precision": 0.32710280373831774,
+    "recall": 0.958904109589041,
+    "f1": 0.4878048780487804,
+    "abstention_precision": 0.7272727272727273,
+    "confusion": {
+      "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 70,
+      "OUT_OF_SCOPE->KOSIS_CANDIDATE": 136,
+      "NOT_CLAIM->KOSIS_CANDIDATE": 8,
+      "OUT_OF_SCOPE->OUT_OF_SCOPE": 8,
+      "KOSIS_CANDIDATE->OUT_OF_SCOPE": 3
+    }
+  },
+  "changed": {
+    "true_positive": 70,
+    "false_positive": 142,
+    "false_negative": 3,
+    "true_negative": 10,
+    "values_missing_from_prediction": 0,
+    "precision": 0.330188679245283,
+    "recall": 0.958904109589041,
+    "f1": 0.49122807017543857,
+    "abstention_precision": 0.7692307692307693,
+    "confusion": {
+      "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 70,
+      "OUT_OF_SCOPE->KOSIS_CANDIDATE": 134,
+      "OUT_OF_SCOPE->NOT_CLAIM": 2,
+      "NOT_CLAIM->KOSIS_CANDIDATE": 8,
+      "OUT_OF_SCOPE->OUT_OF_SCOPE": 8,
+      "KOSIS_CANDIDATE->OUT_OF_SCOPE": 3
+    }
+  },
+  "new_block_total_n": 2,
+  "new_block_correct_n": 2,
+  "kosis_loss_n": 0,
+  "new_block_gold_classes": {
+    "OUT_OF_SCOPE": 2
+  },
+  "adoption": "PROVISIONAL_SMALL_N"
+}

@@ -1,0 +1,124 @@
+{
+  "baseline": {
+    "true_positive": 148,
+    "false_positive": 53,
+    "false_negative": 19,
+    "true_negative": 6,
+    "values_missing_from_prediction": 0,
+    "precision": 0.736318407960199,
+    "recall": 0.8862275449101796,
+    "f1": 0.8043478260869564,
+    "abstention_precision": 0.24,
+    "confusion": {
+      "KOSIS_CANDIDATE->NOT_CLAIM": 1,
+      "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 148,
+      "OUT_OF_SCOPE->KOSIS_CANDIDATE": 36,
+      "KOSIS_CANDIDATE->OUT_OF_SCOPE": 18,
+      "NOT_CLAIM->OUT_OF_SCOPE": 4,
+      "NOT_CLAIM->KOSIS_CANDIDATE": 17,
+      "NOT_CLAIM->NOT_CLAIM": 1,
+      "OUT_OF_SCOPE->OUT_OF_SCOPE": 1
+    }
+  },
+  "currently_routed_support": {
+    "CHANGE_POINT": {
+      "KOSIS_CANDIDATE": 6,
+      "OUT_OF_SCOPE": 1,
+      "NOT_CLAIM": 0
+    },
+    "CHANGE_RATE": {
+      "KOSIS_CANDIDATE": 42,
+      "OUT_OF_SCOPE": 1,
+      "NOT_CLAIM": 0
+    },
+    "LEVEL": {
+      "KOSIS_CANDIDATE": 100,
+      "OUT_OF_SCOPE": 34,
+      "NOT_CLAIM": 17
+    }
+  },
+  "single_type_hard_block_policies": {
+    "block_CHANGE_POINT": {
+      "lost_kosis": 6,
+      "correct_new_blocks": 1,
+      "new_block_precision": 0.14285714285714285,
+      "routing": {
+        "true_positive": 142,
+        "false_positive": 52,
+        "false_negative": 25,
+        "true_negative": 7,
+        "values_missing_from_prediction": 0,
+        "precision": 0.7319587628865979,
+        "recall": 0.8502994011976048,
+        "f1": 0.7867036011080333,
+        "abstention_precision": 0.21875,
+        "confusion": {
+          "KOSIS_CANDIDATE->NOT_CLAIM": 7,
+          "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 142,
+          "OUT_OF_SCOPE->KOSIS_CANDIDATE": 35,
+          "KOSIS_CANDIDATE->OUT_OF_SCOPE": 18,
+          "NOT_CLAIM->OUT_OF_SCOPE": 4,
+          "NOT_CLAIM->KOSIS_CANDIDATE": 17,
+          "NOT_CLAIM->NOT_CLAIM": 1,
+          "OUT_OF_SCOPE->OUT_OF_SCOPE": 1,
+          "OUT_OF_SCOPE->NOT_CLAIM": 1
+        }
+      }
+    },
+    "block_CHANGE_RATE": {
+      "lost_kosis": 42,
+      "correct_new_blocks": 1,
+      "new_block_precision": 0.023255813953488372,
+      "routing": {
+        "true_positive": 106,
+        "false_positive": 52,
+        "false_negative": 61,
+        "true_negative": 7,
+        "values_missing_from_prediction": 0,
+        "precision": 0.6708860759493671,
+        "recall": 0.6347305389221557,
+        "f1": 0.6523076923076924,
+        "abstention_precision": 0.10294117647058823,
+        "confusion": {
+          "KOSIS_CANDIDATE->NOT_CLAIM": 43,
+          "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 106,
+          "OUT_OF_SCOPE->KOSIS_CANDIDATE": 35,
+          "KOSIS_CANDIDATE->OUT_OF_SCOPE": 18,
+          "NOT_CLAIM->OUT_OF_SCOPE": 4,
+          "NOT_CLAIM->KOSIS_CANDIDATE": 17,
+          "NOT_CLAIM->NOT_CLAIM": 1,
+          "OUT_OF_SCOPE->NOT_CLAIM": 1,
+          "OUT_OF_SCOPE->OUT_OF_SCOPE": 1
+        }
+      }
+    },
+    "block_LEVEL": {
+      "lost_kosis": 100,
+      "correct_new_blocks": 51,
+      "new_block_precision": 0.33774834437086093,
+      "routing": {
+        "true_positive": 48,
+        "false_positive": 2,
+        "false_negative": 119,
+        "true_negative": 57,
+        "values_missing_from_prediction": 0,
+        "precision": 0.96,
+        "recall": 0.2874251497005988,
+        "f1": 0.44239631336405527,
+        "abstention_precision": 0.32386363636363635,
+        "confusion": {
+          "KOSIS_CANDIDATE->NOT_CLAIM": 101,
+          "OUT_OF_SCOPE->NOT_CLAIM": 34,
+          "KOSIS_CANDIDATE->KOSIS_CANDIDATE": 48,
+          "KOSIS_CANDIDATE->OUT_OF_SCOPE": 18,
+          "NOT_CLAIM->OUT_OF_SCOPE": 4,
+          "NOT_CLAIM->NOT_CLAIM": 18,
+          "OUT_OF_SCOPE->KOSIS_CANDIDATE": 2,
+          "OUT_OF_SCOPE->OUT_OF_SCOPE": 1
+        }
+      }
+    }
+  },
+  "holdout_opened": false,
+  "conclusion": "measurement_type alone is not an admissible L5 precision rule"
+}

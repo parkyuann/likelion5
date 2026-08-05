@@ -1,0 +1,42 @@
+{
+  "contract_version": "hcx-l2-dev6-repeat-matrix-v1",
+  "registered_at": "2026-08-05",
+  "development_only": true,
+  "exploratory_only": true,
+  "final_selection_allowed": false,
+  "input": "data/develop/article_hcx_holdout_20260729/input.jsonl",
+  "input_sha256": "6f43c15758d027f9f2f606220032823d8f8829237032d2ed56d258f029fdd348",
+  "gold_human": "data/develop/article_hcx_holdout_20260729/evaluation/l2_gold_human_98_20260731.jsonl",
+  "gold_human_sha256": "bb6b3bb5cd0b8c676597ce622fa21efd145b0753abc8005c44cde4e5dcacbe0a",
+  "gold_context": "data/develop/article_hcx_holdout_20260729/evaluation/l2_review_context_117_contract_v3_20260730.jsonl",
+  "gold_context_sha256": "7a7799bc3010298e97662b7af8c65d2ea279f51099613c9d93f5b61e2494e29e",
+  "output_root": "data/develop/hcx_l2_settings_20260805",
+  "common": {
+    "model": "HCX-007",
+    "contract": "single",
+    "top_p": 0.8,
+    "max_completion_tokens": 4000,
+    "thinking_effort": "none",
+    "structured_output": true
+  },
+  "variants": [
+    {"id": "single_t0", "temperature": 0.0},
+    {"id": "single_t01", "temperature": 0.1}
+  ],
+  "seeds": [1201, 1202, 1203],
+  "primary_metric": "indicator_label.f1",
+  "exploratory_ranking_order": [
+    "mean_indicator_label_f1_desc",
+    "worst_indicator_label_f1_desc",
+    "mean_source_region_dominance_accuracy_desc",
+    "mean_source_subtype_accuracy_desc",
+    "mean_indicator_scope_count_accuracy_desc",
+    "total_missing_sentences_asc",
+    "total_unresolved_spans_asc",
+    "mean_total_tokens_asc",
+    "mean_latency_ms_asc"
+  ],
+  "split_contract_excluded": "Previously rejected on the same dev gold: lower indicator F1 and dominance with 36% more tokens.",
+  "next_gate": "After R3 dev-12 reaches 256/256 human labels, preregister a small shortlist and a fixed selection rule on dev-12. Freeze the winning prompt, model, decoding, token ceiling, schema, evaluator, and code hashes. Evaluate exactly once on a newly sealed holdout-3; holdout-2 is already consumed and prohibited for reuse.",
+  "scope_note": "This first matrix estimates repeat variance and temperature sensitivity only. Prompt/model/top-p/token-ceiling candidates require separately registered, targeted dev experiments; an unrestricted Cartesian sweep on six articles is not valid evidence."
+}

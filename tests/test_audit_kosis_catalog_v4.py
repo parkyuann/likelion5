@@ -25,6 +25,11 @@ from audit_kosis_catalog_v4 import (  # noqa: E402
 CURRENT_YEAR = 2026
 
 
+def distribution_nonempty_count(distribution: dict) -> int:
+    """'값이 실제로 들어있는 차원' 수. 분포의 count에서 zero_count를 뺀 값이다."""
+    return distribution["count"] - distribution["zero_count"]
+
+
 def record(**overrides):
     """모든 필수 필드가 채워진 정상 레코드를 만들고 필요한 부분만 덮어쓴다."""
     base = {
@@ -160,6 +165,11 @@ def test_zero_value_dimension_blocks_cell_query_ready(tmp_path):
     assert completeness["dimension_value_count_distribution"]["zero_count"] == 1
     # dimensions 자체는 비어 있지 않으므로 필수 필드 결측으로는 세지 않는다.
     assert completeness["required_fields"]["dimensions"]["missing"] == 0
+    # 빈 values도 '구조화된 표현'으로는 센다. "values를 가진 차원"(2)과
+    # "값이 들어있는 차원"(1)은 다른 수치이며, 혼동하면 off-by-one이 난다.
+    assert completeness["dimension_value_representation"]["structured_values_array"] == 2
+    nonempty = distribution_nonempty_count(completeness["dimension_value_count_distribution"])
+    assert nonempty == 1
 
 
 def test_dimension_value_distribution_uses_every_dimension(tmp_path):

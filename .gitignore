@@ -17,6 +17,16 @@ data/**/*.jsonl
 data/*.json
 data/*.jsonl
 
+# 대용량 벡터DB (Qdrant) → 로컬/드라이브 전용
+kosis_qdrant_v4/
+kosis_qdrant_v5/
+data/qdrant_kosis/
+
+# BGE 인코딩 산출물 (임베딩 npy·문서 jsonl) → 로컬/드라이브 전용
+src/bge_encoding/encoded/
+src/bge_encoding/documents.jsonl
+*.npy
+
 # 로컬 전용 문서·도구 설정
 docs/
 archive/

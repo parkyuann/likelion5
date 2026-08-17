@@ -1,0 +1,137 @@
+/* 전체 틀: 헤더 + (사이드바 + 본문) */
+.shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* ── 상단 헤더 (항상 표시) ─────────────────── */
+.topbar {
+  flex: none;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  z-index: 10;
+}
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.topbar-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 900;
+  font-size: 15px;
+}
+.topbar-title {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.topbar-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand);
+  background: var(--brand-tint);
+  border: 1px solid #dfe4ef;
+  padding: 4px 11px;
+  border-radius: 999px;
+}
+
+/* ── 사이드바 + 본문 ───────────────────────── */
+.shell-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.sidebar {
+  flex: none;
+  width: 220px;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-new {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  color: #fff;
+  background: linear-gradient(180deg, #2c3e60 0%, var(--brand) 100%);
+  box-shadow: 0 2px 8px rgba(35, 50, 79, 0.22);
+  margin-bottom: 10px;
+}
+.sidebar-new:hover {
+  background: linear-gradient(180deg, #2c3e60 0%, var(--brand-strong) 100%);
+}
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar-item {
+  text-align: left;
+  border: none;
+  background: none;
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--muted);
+  cursor: pointer;
+}
+.sidebar-item:hover:not(:disabled) {
+  background: var(--bg-tint);
+  color: var(--ink);
+}
+.sidebar-item:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+.sidebar-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-note {
+  font-size: 11px;
+  color: var(--faint);
+  padding: 4px 12px;
+}
+
+.shell-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 좁은 화면에서는 사이드바 숨김 */
+@media (max-width: 640px) {
+  .sidebar {
+    display: none;
+  }
+}

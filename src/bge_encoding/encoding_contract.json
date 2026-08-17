@@ -1,0 +1,25 @@
+{
+  "contract_version": "bge-m3-candidate-ceiling-v1",
+  "model": "BAAI/bge-m3",
+  "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+  "dtype": "float32",
+  "max_length": 512,
+  "dense_dimension": 1024,
+  "normalization": "L2",
+  "fields": {
+    "title": "tbl_name",
+    "meta": "doc_meta_text",
+    "item": "items[].itm_nm, order-preserving dedup"
+  },
+  "item_chunking": "item text over max_length is chunked; chunks are never truncated; dedupe by table_key",
+  "excluded": [
+    "doc_item_index",
+    "representative_dimension_values",
+    "ColBERT",
+    "fusion",
+    "RRF"
+  ],
+  "top_k": 50,
+  "search_top_l": 100,
+  "gold": "not included; scoring-only outside bundle"
+}

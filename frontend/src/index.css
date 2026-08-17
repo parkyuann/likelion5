@@ -1,0 +1,43 @@
+/* 한국어 가독성 좋은 Pretendard (네트워크 사용, 실패 시 시스템 폰트로 대체) */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css");
+
+:root {
+  /* 색상 토큰 */
+  --bg: #eef0f4;
+  --bg-tint: #f6f7fa;
+  --surface: #ffffff;
+  --ink: #16181d;
+  --muted: #616a78;
+  --faint: #99a1af;
+  --line: #e6e8ee;
+  --line-strong: #d0d5dd;
+
+  --brand: #23324f; /* 딥 네이비 (신뢰감) */
+  --brand-strong: #16233c;
+  --brand-tint: #eef1f7;
+
+  --green: #157f5a;
+  --green-tint: #e6f4ec;
+  --red: #c53d3d;
+  --red-tint: #fbebe9;
+  --slate: #7b8595;
+  --slate-tint: #eef0f4;
+
+  --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.05);
+  --shadow-md: 0 6px 22px rgba(20, 24, 31, 0.08);
+  --radius: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Segoe UI",
+    "Malgun Gothic", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}

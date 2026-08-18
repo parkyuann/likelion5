@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "figma": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "figma-developer-mcp",
+        "--stdio",
+        "--image-dir=C:\\Users\\minec\\Documents\\likelion5\\frontend\\src\\assets\\figma"
+      ],
+      "env": { "FIGMA_API_KEY": "${FIGMA_API_KEY}" }
+    }
+  }
+}

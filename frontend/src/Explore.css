@@ -1,0 +1,50 @@
+.explore {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.explore-bar {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.explore-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.explore-open {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand);
+  text-decoration: none;
+}
+.explore-open:hover {
+  text-decoration: underline;
+}
+/* 배율을 줄여(축소) 더 넓은 영역이 한눈에 보이도록 */
+.explore-frame-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #fff;
+}
+.explore-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* 0.8배 축소 → 보이는 크기가 컨테이너를 꽉 채우도록 125%로 키운 뒤 scale */
+  width: 125%;
+  height: 125%;
+  border: 0;
+  background: #fff;
+  transform: scale(0.8);
+  transform-origin: top left;
+}

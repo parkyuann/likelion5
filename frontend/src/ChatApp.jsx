@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { addHistory } from "./history";
 import "./ChatApp.css";
 
 // ── KOSIS 통계표 주소 ──────────────────────────────────
@@ -176,7 +177,7 @@ function ClaimDetail({ seg }) {
 }
 
 // ── 결과 말풍선: 원래 버전처럼 기사 전체 + 클릭 판정 ─────
-function ArticleResult({ segments }) {
+export function ArticleResult({ segments }) {
   const [openId, setOpenId] = useState(null);
 
   const counts = { match: 0, mismatch: 0, unverifiable: 0 };
@@ -394,6 +395,7 @@ function ChatApp({ initialArticle }) {
 
     // 검증 대상이 없으면 결과(원문)만 바로 보여주고 종료
     if (verifiable.length === 0) {
+      addHistory({ article: text, segments: analyzed }); // 검증 기록 저장
       setMessages((prev) => [
         ...prev,
         { role: "assistant", kind: "article", segments: analyzed },
@@ -461,6 +463,8 @@ function ChatApp({ initialArticle }) {
     setPct(100);
     pctRef.current = 100;
     const totalMs = performance.now() - t0;
+
+    addHistory({ article: text, segments: analyzed }); // 검증 기록 저장
 
     // 1) 진행(시간) 말풍선을 대화에 그대로 남기고
     // 2) 결과는 별도 말풍선으로 추가

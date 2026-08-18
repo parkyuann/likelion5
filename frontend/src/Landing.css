@@ -6,7 +6,7 @@
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  padding: 24px 20px;
+  padding: 48px 20px;
 }
 
 .landing-header {
@@ -36,15 +36,16 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: var(--brand);
-  color: #fff;
-  font-size: 19px;
-  font-weight: 900;
-  vertical-align: -6px;
-  margin-right: 4px;
+  width: 40px;
+  height: 40px;
+  vertical-align: -9px;
+  margin-right: 6px;
+}
+.logo-mark svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  filter: drop-shadow(0 3px 6px rgba(35, 50, 79, 0.3));
 }
 .landing-sub {
   color: var(--muted);

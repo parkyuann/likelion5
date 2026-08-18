@@ -1,55 +1,8 @@
-/* 전체 틀: 헤더 + (사이드바 + 본문) */
+/* 전체 틀: 사이드바 + 본문 (상단 헤더 없음) */
 .shell {
   height: 100vh;
   display: flex;
-  flex-direction: column;
   background: var(--bg);
-}
-
-/* ── 상단 헤더 (항상 표시) ─────────────────── */
-.topbar {
-  flex: none;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  z-index: 10;
-}
-.topbar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-}
-.topbar-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: var(--brand);
-  color: #fff;
-  font-weight: 900;
-  font-size: 15px;
-}
-.topbar-title {
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-  color: var(--ink);
-}
-.topbar-badge {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--brand);
-  background: var(--brand-tint);
-  border: 1px solid #dfe4ef;
-  padding: 4px 11px;
-  border-radius: 999px;
 }
 
 /* ── 사이드바 + 본문 ───────────────────────── */
@@ -57,6 +10,111 @@
   flex: 1;
   min-height: 0;
   display: flex;
+}
+
+/* ── 사이드바 상단: 브랜드 + 토글 (같은 줄) ── */
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 14px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.sidebar-brand {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.sidebar-logo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+}
+.sidebar-logo svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  filter: drop-shadow(0 2px 4px rgba(35, 50, 79, 0.28));
+}
+.sidebar-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.sidebar-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.sidebar-badge {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand);
+  background: var(--brand-tint);
+  border: 1px solid #dfe4ef;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+/* ── 사이드바 로그인/사용자 (헤더에서 이동) ── */
+.sidebar-auth {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--brand);
+  border-radius: 9px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  color: #fff;
+  background: var(--brand);
+  cursor: pointer;
+}
+.sidebar-auth:hover {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+}
+.sidebar-auth.ghost {
+  width: auto;
+  color: var(--muted);
+  background: none;
+  border-color: var(--line-strong);
+  padding: 6px 12px;
+}
+.sidebar-auth.ghost:hover {
+  color: var(--ink);
+  background: var(--bg-tint);
+  border-color: var(--line-strong);
+}
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 8px;
+}
+.sidebar-username {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar {
@@ -68,8 +126,12 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  transition: width 0.18s ease, padding 0.18s ease;
 }
 .sidebar-new {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   border: none;
   border-radius: 10px;
   padding: 10px 14px;
@@ -91,6 +153,9 @@
   gap: 2px;
 }
 .sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   text-align: left;
   border: none;
   background: none;
@@ -108,6 +173,11 @@
 .sidebar-item:disabled {
   color: var(--faint);
   cursor: default;
+}
+.sidebar-item.active {
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-weight: 700;
 }
 .sidebar-foot {
   margin-top: auto;
@@ -129,9 +199,81 @@
   overflow: hidden;
 }
 
-/* 좁은 화면에서는 사이드바 숨김 */
+/* ── 아이콘/라벨 ───────────────────────────── */
+.si-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.si-icon svg {
+  width: 19px;
+  height: 19px;
+  display: block;
+}
+.sidebar-new .si-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── 접기/펼치기 토글 ──────────────────────── */
+.sidebar-toggle {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+}
+.sidebar-toggle:hover {
+  background: var(--bg-tint);
+  color: var(--ink);
+}
+
+/* ── 접힌 상태(아이콘만) ───────────────────── */
+.sidebar.collapsed {
+  width: 64px;
+  padding: 16px 10px;
+  align-items: stretch;
+}
+/* 접힘: 토글을 로고 위에 세로로 */
+.sidebar.collapsed .sidebar-head {
+  flex-direction: column-reverse;
+  gap: 12px;
+}
+/* 텍스트 계열 전부 숨김 */
+.sidebar.collapsed .sidebar-title,
+.sidebar.collapsed .sidebar-badge,
+.sidebar.collapsed .si-label,
+.sidebar.collapsed .sidebar-note {
+  display: none;
+}
+/* 브랜드·버튼·항목을 가운데 정렬 */
+/* 접힘: 방패 로고(브랜드) 숨김 — 토글만 남김 */
+.sidebar.collapsed .sidebar-brand {
+  display: none;
+}
+.sidebar.collapsed .sidebar-new,
+.sidebar.collapsed .sidebar-item,
+.sidebar.collapsed .sidebar-auth {
+  justify-content: center;
+  gap: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+.sidebar.collapsed .sidebar-user {
+  justify-content: center;
+  padding: 4px 0 8px;
+}
+
+/* 좁은 화면에서는 사이드바를 조금 좁힘 (숨기지 않음 — 브랜드·로그인·검색이 여기 있으므로) */
 @media (max-width: 640px) {
-  .sidebar {
-    display: none;
+  .sidebar:not(.collapsed) {
+    width: 180px;
   }
 }

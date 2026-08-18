@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KOSIS 팩트체크 챗봇 — 대화형 아키텍처 확정본</title>
+<style>
+  :root{
+    --bg:#faf9f5; --card:#ffffff; --border:#e6e3da;
+    --text:#2c2c2a; --muted:#5f5e5a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:ui-sans-serif,system-ui,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    line-height:1.7;padding:32px 20px}
+  .wrap{max-width:860px;margin:0 auto}
+  h1{font-size:24px;font-weight:600;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 24px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:20px;margin:18px 0;overflow-x:auto}
+  h2{font-size:18px;font-weight:600;margin:28px 0 8px}
+  table{border-collapse:collapse;width:100%;font-size:14px;margin:8px 0}
+  th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f1efe8;font-weight:600}
+  code{background:#f1efe8;padding:1px 5px;border-radius:4px;font-size:13px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:4px 0}
+  .todo{color:#854f0b}
+  svg{max-width:100%;height:auto;display:block;margin:0 auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>KOSIS 팩트체크 챗봇 — 대화형 아키텍처</h1>
+  <p class="sub">확정본 · 2026-08-17 · 브랜치 hyeonseo</p>
+
+  <div class="card">
+  <svg width="100%" viewBox="0 0 680 490" xmlns="http://www.w3.org/2000/svg"
+       font-family="ui-sans-serif,system-ui,'Apple SD Gothic Neo','Malgun Gothic',sans-serif">
+    <defs>
+      <marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L6,3 L0,6" fill="none" stroke="#888780" stroke-width="1.2"/>
+      </marker>
+    </defs>
+    <g stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ah)">
+      <line x1="290" y1="68" x2="290" y2="84"/>
+      <line x1="250" y1="126" x2="82" y2="150"/>
+      <line x1="300" y1="126" x2="305" y2="146"/>
+      <line x1="538" y1="176" x2="432" y2="176"/>
+      <line x1="67" y1="184" x2="67" y2="250"/>
+      <line x1="210" y1="196" x2="200" y2="250"/>
+      <line x1="280" y1="196" x2="265" y2="344"/>
+      <line x1="350" y1="196" x2="377" y2="344"/>
+      <line x1="410" y1="196" x2="486" y2="344"/>
+      <line x1="67" y1="292" x2="120" y2="344"/>
+      <line x1="200" y1="292" x2="175" y2="344"/>
+      <line x1="170" y1="394" x2="255" y2="408"/>
+      <line x1="377" y1="394" x2="320" y2="408"/>
+      <line x1="486" y1="394" x2="345" y2="408"/>
+      <line x1="375" y1="425" x2="538" y2="422"/>
+      <path d="M 200 394 L 200 460 L 538 460"/>
+    </g>
+
+    <g font-size="12" fill="#5f5e5a" text-anchor="middle">
+      <text x="150" y="130">이미지</text>
+      <text x="332" y="140">텍스트</text>
+      <text x="485" y="168">읽기</text>
+      <text x="462" y="414">히스토리 저장</text>
+      <text x="450" y="452">근거 저장</text>
+      <text x="200" y="214">URL</text>
+      <text x="280" y="226">기사텍스트</text>
+      <text x="352" y="214">후속형</text>
+      <text x="418" y="226">질의</text>
+    </g>
+
+    <!-- 사용자 입력 -->
+    <rect x="205" y="28" width="170" height="40" rx="8" fill="#ffffff" stroke="#b4b2a9"/>
+    <text x="290" y="47" text-anchor="middle" font-size="14" fill="#2c2c2a">사용자 입력</text>
+    <text x="290" y="62" text-anchor="middle" font-size="12" fill="#5f5e5a">이미지 · URL · 텍스트</text>
+    <!-- 코드 판별 -->
+    <rect x="205" y="84" width="170" height="42" rx="8" fill="#ffffff" stroke="#b4b2a9"/>
+    <text x="290" y="103" text-anchor="middle" font-size="14" fill="#2c2c2a">코드 판별</text>
+    <text x="290" y="118" text-anchor="middle" font-size="12" fill="#5f5e5a">이미지 첨부 여부</text>
+    <!-- 이미지 -->
+    <rect x="25" y="150" width="85" height="34" rx="8" fill="#f1efe8" stroke="#888780"/>
+    <text x="67" y="172" text-anchor="middle" font-size="14" font-weight="500" fill="#2c2c2a">이미지</text>
+    <!-- 오케스트레이터 -->
+    <rect x="180" y="146" width="250" height="50" rx="8" fill="#eeedfe" stroke="#7f77dd"/>
+    <text x="305" y="167" text-anchor="middle" font-size="14" font-weight="500" fill="#26215c">오케스트레이터</text>
+    <text x="305" y="185" text-anchor="middle" font-size="12" fill="#534ab7">HCX-DASH-002 · 텍스트 분류</text>
+    <!-- 세션 저장소 -->
+    <rect x="538" y="150" width="102" height="315" rx="8" fill="#faeeda" stroke="#ba7517"/>
+    <text x="589" y="176" text-anchor="middle" font-size="14" font-weight="500" fill="#412402">세션 저장소</text>
+    <text x="589" y="250" text-anchor="middle" font-size="12" fill="#854f0b">히스토리</text>
+    <text x="589" y="278" text-anchor="middle" font-size="12" fill="#854f0b">근거 캐시</text>
+    <text x="589" y="352" text-anchor="middle" font-size="12" fill="#854f0b">턴마다 유지</text>
+    <!-- HCX-005 -->
+    <rect x="15" y="250" width="105" height="42" rx="8" fill="#faeeda" stroke="#ba7517"/>
+    <text x="67" y="270" text-anchor="middle" font-size="14" font-weight="500" fill="#412402">HCX-005</text>
+    <text x="67" y="285" text-anchor="middle" font-size="12" fill="#854f0b">이미지 인식</text>
+    <!-- 텍스트 추출 -->
+    <rect x="145" y="250" width="110" height="42" rx="8" fill="#faeeda" stroke="#ba7517"/>
+    <text x="200" y="270" text-anchor="middle" font-size="14" font-weight="500" fill="#412402">텍스트 추출</text>
+    <text x="200" y="285" text-anchor="middle" font-size="12" fill="#854f0b">(방식 미정)</text>
+    <!-- 분석 파이프라인 -->
+    <rect x="30" y="344" width="280" height="50" rx="8" fill="#e1f5ee" stroke="#1d9e75"/>
+    <text x="170" y="368" text-anchor="middle" font-size="14" font-weight="500" fill="#04342c">분석 파이프라인</text>
+    <text x="170" y="386" text-anchor="middle" font-size="12" fill="#0f6e56">검색 → 리랭커 → RAG reasoning</text>
+    <!-- 캐시 즉답 -->
+    <rect x="330" y="344" width="95" height="50" rx="8" fill="#e1f5ee" stroke="#1d9e75"/>
+    <text x="377" y="368" text-anchor="middle" font-size="14" font-weight="500" fill="#04342c">캐시 즉답</text>
+    <text x="377" y="386" text-anchor="middle" font-size="12" fill="#0f6e56">후속형 재질의</text>
+    <!-- MCP -->
+    <rect x="442" y="344" width="88" height="50" rx="8" fill="#e1f5ee" stroke="#1d9e75"/>
+    <text x="486" y="368" text-anchor="middle" font-size="14" font-weight="500" fill="#04342c">MCP</text>
+    <text x="486" y="386" text-anchor="middle" font-size="12" fill="#0f6e56">질의 응답</text>
+    <!-- 최종 답변 -->
+    <rect x="205" y="408" width="170" height="40" rx="8" fill="#ffffff" stroke="#b4b2a9"/>
+    <text x="290" y="427" text-anchor="middle" font-size="14" fill="#2c2c2a">최종 답변</text>
+    <text x="290" y="441" text-anchor="middle" font-size="12" fill="#5f5e5a">→ 프론트 렌더</text>
+  </svg>
+  </div>
+
+  <h2>역할 배치</h2>
+  <table>
+    <tr><th>단계</th><th>담당</th></tr>
+    <tr><td>이미지·URL 형태 판별</td><td>코드 (결정적, DASH-002는 이미지 못 봄)</td></tr>
+    <tr><td>이미지 → 텍스트</td><td>HCX-005 (이미지 인식에만)</td></tr>
+    <tr><td>텍스트 분류 (기사 / 후속형 / 질의)</td><td>HCX-DASH-002 + function calling</td></tr>
+    <tr><td>최종 판정</td><td>RAG reasoning (파이프라인 끝단)</td></tr>
+    <tr><td>질의 응답</td><td>MCP</td></tr>
+    <tr><td>맥락 유지</td><td>세션 저장소 (히스토리 + 근거 캐시)</td></tr>
+  </table>
+
+  <h2>세션 저장 규칙</h2>
+  <ul>
+    <li><strong>근거 저장</strong>: 분석 파이프라인이 후보5·판정을 저장 (새 기사일 때만)</li>
+    <li><strong>히스토리 저장</strong>: 최종 답변 텍스트를 저장 (매 턴)</li>
+    <li><strong>읽기</strong>: 오케스트레이터가 매 턴 히스토리·근거를 읽어 후속/신규 판단</li>
+    <li>기사 비교·과거 기사 되돌아감 없음 → 캐시 슬롯 1개 덮어쓰기로 충분</li>
+  </ul>
+
+  <h2>재질의 구분</h2>
+  <ul>
+    <li>새 분석 대상(이미지/URL/기사텍스트)이 들어오면 → <strong>신규</strong> → 파이프라인, 캐시 덮어쓰기</li>
+    <li>짧은 텍스트 + 이전 결과 참조 → <strong>후속형</strong> → 캐시로 즉답</li>
+    <li>이미지 등 origin은 분석 후 텍스트로 세션에 남으므로, 후속/신규 판단은 origin과 무관</li>
+  </ul>
+
+  <h2>HCX 제약 (주의)</h2>
+  <ul>
+    <li>function calling과 이미지입력 · structured output · thinking은 <strong>한 요청에 동시 사용 불가</strong></li>
+    <li>→ 이미지는 (HCX-005 비전 추출) + (분석) 2단으로 분리</li>
+    <li>function calling 지원 모델: HCX-005 / HCX-DASH-002 / HCX-007 (HCX-DASH-001·HCX-003 미지원)</li>
+  </ul>
+
+  <h2>AWS 배포 구성</h2>
+  <table>
+    <tr><th>구성요소</th><th>AWS</th><th>비고</th></tr>
+    <tr><td>앱 서버 (오케스트레이터+파이프라인)</td><td>ECS/Fargate 또는 EC2</td><td>긴 처리·상태 유지</td></tr>
+    <tr><td>Qdrant (벡터 검색)</td><td>EC2/ECS + EBS</td><td>영속 볼륨 필수(재색인 방지)</td></tr>
+    <tr><td>Redis (세션)</td><td>ElastiCache (관리형)</td><td>인메모리 dict 금지</td></tr>
+    <tr><td>HCX API 키</td><td>Secrets Manager / SSM</td><td>.env 박기 금지</td></tr>
+    <tr><td>리전</td><td>서울 (ap-northeast-2)</td><td>HCX 지연 감소</td></tr>
+  </table>
+  <ul>
+    <li>세션 접근을 함수로 감싸 두면 로컬 dict ↔ Redis 교체가 쉬움</li>
+    <li>쿼리 임베딩을 HCX 임베딩 API로 하면 배포 스택에 GPU 인스턴스 불필요 (색인만 오프라인 GPU)</li>
+  </ul>
+
+  <h2 class="todo">미정 항목</h2>
+  <ul class="todo">
+    <li>URL 텍스트 추출 방식 (정적 크롤링 vs 헤드리스 브라우저)</li>
+    <li>쿼리 임베딩: BGE 직접 서빙 vs HCX 임베딩 API</li>
+    <li>MCP 서버 용도: KOSIS 검색용 vs 일반 답변용 (팀원 확인)</li>
+  </ul>
+</div>
+</body>
+</html>

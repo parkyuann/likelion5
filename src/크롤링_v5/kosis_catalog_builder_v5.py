@@ -69,7 +69,12 @@ _HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
 
 def norm(v: object) -> str:
     text = _HTML_TAG.sub(" ", str(v or ""))
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip()
+    text = unicodedata.normalize("NFKC", text)
+    # NFKC 가 아래아 'ㆍ'(U+318D, HANGUL LETTER ARAEA)를 조합용 자모 U+119E 로 과분해한다.
+    # category_paths(payload)는 원형 U+318D 를 유지하는데 검색 텍스트만 U+119E 가 되어
+    # 표기가 어긋나므로 원형으로 되돌린다 (2026-08-17). 예: '소득ㆍ소비ㆍ자산'.
+    text = text.replace("ᆞ", "ㆍ")
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def est_tokens(text: str) -> int:
@@ -204,6 +209,14 @@ def build_record(row: dict, meta: dict | None) -> dict:
         "units": (meta or {}).get("units", []),
         "period_types": (meta or {}).get("period_types", []),
         "latest_period": find_latest_period(periods),
+        # periods 원본 배열(주기별 시작~끝). latest_period(요약 스칼라)와 역할 분담:
+        # latest_period=최신성 필터/정렬용, periods=셀 기간좌표(prdSe+범위) 지정용 (2026-08-17).
+        "periods": [
+            {"prd_se": norm(p.get("prd_se")) or None,
+             "start": norm(p.get("start")) or None,
+             "end": norm(p.get("end")) or None}
+            for p in periods
+        ],
 
         # v5 신규 payload
         "send_de": row.get("send_de"),
@@ -284,6 +297,8 @@ def main() -> None:
         "notes": {
             "dim_codes": "차원값 코드(id·nm·up_id)를 payload dimensions[].values[]에 포함 (2026-08-14, A방식 번복 — structured retrieval용). 검색 텍스트에는 미포함.",
             "latest_period": "periods 원본에서 연도우선 재계산 (v4 max(문자열) 버그 수정)",
+            "periods": "periods 원본 배열(prd_se·start·end)을 payload에 포함 (2026-08-17). latest_period는 요약 스칼라로 유지 — 셀 기간좌표 지정 시 메타 참조 불필요.",
+            "araea_norm": "norm()에서 NFKC가 아래아 ㆍ(U+318D)를 자모 U+119E로 과분해하던 것을 원형 복원 (2026-08-17). doc_meta_text와 category_paths 표기 정합.",
         },
     }
     args.manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

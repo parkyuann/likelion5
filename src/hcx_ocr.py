@@ -15,10 +15,10 @@
     (imageUrl.url 에 data URI → 40063 / imageUrl.dataUri → 40001 로 거부됨)
 
 사용법(저장소 루트에서):
-    ./.venv/Scripts/python.exe archive/260814/hcx005_vision/hcx_ocr.py <image>
-    ./.venv/Scripts/python.exe archive/260814/hcx005_vision/hcx_ocr.py <image> --json
-    ./.venv/Scripts/python.exe archive/260814/hcx005_vision/hcx_ocr.py <image> --tiles 3
-    ./.venv/Scripts/python.exe archive/260814/hcx005_vision/hcx_ocr.py <image> --out result.txt
+    ./.venv/Scripts/python.exe src/hcx_ocr.py <image>
+    ./.venv/Scripts/python.exe src/hcx_ocr.py <image> --json
+    ./.venv/Scripts/python.exe src/hcx_ocr.py <image> --tiles 3
+    ./.venv/Scripts/python.exe src/hcx_ocr.py <image> --out result.txt
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ for _stream in (sys.stdout, sys.stderr):
 # --------------------------------------------------------------------------- #
 # 설정 (계획서 5.4: 설정 외부화)
 # --------------------------------------------------------------------------- #
-ROOT = Path(__file__).resolve().parents[3]  # .../likelion5
+ROOT = Path(__file__).resolve().parents[1]  # .../likelion5
 MODEL = os.getenv("HCX_VISION_MODEL", "HCX-005")
 ENDPOINT = os.getenv(
     "HCX_VISION_ENDPOINT",

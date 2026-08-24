@@ -15,7 +15,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from backend.errors import BackendError
 
 ROOT = Path(__file__).resolve().parents[1]
-OCR_PROTOTYPE = ROOT / "archive" / "260814" / "hcx005_vision" / "hcx_ocr.py"
+OCR_PROTOTYPE = ROOT / "src" / "hcx_ocr.py"
 
 MAX_UPLOAD_BYTES = int(os.getenv("OCR_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 MAX_IMAGE_PIXELS = int(os.getenv("OCR_MAX_IMAGE_PIXELS", "40000000"))

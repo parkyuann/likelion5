@@ -19,6 +19,7 @@ const ARTICLE_BODY_INPUT = `2025년 7월 고용동향에 따르면 15세 이상 
 const CLAIMS = [
   {
     id: "employed-total",
+    evidenceText: "15세 이상 취업자는 2,902만9천 명",
     text: "2025년 7월 15세 이상 취업자는 2,902만9천 명이다.",
     verdict: "match",
     officialValue: "2,902만9천 명",
@@ -26,6 +27,7 @@ const CLAIMS = [
   },
   {
     id: "employed-change",
+    evidenceText: "전년 동월보다 17만1천 명 증가했다",
     text: "취업자는 전년 동월보다 17만1천 명 증가했다.",
     verdict: "match",
     officialValue: "17만1천 명 증가",
@@ -33,6 +35,7 @@ const CLAIMS = [
   },
   {
     id: "employment-rate",
+    evidenceText: "전체 고용률은 63.4%",
     text: "15세 이상 고용률은 63.4%다.",
     verdict: "match",
     officialValue: "63.4%",
@@ -40,6 +43,7 @@ const CLAIMS = [
   },
   {
     id: "employment-rate-oecd",
+    evidenceText: "15~64세 고용률은 70.2%",
     text: "15~64세 고용률은 70.2%다.",
     verdict: "match",
     officialValue: "70.2%",
@@ -47,6 +51,7 @@ const CLAIMS = [
   },
   {
     id: "youth-employed-change",
+    evidenceText: "청년층 취업자는 15만8천 명 줄었다",
     text: "청년층 취업자는 전년 동월보다 15만8천 명 감소했다.",
     verdict: "match",
     officialValue: "15만8천 명 감소",
@@ -54,6 +59,7 @@ const CLAIMS = [
   },
   {
     id: "youth-employment-rate",
+    evidenceText: "청년층 고용률은 45.8%",
     text: "청년층 고용률은 45.8%다.",
     verdict: "match",
     officialValue: "45.8%",
@@ -61,6 +67,7 @@ const CLAIMS = [
   },
   {
     id: "unemployment-rate",
+    evidenceText: "실업률은 2.4%",
     text: "실업률은 2.4%다.",
     verdict: "match",
     officialValue: "2.4%",
@@ -68,6 +75,7 @@ const CLAIMS = [
   },
   {
     id: "twenties-resting",
+    evidenceText: "20대 '쉬었음' 인구는 42만1천 명",
     text: "20대 '쉬었음' 인구는 42만1천 명이다.",
     verdict: "match",
     officialValue: "42만1천 명",
@@ -160,6 +168,97 @@ export const VERIFICATION_MOCKS = [
   },
 ];
 
+function claimToSegment(claim, evidence, text = claim.text, id = claim.id) {
+  return {
+    id,
+    text,
+    verifiable: true,
+    verdict: claim.verdict,
+    answer: claim.explanation,
+    calc: `공식 통계: ${claim.officialValue}`,
+    table: {
+      name: evidence.tableName,
+      href: evidence.href,
+      path: `${evidence.organization} · ${evidence.period}`,
+    },
+  };
+}
+
+function sentenceRangeAt(body, position) {
+  const isSentenceBoundary = (index) => {
+    const character = body[index];
+    if (character === "\n" || character === "!" || character === "?") return true;
+    if (character !== ".") return false;
+    return !(/\d/.test(body[index - 1] || "") && /\d/.test(body[index + 1] || ""));
+  };
+
+  let start = position;
+  while (start > 0 && !isSentenceBoundary(start - 1)) start -= 1;
+  while (start < body.length && /\s/.test(body[start])) start += 1;
+
+  let end = position;
+  while (end < body.length && !isSentenceBoundary(end)) end += 1;
+  if (end < body.length) end += 1;
+  return { start, end };
+}
+
+// 입력 원문은 그대로 보존하고, 대조를 진행한 문장 전체만 판정 구간으로 분리합니다.
+function articleBodyToSegments(body, claims, evidence) {
+  const sentenceGroups = new Map();
+  claims.forEach((claim) => {
+    const evidenceStart = body.indexOf(claim.evidenceText);
+    if (evidenceStart < 0) return;
+    const range = sentenceRangeAt(body, evidenceStart);
+    const key = `${range.start}:${range.end}`;
+    const current = sentenceGroups.get(key);
+    if (current) {
+      current.claims.push(claim);
+    } else {
+      sentenceGroups.set(key, { ...range, claims: [claim] });
+    }
+  });
+
+  const locatedSentences = [...sentenceGroups.values()]
+    .sort((a, b) => a.start - b.start);
+
+  const segments = [];
+  let cursor = 0;
+
+  locatedSentences.forEach(({ claims: sentenceClaims, start, end }, index) => {
+    if (start > cursor) {
+      segments.push({
+        id: `body-${index}`,
+        text: body.slice(cursor, start),
+        verifiable: false,
+      });
+    }
+
+    const representative = sentenceClaims.find((claim) => claim.verdict === "mismatch")
+      || sentenceClaims[0];
+    const segment = claimToSegment(
+      representative,
+      evidence,
+      body.slice(start, end),
+      `verified-sentence-${index}`,
+    );
+    if (sentenceClaims.some((claim) => claim.verdict === "mismatch")) {
+      segment.verdict = "mismatch";
+    }
+    segments.push(segment);
+    cursor = end;
+  });
+
+  if (cursor < body.length) {
+    segments.push({
+      id: "body-tail",
+      text: body.slice(cursor),
+      verifiable: false,
+    });
+  }
+
+  return segments;
+}
+
 // 랜딩의 예시를 실제 채팅 결과 UI에서 바로 열기 위한 변환기입니다.
 export function mockToDisplayMessages(mock) {
   const isSource = ["article", "url"].includes(mock.input.sourceType);
@@ -173,22 +272,11 @@ export function mockToDisplayMessages(mock) {
       }
     : { role: "user", kind: "text", text: mock.input.raw };
 
-  const segments = mock.claims.flatMap((claim, index) => [
-    ...(index > 0 ? [{ id: `spacer-${index}`, text: "\n\n", verifiable: false }] : []),
-    {
-      id: claim.id,
-      text: claim.text,
-      verifiable: true,
-      verdict: claim.verdict,
-      answer: claim.explanation,
-      calc: `공식 통계: ${claim.officialValue}`,
-      table: {
-        name: mock.evidence.tableName,
-        href: mock.evidence.href,
-        path: `${mock.evidence.organization} · ${mock.evidence.period}`,
-      },
-    },
-  ]);
+  const segments = articleBodyToSegments(
+    ARTICLE_BODY_INPUT,
+    mock.claims,
+    mock.evidence,
+  );
 
   return [
     userMessage,

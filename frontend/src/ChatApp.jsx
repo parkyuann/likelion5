@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import "./ChatApp.css";
 import { analyzeInput, analyzeImage, ApiError } from "./api.js";
-import { ImageIcon, PinIcon, AlertIcon, DocIcon, LinkIcon, CheckIcon } from "./icons.jsx";
+import { ImageIcon, AlertIcon, DocIcon, LinkIcon, CheckIcon, RefreshIcon, QuestionIcon } from "./icons.jsx";
 import { findVerificationMock, mockToDisplayMessages } from "./mockVerificationData.js";
 
 // ── KOSIS 통계표 주소 ──────────────────────────────────
@@ -52,63 +52,13 @@ const VERDICTS = {
   outofscope: { label: "검증 불가능 · 대상 밖", className: "unverifiable" },
 };
 
-// ── 후보 목록 (접기/펼치기) ─────────────────────────────
-function Candidates({ candidates }) {
-  const [open, setOpen] = useState(false);
-  if (!candidates) return null;
-  return (
-    <div className="c-cand-block">
-      <button className="c-cand-toggle" onClick={() => setOpen((v) => !v)}>
-        {open ? "▾" : "▸"} 고려한 통계표 후보 {candidates.length}개
-      </button>
-      {open && (
-        <div className="c-cand-list">
-          {candidates.map((cd) => {
-            const [orgId, tblId] = cd.key.split(":");
-            const selected = cd.status === "선택";
-            return (
-              <a
-                key={cd.key}
-                className={`c-cand-row ${selected ? "selected" : ""}`}
-                href={kosisTableUrl(orgId, tblId)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <span className="c-cand-rank">{cd.rank}</span>
-                <span className="c-cand-name">{cd.name}</span>
-                <span className="c-cand-score">score {cd.score.toFixed(1)}</span>
-                <span className={`c-cand-status ${selected ? "ok" : "no"}`}>
-                  {cd.status}
-                </span>
-              </a>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── 문장 판정 상세 ──────────────────────────────────────
 function ClaimDetail({ seg }) {
-  const meta = VERDICTS[seg.verdict];
+  if (!seg.table) return null;
   return (
-    <span className={`c-detail ${meta.className}`}>
-      <span className="c-detail-verdict">{meta.label}</span>
-      <span className="c-detail-answer">{seg.answer}</span>
-      {seg.calc && <span className="c-calc">{seg.calc}</span>}
-      {seg.table && (
-        <span className="c-table-block">
-          <EvidenceLink table={seg.table} />
-          {seg.table.path && (
-            <span className="c-path">
-              <PinIcon /> {seg.table.path}
-            </span>
-          )}
-        </span>
-      )}
-      <Candidates candidates={seg.candidates} />
-    </span>
+    <div className="c-detail-evidence">
+      <EvidenceLink table={seg.table} />
+    </div>
   );
 }
 
@@ -123,6 +73,7 @@ function ArticleResult({ segments }) {
     else if (s.verdict === "mismatch") counts.mismatch += 1;
     else counts.unverifiable += 1;
   });
+  const selectedSegment = segments.find((segment) => segment.id === openId);
 
   return (
     <div className="c-article-card">
@@ -153,26 +104,29 @@ function ArticleResult({ segments }) {
           const meta = VERDICTS[seg.verdict];
           const open = openId === seg.id;
           return (
-            <span key={seg.id} className={`c-claim-wrap ${open ? "open" : ""}`}>
-              <span
-                className={`c-claim ${meta.className} ${open ? "active" : ""}`}
-                onClick={() => setOpenId(open ? null : seg.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setOpenId(open ? null : seg.id);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                {seg.text}
-              </span>
-              {open && <ClaimDetail seg={seg} />}
+            <span
+              key={seg.id}
+              className={`c-claim ${meta.className} ${open ? "active" : ""}`}
+              onClick={() => setOpenId(open ? null : seg.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setOpenId(open ? null : seg.id);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+            >
+              {seg.text}
             </span>
           );
         })}
       </div>
+      {selectedSegment?.verifiable && selectedSegment.table && (
+        <div className="c-selected-detail" aria-live="polite">
+          <ClaimDetail seg={selectedSegment} />
+        </div>
+      )}
     </div>
   );
 }
@@ -293,6 +247,36 @@ const GREETING = {
   text: "안녕하세요! 통계 질문을 입력하거나 기사 URL·본문·이미지를 넣어 주세요.",
 };
 
+// 범위 밖·검증 불가 안내 뒤에 바로 이어서 시도할 수 있는 통계 질의 예시.
+const RECOVERY_EXAMPLES = [
+  "2024년 청년 실업률은 얼마야?",
+  "지난해 1인 가구 비중은?",
+  "2023년 대비 2024년 출생아 수 변화는?",
+];
+
+// 막다른 안내에서 사용자가 바로 다음 질문으로 넘어가도록 돕는 예시 칩.
+function RecoveryChips({ examples, onPick, disabled }) {
+  return (
+    <div className="c-recovery">
+      <span className="c-recovery-label">이렇게 물어보세요</span>
+      <div className="c-recovery-chips">
+        {examples.map((example) => (
+          <button
+            key={example}
+            type="button"
+            className="c-recovery-chip"
+            onClick={() => onPick(example)}
+            disabled={disabled}
+          >
+            <QuestionIcon size="1em" />
+            <span>{example}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const SOURCE_LOADING_STEPS = {
   url: ["URL 안전성 확인", "기사 본문 추출", "수치 주장 선택", "KOSIS 통계 대조"],
   article: ["기사와 질문 분리", "수치 주장 추출", "검증 범위 선택", "KOSIS 통계 대조"],
@@ -370,8 +354,8 @@ function ChatApp({
   const [loading, setLoading] = useState(false);
   const chatBodyRef = useRef(null);
   const fileRef = useRef(null);
-  const mockTimersRef = useRef(new Set());
   const startedRef = useRef(false);
+  const lastRequestRef = useRef(null); // 오류 시 '다시 시도'로 재실행할 마지막 요청
   const [verificationProgress, setVerificationProgress] = useState({
     sourceType: "auto",
     completed: [],
@@ -382,11 +366,6 @@ function ChatApp({
   useEffect(() => {
     onMessagesChangeRef.current = onMessagesChange;
   }, [onMessagesChange]);
-
-  useEffect(() => () => {
-    mockTimersRef.current.forEach((timerId) => clearTimeout(timerId));
-    mockTimersRef.current.clear();
-  }, []);
 
   useEffect(() => {
     onMessagesChangeRef.current?.(messages);
@@ -513,13 +492,9 @@ function ChatApp({
   }
 
   function waitForMock(ms) {
-    return new Promise((resolve) => {
-      const timerId = setTimeout(() => {
-        mockTimersRef.current.delete(timerId);
-        resolve();
-      }, ms);
-      mockTimersRef.current.add(timerId);
-    });
+    // React 개발 모드의 StrictMode 정리 과정에서도 대기 Promise가 고립되지 않도록
+    // 짧고 제한된 목업 타이머는 자체적으로 완료되게 둡니다.
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   async function runMockVerification(mock, { focusQuestion = "", totalMs } = {}) {
@@ -583,6 +558,7 @@ function ChatApp({
       });
       return;
     }
+    lastRequestRef.current = { kind: "text", text, inputType, focusQuestion };
     setVerificationProgress({ sourceType: inputType, completed: [], active: 0 });
     setLoading(true);
     try {
@@ -625,6 +601,7 @@ function ChatApp({
     runImage(file, focusQuestion);
   }
   async function runImage(file, focusQuestion = "") {
+    lastRequestRef.current = { kind: "image", file, focusQuestion };
     setVerificationProgress({ sourceType: "image", completed: [], active: 0 });
     setLoading(true);
     try {
@@ -674,6 +651,18 @@ function ChatApp({
       e.preventDefault();
       handleSend();
     }
+  }
+  // 오류 뒤 '다시 시도' — 사용자 말풍선을 다시 만들지 않고 마지막 요청만 재실행한다.
+  function retryLast() {
+    const last = lastRequestRef.current;
+    if (!last || loading) return;
+    if (last.kind === "image") runImage(last.file, last.focusQuestion);
+    else runText(last.text, { inputType: last.inputType, focusQuestion: last.focusQuestion });
+  }
+  // 범위 밖 안내에서 예시 칩을 누르면 그 질문을 새로 전송한다.
+  function handleRecoveryPick(example) {
+    if (loading) return;
+    verifyText(example, { inputType: "auto", focusQuestion: "" });
   }
   function pickImage(file) {
     if (!file || !file.type?.startsWith("image/")) return;
@@ -754,13 +743,25 @@ function ChatApp({
             );
           }
           if (msg.kind === "notice") {
+            const isLast = i === messages.length - 1;
             return (
               <div key={i} className="c-row assistant">
-                <div className="c-bubble assistant c-notice">{msg.text}</div>
+                <div className="c-bubble assistant c-notice">
+                  <span>{msg.text}</span>
+                  {isLast && (
+                    <RecoveryChips
+                      examples={RECOVERY_EXAMPLES}
+                      onPick={handleRecoveryPick}
+                      disabled={loading}
+                    />
+                  )}
+                </div>
               </div>
             );
           }
           if (msg.kind === "error") {
+            const isLast = i === messages.length - 1;
+            const canRetry = isLast && lastRequestRef.current != null;
             return (
               <div key={i} className="c-row assistant">
                 <div className="c-bubble assistant c-error">
@@ -769,6 +770,17 @@ function ChatApp({
                   </span>
                   <div className="c-error-body">
                     <span>{msg.text}</span>
+                    {canRetry && (
+                      <button
+                        type="button"
+                        className="c-retry-btn"
+                        onClick={retryLast}
+                        disabled={loading}
+                      >
+                        <RefreshIcon size="1em" />
+                        <span>다시 시도</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

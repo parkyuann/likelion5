@@ -35,7 +35,6 @@ function Intro({ onDone }) {
             width="108"
             height="108"
             fill="none"
-            stroke="#587f92"
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"

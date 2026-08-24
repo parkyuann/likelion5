@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 .venv/
+backend_data/
 .ipynb_checkpoints/
 __pycache__/
 *.py[cod]

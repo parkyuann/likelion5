@@ -29,7 +29,9 @@
   container-type: inline-size;
   grid-template-columns: minmax(0, 700px) 350px;
   gap: 18px;
-  align-items: stretch;
+  /* stretch를 쓰면 입력 카드가 옆 데모 높이에 맞춰 늘어났다가,
+     타이핑으로 데모가 사라질 때 자연 높이로 갑자기 줄어든다. start로 고정한다. */
+  align-items: start;
 }
 .landing-card {
   transition: box-shadow 0.15s, transform 0.68s cubic-bezier(0.22, 1, 0.36, 1);
@@ -178,7 +180,7 @@
   font-size: 15.5px;
   line-height: 1.7;
   resize: none;
-  min-height: 82px;
+  min-height: 138px;
   max-height: 190px;
   font-family: inherit;
   color: var(--ink);
@@ -497,8 +499,8 @@
   color: var(--brand-ink);
 }
 .landing-demo-result small { font-size: 10px; font-weight: 800; }
-.landing-demo-result strong { font-size: 15px; }
-.landing-demo-result span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.landing-demo-result strong { color: var(--ink); font-size: 15px; }
+.landing-demo-result span { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
 .landing-demo-source {
   display: flex;
   align-items: center;

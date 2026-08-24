@@ -74,14 +74,14 @@
 }
 .intro-chart-line {
   fill: none;
-  stroke: color-mix(in srgb, var(--brand) 48%, transparent);
-  stroke-width: 2;
+  stroke: color-mix(in srgb, var(--brand) 66%, transparent);
+  stroke-width: 2.4;
   stroke-dasharray: 1050;
   stroke-dashoffset: 1050;
   animation: intro-chart-draw 1.55s 0.28s ease-out forwards;
 }
 .intro-chart-line-soft {
-  stroke: color-mix(in srgb, var(--brand) 12%, transparent);
+  stroke: color-mix(in srgb, var(--brand) 18%, transparent);
   stroke-width: 18;
 }
 .intro-chart-points { fill: var(--brand); opacity: 0; animation: intro-points 0.4s 1.25s ease forwards; }
@@ -130,6 +130,8 @@
 }
 .intro-palm {
   display: block;
+  /* 테마 토큰을 써서 다크 배경에서도 또렷하게 (라이트=진한 블루, 다크=밝은 블루) */
+  stroke: var(--brand-ink);
   transform-origin: 50% 90%;
   animation: intro-drop 0.72s cubic-bezier(0.3, 1.3, 0.5, 1) both;
 }

@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ARCHIVE_CODE = PROJECT_ROOT / "archive" / "260722" / "code"
 DEFAULT_CATALOG = PROJECT_ROOT / "data" / "kosis_catalog_v1.jsonl"
 LOCAL_QDRANT = PROJECT_ROOT / "output" / "kosis_qdrant"
+DEFAULT_COLLECTION = "kosis_tables"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 EMBEDDING_URL = "https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2"
 HYDE_PROMPT = (
@@ -38,6 +39,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hcx-model", default="HCX-007")
     parser.add_argument("--org-id", action="append", help="반복 지정 가능한 기관 ID 필터")
     parser.add_argument("--local", action="store_true", help="로컬 Qdrant를 사용")
+    parser.add_argument(
+        "--qdrant-path",
+        type=Path,
+        default=LOCAL_QDRANT,
+        help="--local 사용 시 Qdrant 저장 경로",
+    )
+    parser.add_argument("--collection", default=DEFAULT_COLLECTION)
     parser.add_argument("--output", type=Path, help="UTF-8 JSON 결과 파일 경로")
     parser.add_argument(
         "--include-path-details",
@@ -148,15 +156,26 @@ def _generate_hyde(claim_text: str, model: str) -> str:
     return predicted
 
 
-def _dense_search(client, query: str, vector_name: str, path: str, top_k: int, org_ids, path_hit_type):
+def _dense_search(
+    client,
+    query: str,
+    vector_name: str,
+    path: str,
+    top_k: int,
+    org_ids,
+    path_hit_type,
+    *,
+    collection: str = DEFAULT_COLLECTION,
+    embed_fn=_embed,
+):
     query_filter = None
     if org_ids:
         from qdrant_client.models import FieldCondition, Filter, MatchAny
 
         query_filter = Filter(must=[FieldCondition(key="org_id", match=MatchAny(any=org_ids))])
     response = client.query_points(
-        collection_name="kosis_tables",
-        query=_embed(query),
+        collection_name=collection,
+        query=embed_fn(query),
         using=vector_name,
         limit=top_k,
         query_filter=query_filter,
@@ -189,6 +208,10 @@ def main() -> None:
         raise ValueError("catalog-limit must be >= 1")
     if not args.catalog.exists():
         raise FileNotFoundError(args.catalog)
+    if args.local and not args.qdrant_path.exists():
+        raise FileNotFoundError(args.qdrant_path)
+    if not str(args.collection or "").strip():
+        raise ValueError("--collection must not be empty")
     if not ARCHIVE_CODE.exists():
         raise FileNotFoundError(f"BM25 experiment code not found: {ARCHIVE_CODE}")
 
@@ -231,12 +254,16 @@ def main() -> None:
 
     from qdrant_client import QdrantClient
 
-    client = QdrantClient(path=str(LOCAL_QDRANT)) if args.local else QdrantClient(url=QDRANT_URL)
+    client = (
+        QdrantClient(path=str(args.qdrant_path.resolve()))
+        if args.local
+        else QdrantClient(url=QDRANT_URL)
+    )
     predicted_tbl_nm: str | None = None
     qdrant_points: int | None = None
     errors: dict[str, str] = {}
     try:
-        qdrant_points = int(client.count("kosis_tables", exact=True).count)
+        qdrant_points = int(client.count(args.collection, exact=True).count)
         print("[3/5] Claim Dense를 검색합니다.", file=sys.stderr, flush=True)
         claim_query = build_claim_dense_query({"claim_text": claim_text})
         try:
@@ -248,6 +275,7 @@ def main() -> None:
                 args.per_path_n,
                 args.org_id,
                 PathHit,
+                collection=args.collection,
             )
             validate_hits(claim_hits, args.per_path_n)
             paths["claim_dense"] = claim_hits
@@ -266,6 +294,7 @@ def main() -> None:
                 args.per_path_n,
                 args.org_id,
                 PathHit,
+                collection=args.collection,
             )
             validate_hits(hyde_hits, args.per_path_n)
             paths["hyde_dense"] = hyde_hits
@@ -295,6 +324,7 @@ def main() -> None:
         "search_scope": {
             "bm25_catalog_documents": len(bm25_index.documents),
             "dense_qdrant_points": qdrant_points,
+            "collection": args.collection,
         },
         "errors": errors,
         "elapsed_sec": round(time.perf_counter() - started, 3),

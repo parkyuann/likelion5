@@ -122,7 +122,9 @@ function TableExplorer({ initialTab = "search", user, onClose, onRequireLogin })
           organization: orgFilter === "all" ? "" : orgFilter,
         });
         setResults(r.items || []);
-        setTotal(r.total ?? (r.items || []).length);
+        // 전체 개수는 기관 미선택(전체) 상태의 결과 수로만 갱신한다.
+        // 특정 기관을 고르면 서버 total이 그 기관 수로 바뀌므로 덮어쓰지 않는다.
+        if (orgFilter === "all") setTotal(r.total ?? (r.items || []).length);
         setOrganizationFacets(r.organizations || []);
         setFavKeys((prev) => {
           const next = new Set(prev);

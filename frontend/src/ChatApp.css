@@ -239,9 +239,79 @@
 
 /* 범위 밖 입력 안내 (오류 아님 — 부드러운 톤) */
 .c-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   background: var(--brand-tint);
   border-color: var(--brand-tint-line);
   color: var(--ink);
+}
+
+/* 안내·오류 뒤 다음 행동 유도 (예시 칩) */
+.c-recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.c-recovery-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.c-recovery-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.c-recovery-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--brand-ink);
+  background: var(--surface);
+  border: 1px solid var(--brand-tint-line);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+.c-recovery-chip:hover:not(:disabled) {
+  background: var(--brand-tint-2);
+  border-color: var(--brand);
+}
+.c-recovery-chip:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.c-recovery-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 오류 뒤 다시 시도 버튼 */
+.c-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--red-ink);
+  background: var(--surface);
+  border: 1px solid var(--red-tint-2);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.c-retry-btn:hover:not(:disabled) {
+  background: var(--red-tint);
+}
+.c-retry-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.c-retry-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* 에러 (서버 연결 실패 등 진짜 오류) */
@@ -414,8 +484,12 @@
 .c-summary-item.unverifiable .c-summary-number { color: var(--slate); }
 
 .c-article-text {
+  padding: 20px 21px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
   font-size: 15px;
-  line-height: 1.95;
+  line-height: 2;
   letter-spacing: -0.01em;
   color: var(--ink-soft);
   white-space: pre-wrap;
@@ -423,50 +497,43 @@
 }
 
 /* 검증 문장 하이라이트 */
-.c-claim-wrap {
-  display: inline;
-}
-.c-claim-wrap.open {
-  display: block;
-  margin: 12px 0 16px;
-}
-.c-claim-wrap.open .c-claim {
-  display: inline-block;
-  font-size: 1.03em;
-  font-weight: 600;
-  padding: 2px 3px;
-}
 .c-claim {
   cursor: pointer;
   color: inherit;
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 4px;
-  border-radius: 2px;
-  padding: 1px 2px;
+  border-radius: 3px;
+  padding: 1px 3px;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
-  transition: filter 0.12s, box-shadow 0.12s;
+  transition: filter 0.12s, outline-color 0.12s;
 }
 .c-claim.match {
-  background: transparent;
-  text-decoration-color: var(--green-line);
+  background: color-mix(in srgb, var(--green) 18%, transparent);
+  box-shadow: inset 0 -2px var(--green-line);
 }
 .c-claim.mismatch {
-  background: transparent;
-  text-decoration-color: var(--red-line);
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+  box-shadow: inset 0 -2px var(--red-line);
 }
 .c-claim.unverifiable {
-  background: transparent;
+  text-decoration: underline;
   text-decoration-color: var(--faint);
   text-decoration-style: dashed;
+  text-underline-offset: 4px;
 }
 .c-claim:hover {
   filter: brightness(0.97);
 }
 .c-claim.active {
-  background: var(--surface-2);
-  box-shadow: none;
+  outline: 2px solid color-mix(in srgb, currentColor 32%, transparent);
+  outline-offset: 1px;
+}
+.c-selected-detail {
+  margin-top: 14px;
+}
+.c-detail-evidence {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
 }
 
 /* 문장 클릭 상세 */
@@ -650,9 +717,20 @@
 :root[data-theme="dark"] .c-detail {
   border-color: #46515c;
 }
-:root[data-theme="dark"] .c-detail,
-:root[data-theme="dark"] .c-claim.active {
+:root[data-theme="dark"] .c-detail {
   background: #2b333b;
+}
+:root[data-theme="dark"] .c-article-text {
+  border-color: #46515c;
+  background: #20272d;
+}
+:root[data-theme="dark"] .c-claim.match {
+  background: rgba(51, 151, 116, 0.28);
+  box-shadow: inset 0 -2px #63c5a3;
+}
+:root[data-theme="dark"] .c-claim.mismatch {
+  background: rgba(201, 91, 77, 0.3);
+  box-shadow: inset 0 -2px #ee9b90;
 }
 :root[data-theme="dark"] .c-detail.match { border-left-color: #55b995; }
 :root[data-theme="dark"] .c-detail.mismatch { border-left-color: #e1887d; }
@@ -685,9 +763,20 @@
   :root:not([data-theme="light"]) .c-detail {
     border-color: #46515c;
   }
-  :root:not([data-theme="light"]) .c-detail,
-  :root:not([data-theme="light"]) .c-claim.active {
+  :root:not([data-theme="light"]) .c-detail {
     background: #2b333b;
+  }
+  :root:not([data-theme="light"]) .c-article-text {
+    border-color: #46515c;
+    background: #20272d;
+  }
+  :root:not([data-theme="light"]) .c-claim.match {
+    background: rgba(51, 151, 116, 0.28);
+    box-shadow: inset 0 -2px #63c5a3;
+  }
+  :root:not([data-theme="light"]) .c-claim.mismatch {
+    background: rgba(201, 91, 77, 0.3);
+    box-shadow: inset 0 -2px #ee9b90;
   }
   :root:not([data-theme="light"]) .c-detail.match { border-left-color: #55b995; }
   :root:not([data-theme="light"]) .c-detail.mismatch { border-left-color: #e1887d; }

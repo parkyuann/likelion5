@@ -1,0 +1,95 @@
+%% KOSIS 팩트체크 — 데이터베이스 ERD (현재 구현 기준, 2026-08-21)
+%% 형식: Mermaid erDiagram (GitHub / VS Code Mermaid / https://mermaid.live 에서 렌더)
+%%
+%% 저장소 3개:
+%%   1) likelion5.db (SQLite, RW)          — 앱/사용자 상태
+%%   2) tables_v5.sqlite (SQLite, 읽기전용) — KOSIS 통계표 카탈로그(28.7만) 텍스트 검색 인덱스
+%%   3) Qdrant `kosis_tables_v5` (벡터DB)   — 같은 통계표의 임베딩(의미 검색)
+%%
+%% 서로 다른 시스템이라 물리적 FK는 없다. 공통 키 table_key(=org_id:tbl_id)로
+%% 애플리케이션이 논리적으로 조인한다. (점선 관계 = 논리적 연결)
+
+erDiagram
+    %% ── 물리적 FK (likelion5.db 내부) ──
+    users ||--o{ auth_sessions : "세션"
+    users ||--o{ conversations : "소유"
+    users ||--o{ favorites : "저장"
+    conversations ||--o{ messages : "포함"
+
+    %% ── 논리적 연결 (저장소 경계를 넘는 공통 키 table_key) ──
+    favorites }o--|| stat_tables : "table_key(논리)"
+    stat_tables ||--|| qdrant_kosis_tables_v5 : "table_key(논리)"
+    messages }o--o{ stat_tables : "payload_json 내 참조(논리)"
+
+    %% ═══════════ 1) likelion5.db (SQLite, RW) ═══════════
+    users {
+        text id PK
+        text email UK "소셜은 kakao_*@social.local 형태"
+        text display_name
+        text password_hash "소셜 계정은 사용 안 함"
+        text created_at
+    }
+
+    auth_sessions {
+        text id PK
+        text user_id FK
+        text token_hash UK "Bearer 토큰 해시"
+        text created_at
+        text expires_at "기본 7일"
+        text revoked_at "로그아웃 시각(nullable)"
+    }
+
+    conversations {
+        text id PK
+        text user_id FK
+        text title "첫 입력에서 생성"
+        text created_at
+        text updated_at
+    }
+
+    messages {
+        text id PK
+        text conversation_id FK
+        text role "user|assistant|system"
+        text kind "auto|query|url|article|image|article_document|simple_query|error"
+        text content
+        text payload_json "검증 결과 원본 JSON (재열람 복원용)"
+        text created_at
+    }
+
+    favorites {
+        text user_id FK "복합 PK(user_id, table_key)의 일부"
+        text table_key PK "= org_id:tbl_id"
+        text org_id
+        text org_name
+        text tbl_id
+        text tbl_name
+        text category_path
+        text created_at
+    }
+
+    %% ═══════════ 2) tables_v5.sqlite (SQLite, 읽기전용 카탈로그) ═══════════
+    stat_tables {
+        text table_key PK "= org_id:tbl_id (28.7만 통계표)"
+        text org_id
+        text org_name
+        text tbl_id
+        text tbl_name
+        text category_path "primary_path 기반"
+        text units "JSON"
+        text period_types "JSON"
+        integer latest_period
+        text haystack "LIKE 검색용 소문자 결합 텍스트"
+    }
+
+    %% ═══════════ 3) Qdrant `kosis_tables_v5` (벡터DB) ═══════════
+    qdrant_kosis_tables_v5 {
+        uuid point_id PK "= uuid5(table_key)"
+        text table_key "payload"
+        vector doc_meta_vector "제목+분류 임베딩(의미 검색)"
+        vector tbl_name_vector "표 이름 임베딩"
+        text org_id "payload"
+        text tbl_id "payload"
+        text tbl_name "payload"
+        json category_paths "payload"
+    }

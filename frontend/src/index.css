@@ -1,0 +1,257 @@
+/* 한국어 가독성 좋은 Pretendard (네트워크 사용, 실패 시 시스템 폰트로 대체) */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css");
+
+/* ─────────────────────────────────────────────────────────────
+   디자인 토큰 — 소프트 파스텔 (블루그레이 + 크림/베이지, Pigment 톤)
+   블루: #9CBBCB · #7699AD / 웜: #FFF2E5 · #E0C9B5
+   버튼은 플랫(그라디언트 top==bottom), 장식 최소 · 클린 SaaS.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --bg: #fbf4ec;
+  --bg-2: #f4ecdf;
+  --surface: #ffffff;
+  --surface-2: #faf3ea;
+  --surface-3: #f1e8db;
+  --ink: #313e46;
+  --ink-soft: #4c5a63;
+  --muted: #7a868d;
+  --faint: #a7b0b5;
+  --line: #ece3d5;
+  --line-strong: #dacfbe;
+
+  /* 브랜드 (뮤트 블루) */
+  --brand: #7699ad;
+  --brand-ink: #557c90;
+  --brand-strong: #476a7c;
+  --brand-tint: #e7eff2;
+  --brand-tint-2: #d6e3ea;
+  --brand-tint-line: #cbdce3;
+
+  /* 버튼 (플랫, 대비 확보 위해 한 톤 진한 블루) */
+  --btn-top: #587f92;
+  --btn-bottom: #587f92;
+  --btn-hover-top: #4d7183;
+  --btn-hover-bottom: #4d7183;
+  --btn-disabled: #d3cec4;
+  --on-accent: #ffffff;
+
+  /* 웜 액센트 (베이지) */
+  --warm: #e0c9b5;
+  --warm-tint: #f4e9dd;
+  --star: #f2b23c; /* 즐겨찾기(별표) — 밝은 골드 */
+
+  /* 판정 색 (팔레트에 맞춰 부드럽게) */
+  --green: #3f9e7b;
+  --green-ink: #2f8a69;
+  --green-tint: #e2f1e9;
+  --green-tint-2: #cfe8dc;
+  --green-line: #5db897;
+  --red: #d4695b;
+  --red-ink: #c1584a;
+  --red-tint: #fae7e2;
+  --red-tint-2: #f4d3ca;
+  --red-line: #e28e7e;
+  --slate: #7a868d;
+  --slate-tint: #f0e9dd;
+
+  --code-bg: #f2ece1;
+
+  --focus-ring: rgba(88, 127, 146, 0.26);
+
+  /* 부드럽고 절제된 웜톤 섀도우 (컬러 글로우 없음) */
+  --shadow-sm: 0 1px 2px rgba(60, 52, 40, 0.05);
+  --shadow-md: 0 4px 14px rgba(60, 52, 40, 0.07), 0 1px 3px rgba(60, 52, 40, 0.05);
+  --shadow-lg: 0 14px 40px rgba(60, 52, 40, 0.12);
+  --shadow-brand: 0 1px 2px rgba(60, 52, 40, 0.08);
+
+  --radius: 16px;
+  --radius-sm: 11px;
+  --radius-lg: 22px;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #191d21;
+  --bg-2: #1f242a;
+  --surface: #23282e;
+  --surface-2: #2b3138;
+  --surface-3: #353c45;
+  --ink: #ece7dd;
+  --ink-soft: #c7c3ba;
+  --muted: #98a0a5;
+  --faint: #6a727a;
+  --line: #313842;
+  --line-strong: #444c56;
+
+  --brand: #9cbbcb;
+  --brand-ink: #b4cedb;
+  --brand-strong: #cbdde7;
+  --brand-tint: #1e2a32;
+  --brand-tint-2: #26343d;
+  --brand-tint-line: #34444f;
+
+  --btn-top: #5e8497;
+  --btn-bottom: #5e8497;
+  --btn-hover-top: #6e95a8;
+  --btn-hover-bottom: #6e95a8;
+  --btn-disabled: #333a42;
+  --on-accent: #ffffff;
+
+  --warm: #c9ae96;
+  --warm-tint: #2c2822;
+  --star: #f6c65a;
+
+  --green: #4cb48f;
+  --green-ink: #67c4a3;
+  --green-tint: #163027;
+  --green-tint-2: #1c3f33;
+  --green-line: #34987a;
+  --red: #de8072;
+  --red-ink: #e89b8f;
+  --red-tint: #33201c;
+  --red-tint-2: #452a26;
+  --red-line: #9d5f56;
+  --slate: #98a0a5;
+  --slate-tint: #262c33;
+
+  --code-bg: #171b1f;
+
+  --focus-ring: rgba(156, 187, 203, 0.3);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.42), 0 1px 2px rgba(0, 0, 0, 0.36);
+  --shadow-lg: 0 16px 42px rgba(0, 0, 0, 0.55);
+  --shadow-brand: 0 1px 2px rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #191d21;
+    --bg-2: #1f242a;
+    --surface: #23282e;
+    --surface-2: #2b3138;
+    --surface-3: #353c45;
+    --ink: #ece7dd;
+    --ink-soft: #c7c3ba;
+    --muted: #98a0a5;
+    --faint: #6a727a;
+    --line: #313842;
+    --line-strong: #444c56;
+
+    --brand: #9cbbcb;
+    --brand-ink: #b4cedb;
+    --brand-strong: #cbdde7;
+    --brand-tint: #1e2a32;
+    --brand-tint-2: #26343d;
+    --brand-tint-line: #34444f;
+
+    --btn-top: #5e8497;
+    --btn-bottom: #5e8497;
+    --btn-hover-top: #6e95a8;
+    --btn-hover-bottom: #6e95a8;
+    --btn-disabled: #333a42;
+    --on-accent: #ffffff;
+
+    --warm: #c9ae96;
+    --warm-tint: #2c2822;
+
+    --green: #4cb48f;
+    --green-ink: #67c4a3;
+    --green-tint: #163027;
+    --green-tint-2: #1c3f33;
+    --green-line: #34987a;
+    --red: #de8072;
+    --red-ink: #e89b8f;
+    --red-tint: #33201c;
+    --red-tint-2: #452a26;
+    --red-line: #9d5f56;
+    --slate: #98a0a5;
+    --slate-tint: #262c33;
+
+    --code-bg: #171b1f;
+
+    --focus-ring: rgba(156, 187, 203, 0.3);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.42), 0 1px 2px rgba(0, 0, 0, 0.36);
+    --shadow-lg: 0 16px 42px rgba(0, 0, 0, 0.55);
+    --shadow-brand: 0 1px 2px rgba(0, 0, 0, 0.5);
+
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Segoe UI",
+    "Malgun Gothic", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+* {
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: padding-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+button {
+  font-family: inherit;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

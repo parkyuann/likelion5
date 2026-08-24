@@ -1,0 +1,68 @@
+{
+  "contract_version": "kosis-operational-article-verification-v2",
+  "mode": "shadow_ready",
+  "assets": {
+    "replay_config": "configs/pipeline_replay_v1.json",
+    "v6_catalog_bundle": "data/develop/embedding_kosis_v6_role_catalog_gpu_bundle_20260821",
+    "v6_dense_return": "data/develop/embedding_kosis_v6_role_catalog_gpu_bundle_20260821/returned_bge_m3_ko",
+    "v6_dense_return_zip": "data/develop/returned_bge_m3_ko.zip",
+    "v6_dense_verification_receipt": "data/develop/returned_bge_m3_ko_verification_20260821/receipt.json",
+    "v6_bm25_manifest": "data/develop/kosis_v6_bm25_20260821/manifest.json",
+    "v6_bm25_index": "data/develop/kosis_v6_bm25_20260821/kosis_v6_bm25.sqlite3",
+    "v6_qdrant_import_manifest": "data/develop/qdrant_v6_20260821/import_manifest.json",
+    "v6_qdrant_readiness_receipt": "data/develop/qdrant_v6_20260821/readiness_receipt_20260821.json",
+    "v6_qdrant_readiness_sha256": "ccf2ca36c1cdcb8a71e371c617d52d0e9b4d7b47022462af3987694b095351f5",
+    "profile_cache": "data/develop/r4c1_profile_cache_20260819/r4c1_profiles.sqlite3",
+    "profile_cache_sha256": "8cfc53c8c5950cb2ad8c6344c995ebaa18b79db2c355e5ad621140c927894339",
+    "operational_profile_cache": "data/develop/operational_profile_cache_v2/operational_profiles.sqlite3",
+    "operational_profile_snapshots": "data/develop/operational_profile_cache_v2/raw_snapshots",
+    "technical_canary": "configs/operational_technical_canary_v1.json",
+    "gpu_receipts": {
+      "query_encoder": {
+        "path": "data/develop/operational_gpu_receipts_20260821/query_encoder_verification.json",
+        "sha256": "b07c8ed0dc2443bdc27276943e6de198ffb7448892a21a4c0ca8345ef0e7e153"
+      },
+      "reranker": {
+        "path": "data/develop/operational_gpu_receipts_20260821/reranker_verification.json",
+        "sha256": "e2e67cec188cd2d6d4f7769fbb37b4a8ce7157b54fff06b4003f680d0582012f"
+      }
+    }
+  },
+  "contracts": {
+    "v6_dense": {
+      "model": "dragonkue/BGE-m3-ko",
+      "revision": "7074d66aa46562342193ca4feb3d89bf9dad71b4"
+    },
+    "reranker": {
+      "model": "dragonkue/bge-reranker-v2-m3-ko",
+      "revision": "2aca5884ecac490192af9ebd86836d9073d826cd"
+    }
+  },
+  "services": {
+    "reranker": "http://127.0.0.1:8819",
+    "query_encoder": "http://127.0.0.1:8820",
+    "qdrant": "http://127.0.0.1:6335",
+    "qdrant_collection": "kosis_v6_bge_m3_ko_20260821",
+    "qdrant_vector_name": "dense"
+  },
+  "l2_quality": {
+    "observed_joint_relaxed": 0.425,
+    "required_joint_relaxed": 0.55,
+    "evidence": "TASKS.md Task 1-1 / R3 Gate B frozen evaluation"
+  },
+  "limits": {
+    "path_top_k": 20,
+    "rrf_top_k": 100,
+    "reranker_top_k": 50,
+    "projection_top_k": 50,
+    "profile_max_age_seconds": 604800,
+    "metadata_delay_seconds": 0.2
+  },
+  "authority": {
+    "retrieval": "candidate_generation_only",
+    "late_binding": "claim_provenance_plus_official_profile_only",
+    "verdict": "deterministic_decimal_code_only",
+    "rag_reasoning": "post_verdict_evidence_synthesis_only",
+    "hcx_007": "guarded_natural_language_only"
+  }
+}

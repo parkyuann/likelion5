@@ -1,0 +1,47 @@
+{
+  "contract_version": "kosis-real-data-replay-pipeline-v1",
+  "release_id": "PIPELINE-REPLAY-V1-20260821",
+  "mode": "replay",
+  "split": "dev",
+  "profile_max_age_seconds": 1000000000000,
+  "inputs": {
+    "article_snapshot": {
+      "path": "data/develop/r17_stratum_freeze_20260731/splits/dev/input.jsonl",
+      "sha256": "25e8b3b6aeb3ee967e0482d6ca36f4dbe4bde8f7b583a281612046b42e3dcf08"
+    },
+    "article_source": {
+      "path": "data/raw/AI_기반_뉴스_사실검증_시스템_프로젝트_데이터.csv",
+      "sha256": "7e26dac2caf0a62ae9ff2e3d7dc79444a277f8b045fd0075a7e7ee24e0089707"
+    },
+    "l2_snapshot": {
+      "path": "data/develop/r17_routing_gold_20260731/dev12_l2_predictions.jsonl",
+      "sha256": "c83efac709468e508c224e5f74e5f0f4aba5d7c281bcabd73f5c72853eaeeaf6"
+    },
+    "routed_snapshot": {
+      "path": "data/develop/e2e_pipeline_live_front_baseline_20260818/routed.jsonl",
+      "sha256": "ab4ab1f5c90aeb00bfd386e46d3984d0d75664f68503928a6ec4ff7bf5e7e00e"
+    },
+    "search_snapshot": {
+      "path": "data/develop/r4c1_kosis_search_shadow_20260819c/retrieval_final_output.jsonl",
+      "sha256": "ccd98f4ad4962b93257cccea193e77ca125e4eb7efa135ee77e87a8a0a932833"
+    },
+    "profile_cache": {
+      "path": "data/develop/r4c1_profile_cache_20260819/r4c1_profiles.sqlite3",
+      "sha256": "8cfc53c8c5950cb2ad8c6344c995ebaa18b79db2c355e5ad621140c927894339"
+    },
+    "cell_cache": {
+      "path": "data/develop/r4_cell_alignment_20260805/r4b_gold_query_verification_20260809.json",
+      "sha256": "e73756433ca075a5209b52c5e2ba83300c867175c48cd70b02f04eec675502eb"
+    }
+  },
+  "expected": {
+    "articles": 12,
+    "targets": 84,
+    "query_ready": 6,
+    "single_cell_resolved": 5,
+    "no_cell": 1,
+    "external_model_calls": 0,
+    "metadata_api_calls": 0,
+    "cell_api_calls": 0
+  }
+}

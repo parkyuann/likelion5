@@ -1,10 +1,13 @@
 # 비밀·환경
 .env
+!.env.example
 
 # 파이썬
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.pytest_tmp*/
 
 # 대용량/데이터 → 구글 드라이브로 공유
 *.csv
@@ -21,6 +24,11 @@ data/*.jsonl
 docs/
 archive/
 output/
+data/develop/
+*.sqlite3
+*.npy
+*.zip
+*.log
 AGENTS.md
 CLAUDE.md
 claude.md

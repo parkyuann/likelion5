@@ -19,6 +19,7 @@ import re
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 from urllib import request
+from urllib.parse import urlsplit
 
 from src.develop.bge_reranker_v2_service import MODEL_REVISION, SERVICE_CONTRACT
 from src.develop.bge_m3_ko_query_encoder_service import (
@@ -68,7 +69,6 @@ from src.develop.r4c1_projection_v2 import (
     project_candidate_v2,
     validate_target_v2,
 )
-from src.develop.run_pipeline_replay_v1 import run_replay, write_replay
 from src.develop.run_l2_segmentation import run as run_hcx_l2
 from src.develop.run_layer_stack import run_stack
 from src.develop.v6_search_channels import OfficialKosisSearchChannel, V6Bm25Channel, V6DenseChannel
@@ -240,14 +240,24 @@ def _service_urls(
         if set(service_urls_override) != required:
             raise OperationalPipelineError("SERVICE_URL_OVERRIDE_KEYS_INVALID")
         urls = {name: str(service_urls_override[name]) for name in required}
-        if any(not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", value) for value in urls.values()):
-            raise OperationalPipelineError("SERVICE_URL_OVERRIDE_NON_LOOPBACK")
-        return urls
-    return {
-        "reranker": (None if ignore_env else os.getenv("BGE_RERANKER_URL")) or str(services["reranker"]),
-        "query_encoder": (None if ignore_env else os.getenv("BGE_QUERY_ENCODER_URL")) or str(services["query_encoder"]),
-        "qdrant": (None if ignore_env else os.getenv("QDRANT_URL")) or str(services["qdrant"]),
-    }
+    else:
+        urls = {
+            "reranker": (None if ignore_env else os.getenv("BGE_RERANKER_URL")) or str(services["reranker"]),
+            "query_encoder": (None if ignore_env else os.getenv("BGE_QUERY_ENCODER_URL")) or str(services["query_encoder"]),
+            "qdrant": (None if ignore_env else os.getenv("QDRANT_URL")) or str(services["qdrant"]),
+        }
+    for name, value in urls.items():
+        if not value:
+            continue
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise OperationalPipelineError(f"SERVICE_URL_INVALID:{name}")
+    return {name: value.rstrip("/") for name, value in urls.items()}
 
 
 def preflight(
@@ -732,93 +742,6 @@ def build_article_summaries(
             "article_level_rule": "COUNT_ONLY_NO_ARTICLE_TRUTH_INFERENCE",
         })
     return summaries
-
-
-def _official_unit_for_query(profile: Mapping[str, Any], query_plan: Mapping[str, Any]) -> str:
-    selected_ids = {str(value) for value in (query_plan.get("obj_levels") or {}).values()}
-    dimension_units = [
-        str(value.get("unit_nm") or "")
-        for dimension in profile.get("dimensions") or []
-        for value in dimension.get("values") or []
-        if str(value.get("value_id") or "") in selected_ids and str(value.get("unit_nm") or "")
-    ]
-    if len(set(dimension_units)) == 1:
-        return dimension_units[0]
-    item_units = [
-        str(item.get("unit_nm") or "")
-        for item in profile.get("items") or []
-        if str(item.get("itm_id") or "") == str(query_plan.get("itm_id") or "") and str(item.get("unit_nm") or "")
-    ]
-    return item_units[0] if len(set(item_units)) == 1 else ""
-
-
-def run_technical_canary(
-    canary: Mapping[str, Any],
-    *,
-    profile_provider: Callable[[str], Mapping[str, Any] | None],
-    cell_fetcher: Callable[[dict[str, Any]], list[dict[str, Any]] | dict[str, Any]],
-    hcx_answerer: Any | None,
-) -> dict[str, Any]:
-    """Exercise the sealed metadata-to-cell spine outside performance metrics."""
-    table_key = str(canary.get("table_key") or "")
-    query_plan = dict(canary.get("query_plan") or {})
-    claim_row = dict(canary.get("claim_row") or {})
-    profile = profile_provider(table_key)
-    if profile is None:
-        return {"namespace": "TECHNICAL_CANARY", "status": "UNVERIFIABLE", "reason": "PROFILE_UNAVAILABLE"}
-    core = build_claim_core_v2(claim_row)
-    inventory_errors = validate_query_plan_inventory(query_plan, profile, core)
-    if inventory_errors:
-        return {
-            "namespace": "TECHNICAL_CANARY",
-            "status": "UNVERIFIABLE",
-            "reason": "QUERY_PLAN_INVENTORY_INVALID",
-            "inventory_errors": inventory_errors,
-        }
-    cell_result = fetch_exact_single_cell(query_plan, cell_fetcher)
-    official_unit = _official_unit_for_query(profile, query_plan)
-    comparison: dict[str, Any] = {}
-    if cell_result.get("status") == "CELL_RESOLVED":
-        comparison = compare_official_cell(
-            str(claim_row.get("value_text") or ""),
-            str(claim_row.get("value_unit") or ""),
-            cell_result["cell"],
-            official_unit,
-        )
-        verdict = str(comparison.get("verdict") or "UNVERIFIABLE")
-        reason = str(comparison.get("reason") or "")
-    else:
-        verdict = "UNVERIFIABLE"
-        reason = str(cell_result.get("status") or "CELL_UNAVAILABLE")
-    packet = build_evidence_packet(
-        verdict=verdict,
-        claim_source={"sentence": claim_row.get("sentence_text"), "value": claim_row.get("value_text")},
-        binding_plan={"table_key": table_key, "query_plan": query_plan, "inventory_errors": inventory_errors},
-        official_cell=cell_result,
-        comparison=comparison,
-        limitation={} if verdict != "UNVERIFIABLE" else {"reason": reason},
-        placeholders={
-            "CLAIM": str(claim_row.get("sentence_text") or "기술 canary 주장"),
-            "OFFICIAL_VALUE": str((cell_result.get("cell") or {}).get("DT") or ""),
-            "LIMITATION": reason,
-        },
-    )
-    answer = generate_guarded_answer(packet, hcx_answerer)
-    return {
-        "namespace": "TECHNICAL_CANARY",
-        "metric_inclusion": False,
-        "status": "COMPLETE" if verdict in {"VERIFIED", "REFUTED"} else "UNVERIFIABLE",
-        "verdict": verdict,
-        "reason": reason,
-        "table_key": table_key,
-        "profile_sha256": profile.get("profile_sha256"),
-        "query_plan": query_plan,
-        "inventory_validation": {"status": "VALID", "errors": []},
-        "official_unit": official_unit,
-        "cell": cell_result,
-        "comparison": comparison,
-        "answer": answer,
-    }
 
 
 def run_new_articles_v2(
@@ -1425,27 +1348,6 @@ def run_new_articles_v2(
     }
 
 
-def run_replay_v2(config_path: str | Path, output: str | Path) -> dict[str, Any]:
-    """Re-run the immutable v1 baseline while registering v2 as shadow-only."""
-    config = _read_json(Path(config_path))
-    report = write_replay(config["assets"]["replay_config"], output)
-    return {
-        "contract_version": CONTRACT_VERSION,
-        "mode": "replay",
-        "baseline_report": report,
-        "operational_components": {
-            "l2": "HCX-007_SHADOW_READY",
-            "retrieval": "V6_DENSE_VERIFIED_QDRANT_READY",
-            "query_encoder": "GPU_RECEIPT_READY_LAN_SERVICE_REQUIRED",
-            "reranker": "GPU_RECEIPT_READY_LAN_SERVICE_REQUIRED",
-            "late_binding": "R4-C1_V2_ACTIVE",
-            "quantity": "DECIMAL_V1_ACTIVE_FOR_OPERATIONAL_MODE",
-            "rag_reasoning": "POST_VERDICT_SHADOW",
-            "answer": "HCX-007_GUARDED_WITH_TEMPLATE_FALLBACK",
-        },
-    }
-
-
 _STAGE_ALLOWLISTS = {
     "02": ({"02_l2_predictions.jsonl", "02_l2_results.jsonl"}, {"02_trace.log"}, False),
     "03": ({"03_routed.jsonl"}, {"03_trace.log"}, False),
@@ -1588,7 +1490,6 @@ def run_live_from_files(
     *,
     allow_existing_output: bool = False,
     acquisition_receipt: Mapping[str, Any] | None = None,
-    include_technical_canary: bool = True,
     operational_cache_override: str | Path | None = None,
     snapshot_root_override: str | Path | None = None,
     budget_ledger_override: str | Path | None = None,
@@ -1753,39 +1654,6 @@ def run_live_from_files(
         "cell_api": cell_fetcher.calls,
         "hcx_answer": answerer.calls,
     }
-    canary_call_delta = {"metadata_api": 0, "cell_api": 0, "hcx_answer": 0}
-    canary_manifest: dict[str, Any] = {"enabled": False} if not include_technical_canary else {}
-    if include_technical_canary:
-        canary_path = (root / config["assets"]["technical_canary"]).resolve()
-        canary_config = _read_json(canary_path)
-        technical_canary = run_technical_canary(
-            canary_config,
-            profile_provider=profile_provider,
-            cell_fetcher=cell_fetcher,
-            hcx_answerer=answerer,
-        )
-        result["technical_canary"] = technical_canary
-        canary_bytes = (
-            json.dumps(technical_canary, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
-        ).encode("utf-8")
-        canary_output = output_root / "technical_canary" / "result.json"
-        canary_output.parent.mkdir(parents=True, exist_ok=True)
-        if canary_output.exists():
-            raise FileExistsError(f"refusing to overwrite technical canary: {canary_output}")
-        canary_temporary = canary_output.with_suffix(".json.tmp")
-        canary_temporary.write_bytes(canary_bytes)
-        os.replace(canary_temporary, canary_output)
-        canary_call_delta = {
-            "metadata_api": profile_provider.metadata_api_calls - article_call_snapshot["metadata_api"],
-            "cell_api": cell_fetcher.calls - article_call_snapshot["cell_api"],
-            "hcx_answer": answerer.calls - article_call_snapshot["hcx_answer"],
-        }
-        canary_manifest = {
-            "config_path": str(canary_path),
-            "config_sha256": sha256_file(canary_path),
-            "result_sha256": hashlib.sha256(canary_bytes).hexdigest(),
-            "metric_inclusion": False,
-        }
     calls = {
         "hcx_l2": sum(
             int(row.get("attempts") or 0)
@@ -1805,7 +1673,6 @@ def run_live_from_files(
         **calls,
         **article_call_snapshot,
     }
-    result["technical_canary_api_calls"] = canary_call_delta
     result["runtime"] = {
         "status": "COMPLETE",
         "api_calls": calls,
@@ -1816,7 +1683,7 @@ def run_live_from_files(
     }
     manifest = {
         "contract_version": CONTRACT_VERSION,
-        "mode": "audit_live_shadow" if not include_technical_canary else "live_shadow",
+        "mode": "audit_live_shadow",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input": {"path": str(article_path), "sha256": sha256_file(article_path), "articles": len(articles)},
         "acquisition": dict(acquisition_receipt or {}),
@@ -1831,28 +1698,25 @@ def run_live_from_files(
         "release_sha256_by_channel": release_sha,
         "api_calls": calls,
         "article_api_calls": result["article_api_calls"],
-        "technical_canary_api_calls": canary_call_delta,
-        "technical_canary": canary_manifest,
         "authority": config["authority"],
         "secrets_persisted": False,
         "audit_phase": audit_phase,
         "role_aware_dimension_shadow": role_aware_dimension_shadow,
         "claim_query": claim_query,
     }
-    if not include_technical_canary or audit_run_id or operational_cache_override is not None or snapshot_root_override is not None:
-        manifest.update({
-            "audit_run_id": audit_run_id,
-            "seed_cache_sha256_before": seed_cache_sha_before,
-            "seed_cache_sha256_after": sha256_file(seed_cache_path),
-        })
-        if manifest["seed_cache_sha256_before"] != manifest["seed_cache_sha256_after"]:
-            raise OperationalPipelineError("SEED_CACHE_MUTATED")
-        if budget_ledger is not None:
-            manifest["http_attempt_budget"] = {
-                "path": str(Path(budget_ledger_override).resolve()),
-                "limits": dict(budget_ledger.limits),
-                "used": {key: budget_ledger.used(key) for key in sorted(budget_ledger.limits)},
-            }
+    manifest.update({
+        "audit_run_id": audit_run_id,
+        "seed_cache_sha256_before": seed_cache_sha_before,
+        "seed_cache_sha256_after": sha256_file(seed_cache_path),
+    })
+    if manifest["seed_cache_sha256_before"] != manifest["seed_cache_sha256_after"]:
+        raise OperationalPipelineError("SEED_CACHE_MUTATED")
+    if budget_ledger is not None:
+        manifest["http_attempt_budget"] = {
+            "path": str(Path(budget_ledger_override).resolve()),
+            "limits": dict(budget_ledger.limits),
+            "used": {key: budget_ledger.used(key) for key in sorted(budget_ledger.limits)},
+        }
     if defer_manifest_finalization:
         # Audit-local supervision owns child shutdown, receipt sealing, and
         # public manifest publication.  The ordinary path remains byte and
@@ -1879,76 +1743,10 @@ def run_live_from_url(
     )
 
 
-def run_canary_from_config(
-    config_path: str | Path,
-    output_root: str | Path,
-) -> dict[str, Any]:
-    """Run only the sealed metadata/cell spine; GPU retrieval is not involved."""
-    config_path = Path(config_path).resolve()
-    output_root = Path(output_root).resolve()
-    if output_root.exists():
-        raise FileExistsError(f"refusing to overwrite technical canary output: {output_root}")
-    config = _read_json(config_path)
-    root = config_path.parent.parent
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(root / ".env", override=False)
-    except ImportError:
-        pass
-    seed = (root / config["assets"]["profile_cache"]).resolve()
-    if not seed.is_file() or sha256_file(seed) != config["assets"]["profile_cache_sha256"]:
-        raise OperationalPipelineError("PROFILE_CACHE_CONTRACT_MISMATCH")
-    if not os.getenv("KOSIS_API_KEY") or not os.getenv("NCP_CLOVASTUDIO_API_KEY"):
-        raise OperationalPipelineError("CANARY_API_CREDENTIALS_UNAVAILABLE")
-    provider = OperationalProfileProvider(
-        seed,
-        (root / config["assets"]["operational_profile_cache"]).resolve(),
-        (root / config["assets"]["operational_profile_snapshots"]).resolve(),
-        max_age_seconds=float(config["limits"]["profile_max_age_seconds"]),
-        delay_seconds=float(config["limits"]["metadata_delay_seconds"]),
-    )
-    from src.kosis_client import get_data_from_query
-    cell_fetcher = FailClosedCellFetcher(get_data_from_query)
-    answerer = CountingAnswerer(Hcx007AnswerClient(os.environ["NCP_CLOVASTUDIO_API_KEY"]))
-    canary_path = (root / config["assets"]["technical_canary"]).resolve()
-    result = run_technical_canary(
-        _read_json(canary_path),
-        profile_provider=provider,
-        cell_fetcher=cell_fetcher,
-        hcx_answerer=answerer,
-    )
-    output_root.mkdir(parents=True)
-    result_bytes = (
-        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
-    ).encode("utf-8")
-    manifest = {
-        "contract": "operational-technical-cell-canary-run-v1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "metric_inclusion": False,
-        "config": {"path": str(config_path), "sha256": sha256_file(config_path)},
-        "canary_config": {"path": str(canary_path), "sha256": sha256_file(canary_path)},
-        "profile_cache": provider.audit(),
-        "api_calls": {
-            "metadata_api": provider.metadata_api_calls,
-            "cell_api": cell_fetcher.calls,
-            "hcx_answer": answerer.calls,
-            "gpu": 0,
-        },
-        "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
-        "secrets_persisted": False,
-    }
-    (output_root / "result.json").write_bytes(result_bytes)
-    (output_root / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
-        encoding="utf-8",
-    )
-    return {**result, "output_root": str(output_root), "manifest": manifest}
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--mode", choices=("preflight", "replay", "live", "canary"), default="preflight")
+    parser.add_argument("--mode", choices=("preflight", "live"), default="preflight")
     parser.add_argument("--output", type=Path)
     input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument("--articles", type=Path)
@@ -1958,11 +1756,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "preflight":
             result = preflight(args.config, check_service=args.check_reranker_service)
-        elif args.mode == "replay":
-            if args.output is None:
-                raise OperationalPipelineError("--output is required for replay")
-            result = run_replay_v2(args.config, args.output)
-        elif args.mode == "live":
+        else:
             if args.output is None or (args.articles is None and not args.article_url):
                 raise OperationalPipelineError("--articles or --article-url and --output are required for live")
             result = (
@@ -1970,10 +1764,6 @@ def main(argv: list[str] | None = None) -> int:
                 if args.article_url
                 else run_live_from_files(args.config, args.articles, args.output)
             )
-        else:
-            if args.output is None:
-                raise OperationalPipelineError("--output is required for canary")
-            result = run_canary_from_config(args.config, args.output)
     except (ArticleAcquisitionError, OperationalPipelineError, LiveAdapterError, FileExistsError) as exc:
         failure = safe_adapter_failure("OPERATIONAL_PIPELINE_BLOCKED", exc)
         print(json.dumps({
@@ -1996,5 +1786,4 @@ __all__ = [
     "OperationalPipelineError", "Top50Resolution", "assignment_for_resolution",
     "compare_official_cell", "fetch_exact_single_cell", "l2_service_assessment", "preflight",
     "resolve_top50", "run_live_from_files", "run_live_from_url", "run_new_articles_v2", "run_operational_l2",
-    "run_canary_from_config", "run_replay_v2", "run_technical_canary",
 ]

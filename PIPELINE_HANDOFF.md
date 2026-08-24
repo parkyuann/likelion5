@@ -17,13 +17,13 @@
 
 | 항목 | 기본 계약 |
 |---|---|
-| Qdrant | `http://127.0.0.1:6335`, collection `kosis_v6_bge_m3_ko_20260821`, vector `dense` |
-| Query encoder | `http://127.0.0.1:8820`, BGE-m3-ko revision `7074d66aa46562342193ca4feb3d89bf9dad71b4` |
-| Reranker | `http://127.0.0.1:8819`, bge-reranker-v2-m3-ko revision `2aca5884ecac490192af9ebd86836d9073d826cd` |
+| Qdrant | `QDRANT_URL`로 주입, collection `kosis_v6_bge_m3_ko_20260821`, vector `dense` |
+| Query encoder | `BGE_QUERY_ENCODER_URL`로 주입, BGE-m3-ko revision `7074d66aa46562342193ca4feb3d89bf9dad71b4` |
+| Reranker | `BGE_RERANKER_URL`로 주입, bge-reranker-v2-m3-ko revision `2aca5884ecac490192af9ebd86836d9073d826cd` |
 | BM25/profile DB | `configs/pipeline_operational_v2.json`의 `assets` 경로에 mount |
 | 외부 API | `KOSIS_API_KEY`, `NCP_CLOVASTUDIO_API_KEY` 환경변수 |
 
-서비스 URL은 `QDRANT_URL`, `BGE_QUERY_ENCODER_URL`, `BGE_RERANKER_URL`로 재지정할 수 있습니다. 실제 키나 연결 문자열은 Git에 커밋하지 않습니다.
+세 서비스 URL은 필수 환경변수입니다. AWS에서는 Secrets Manager, ECS task definition 또는 배포 환경에서 주입하고, 실제 주소·포트·키·연결 문자열은 Git에 커밋하지 않습니다. Security Group은 필요한 컨테이너/서비스 사이의 트래픽만 허용해야 합니다.
 
 ## 설치
 
@@ -88,6 +88,7 @@ CLI 재현:
 - 이미지 분석은 포함하지 않습니다.
 - 검색·binding·공식 셀 확인이 실패하면 억지 판정 대신 `UNVERIFIABLE`로 닫힙니다.
 - `role_aware_dimension_shadow`, `failure_recovery_shadow`, `user_intent_shadow`는 opt-in 실험 경로이므로 기본 API에서 활성화하지 않습니다.
+- 개발용 replay와 technical canary 설정은 배포본에서 제외했습니다.
 - 이 브랜치는 실행 코드 전달본이며 모델 성능 승인 또는 운영 승인 기록이 아닙니다.
 
 ## 최소 검증

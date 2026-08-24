@@ -412,7 +412,6 @@ def run_live_stage(
         _assert_stage_start(root, "04", article_path, articles, "__ANY__")
         result = run_live_from_files(
             config_path, article_path, runtime_tmp,
-            include_technical_canary=False,
             operational_cache_override=runtime_tmp / "run_cache" / "operational_profiles.sqlite3",
             snapshot_root_override=runtime_tmp / "raw_snapshots",
             budget_ledger_override=runtime_tmp / "budget.sqlite3",

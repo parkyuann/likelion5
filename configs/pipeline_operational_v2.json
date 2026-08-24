@@ -2,7 +2,6 @@
   "contract_version": "kosis-operational-article-verification-v2",
   "mode": "shadow_ready",
   "assets": {
-    "replay_config": "configs/pipeline_replay_v1.json",
     "v6_catalog_bundle": "data/develop/embedding_kosis_v6_role_catalog_gpu_bundle_20260821",
     "v6_dense_return": "data/develop/embedding_kosis_v6_role_catalog_gpu_bundle_20260821/returned_bge_m3_ko",
     "v6_dense_return_zip": "data/develop/returned_bge_m3_ko.zip",
@@ -16,7 +15,6 @@
     "profile_cache_sha256": "8cfc53c8c5950cb2ad8c6344c995ebaa18b79db2c355e5ad621140c927894339",
     "operational_profile_cache": "data/develop/operational_profile_cache_v2/operational_profiles.sqlite3",
     "operational_profile_snapshots": "data/develop/operational_profile_cache_v2/raw_snapshots",
-    "technical_canary": "configs/operational_technical_canary_v1.json",
     "gpu_receipts": {
       "query_encoder": {
         "path": "data/develop/operational_gpu_receipts_20260821/query_encoder_verification.json",
@@ -39,9 +37,9 @@
     }
   },
   "services": {
-    "reranker": "http://127.0.0.1:8819",
-    "query_encoder": "http://127.0.0.1:8820",
-    "qdrant": "http://127.0.0.1:6335",
+    "reranker": "",
+    "query_encoder": "",
+    "qdrant": "",
     "qdrant_collection": "kosis_v6_bge_m3_ko_20260821",
     "qdrant_vector_name": "dense"
   },

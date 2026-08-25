@@ -72,6 +72,9 @@ def parse_table_key(table_key: str) -> tuple[str, str]:
     if ":" not in table_key:
         raise ValueError(f"table_key는 'org_id:tbl_id' 형식이어야 합니다: {table_key!r}")
     org_id, tbl_id = table_key.split(":", 1)
+    # 골드 주석 꼬리표 제거 — "101:DT_2KAA809 (외환보유액-국가별)" 같은 표기에 강건하게.
+    org_id = org_id.strip()
+    tbl_id = tbl_id.strip().split()[0] if tbl_id.strip() else ""
     if not org_id or not tbl_id:
         raise ValueError(f"table_key 파싱 실패: {table_key!r}")
     return org_id, tbl_id

@@ -30,7 +30,8 @@ from dataclasses import dataclass
 from enum import Enum
 import re
 
-from kosis_statistical_grade import StatGrade, get_grade
+from kosis_statistical_grade import (StatGrade, get_grade,
+                                     is_revision_prone, REVISION_BAND_REL_PCT)
 
 # ---------------------------------------------------------------------------
 # 판정값 — kosis_schema.py의 verification_results.verdict CHECK 제약(8종) 중
@@ -42,6 +43,7 @@ class Verdict(Enum):
     MATCH = "MATCH"
     MOSTLY_MATCH = "MOSTLY_MATCH"
     MISMATCH = "MISMATCH"
+    REVISED_DIFF = "REVISED_DIFF"   # 축C: 표는 맞고 잠정→확정 개정으로 값만 다름(개정상이)
     NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
@@ -53,11 +55,12 @@ class ExpressionType(Enum):
     MULTIPLE = "multiple"                 # "두 배 가까이"
     MULTIPLE_BOUND = "multiple_bound"     # "세 배 이상"
     THRESHOLD = "threshold"               # "절반 이상", "과반"
+    NUMERIC_BOUND = "numeric_bound"       # "3% 이상", "30만명 이상" — 일반 수치+경계
     UNIT_CONVERSION = "unit_conversion"   # claim_unit != official_unit인 등식형 비교
 
 
 _BOUND_TYPES = {ExpressionType.FRACTION_BOUND, ExpressionType.THRESHOLD,
-                ExpressionType.MULTIPLE_BOUND}
+                ExpressionType.MULTIPLE_BOUND, ExpressionType.NUMERIC_BOUND}
 
 
 @dataclass
@@ -68,7 +71,8 @@ class JudgeResult:
     official_value: float | None
     metric: float | None       # 판정에 쓰인 오차/모자람 수치(설명은 explanation 참고)
     grade: StatGrade | None
-    explanation: str
+    explanation: str           # 기술적 상세(abs_error/threshold 등) — 디버깅·감사용
+    reason: str = ""           # 사람이 읽는 한 줄 판정 근거(수치 포함) — 사용자 출력용
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +135,66 @@ def convert_unit(value: float, from_unit: str, to_unit: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# 레벨(수준값) 단위 정규화 — KOSIS UNIT_NM(천불·백만달러·십억원 등)을 계열별 기저단위로.
+# 공식값이 '천불'인데 주장이 '억 달러'면 배율이 안 맞아 그대로 비교하면 오판한다.
+# 같은 계열(USD/KRW/PER/CNT/HH)끼리만 환산하고, 계열이 다르면(달러↔원) 환율이 필요하므로
+# 비교를 보류(NEEDS_REVIEW)한다. parse_large_number가 주장의 조/억/만/천을 이미 기저값으로
+# 풀어내므로, 여기서는 공식값만 official_unit 배율로 기저에 맞춘다.
+# ---------------------------------------------------------------------------
+
+_UNIT_SCALE: dict[str, tuple[str, float]] = {
+    # 통화(달러) — 기저 '달러/불'
+    "달러": ("USD", 1), "불": ("USD", 1), "미불": ("USD", 1),
+    "천달러": ("USD", 1e3), "천불": ("USD", 1e3),
+    "백만달러": ("USD", 1e6), "백만불": ("USD", 1e6),
+    "십억달러": ("USD", 1e9), "억달러": ("USD", 1e8), "억불": ("USD", 1e8),
+    # 원 — 기저 '원'
+    "원": ("KRW", 1), "천원": ("KRW", 1e3), "만원": ("KRW", 1e4),
+    "백만원": ("KRW", 1e6), "천만원": ("KRW", 1e7),
+    "십억원": ("KRW", 1e9), "억원": ("KRW", 1e8), "조원": ("KRW", 1e12),
+    # 인원 / 건수 / 가구
+    "명": ("PER", 1), "천명": ("PER", 1e3), "만명": ("PER", 1e4),
+    "건": ("CNT", 1), "천건": ("CNT", 1e3), "만건": ("CNT", 1e4),
+    "가구": ("HH", 1), "천가구": ("HH", 1e3), "만가구": ("HH", 1e4),
+}
+
+# 주장 텍스트에서 단위 계열을 읽는다(계열 불일치 방지용). 달러/불 우선(원 오탐 방지).
+def _claim_currency_family(text: str) -> str | None:
+    t = text or ""
+    if "달러" in t or "불" in t:
+        return "USD"
+    if "원" in t:
+        return "KRW"
+    if "명" in t:
+        return "PER"
+    if "가구" in t:
+        return "HH"
+    if "건" in t:
+        return "CNT"
+    return None
+
+
+# 최장일치용 — 긴 단위키부터 검사("천명, 시간"에서 '명'보다 '천명'을 먼저 잡도록).
+_UNIT_KEYS_BY_LEN = sorted(_UNIT_SCALE, key=len, reverse=True)
+
+
+def _unit_base(unit: str | None) -> tuple[str, float] | None:
+    """official_unit → (계열, 기저배율). 레벨 단위가 아니면(%·지수 등) None.
+
+    KOSIS UNIT_NM은 "천명, 시간"처럼 복합 문자열일 수 있어 정확일치 대신 포함(최장일치)으로 찾는다.
+    """
+    if not unit:
+        return None
+    u = str(unit).replace(" ", "").strip()
+    if u in _UNIT_SCALE:                 # 정확일치 우선
+        return _UNIT_SCALE[u]
+    for k in _UNIT_KEYS_BY_LEN:          # 복합 문자열이면 포함되는 최장 단위키
+        if k in u:
+            return _UNIT_SCALE[k]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 표현 유형 분류 + 파싱
 # ---------------------------------------------------------------------------
 
@@ -142,11 +206,18 @@ _MULTIPLE_RE = re.compile(
     rf"(\d+(?:\.\d+)?|{_SMALL_WORD_RE_PART})\s*배\s*(가까이|이상|넘게|초과)?"
 )
 _THRESHOLD_RE = re.compile(r"(절반|과반)\s*(이상|이하)?")
-_APPROX_RE = re.compile(r"(약|가량|내외|대)")
+_APPROX_RE = re.compile(r"(약|가량|내외|안팎|쯤|남짓|정도|육박|가까이|근접|대)")
+# 일반 수치+경계("3% 이상", "30만명 이상"). 배수(배)는 MULTIPLE_BOUND가, 분수(N명 중 M명)는
+# FRACTION_BOUND가, 절반/과반은 THRESHOLD가 먼저 잡으므로 그 유형들 뒤에서만 검사한다.
+_NUMERIC_BOUND_RE = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?\s*(?:조|억|만|천)?)"
+    r"\s*(?:%|퍼센트포인트|퍼센트|%p|명|건|가구|원|달러|불|kg|세|개|위|점)?"
+    r"\s*(이상|이하|초과|미만|넘게|넘어서|넘어선)"
+)
 
 
 def classify_expression(text: str) -> ExpressionType:
-    """우선순위: 분수형(+경계) > 배수형(+경계) > 임계값 > 약·가량 > 정확한 수치."""
+    """우선순위: 분수형(+경계) > 배수형(+경계) > 임계값 > 일반수치경계 > 약·가량 > 정확한 수치."""
     frac = _FRACTION_RE.search(text)
     if frac:
         return ExpressionType.FRACTION_BOUND if frac.group(3) else ExpressionType.FRACTION
@@ -156,6 +227,8 @@ def classify_expression(text: str) -> ExpressionType:
             else ExpressionType.MULTIPLE
     if _THRESHOLD_RE.search(text):
         return ExpressionType.THRESHOLD
+    if _NUMERIC_BOUND_RE.search(text):
+        return ExpressionType.NUMERIC_BOUND
     if _APPROX_RE.search(text):
         return ExpressionType.APPROX
     return ExpressionType.EXACT
@@ -204,6 +277,18 @@ def parse_threshold(text: str) -> ParsedClaim | None:
     return ParsedClaim(bound=50.0, direction="at_least" if qualifier == "이상" else "at_most")
 
 
+def parse_numeric_bound(text: str) -> ParsedClaim | None:
+    m = _NUMERIC_BOUND_RE.search(text)
+    if not m:
+        return None
+    value = parse_large_number(m.group(1))
+    if value is None:
+        return None
+    direction = ("at_least" if m.group(2) in ("이상", "초과", "넘게", "넘어서", "넘어선")
+                 else "at_most")
+    return ParsedClaim(bound=value, direction=direction)
+
+
 def parse_point_number(text: str) -> ParsedClaim | None:
     value = parse_large_number(text)
     return ParsedClaim(point=value) if value is not None else None
@@ -215,6 +300,7 @@ _PARSERS = {
     ExpressionType.MULTIPLE: parse_multiple,
     ExpressionType.MULTIPLE_BOUND: parse_multiple,
     ExpressionType.THRESHOLD: parse_threshold,
+    ExpressionType.NUMERIC_BOUND: parse_numeric_bound,
     ExpressionType.APPROX: parse_point_number,
     ExpressionType.EXACT: parse_point_number,
     ExpressionType.UNIT_CONVERSION: parse_point_number,
@@ -227,11 +313,15 @@ _PARSERS = {
 
 # 등식형: (match_threshold, mostly_match_threshold 또는 None, 상대오차 여부)
 _EQUALITY_TOLERANCE = {
-    ExpressionType.EXACT: (0.05, None, False),           # 절대오차(pp) — 반올림 오차만
+    ExpressionType.EXACT: (0.05, 0.15, False),           # 절대오차(pp) — 매칭 0.05(반올림)/
+                                                         #   대체로 0.15(잠정↔확정·0.1단위 보도 반올림)
     ExpressionType.APPROX: (3.0, 8.0, True),             # 상대오차(%)
     ExpressionType.FRACTION: (1.0, 3.0, False),          # 절대오차(pp)
     ExpressionType.MULTIPLE: (5.0, 20.0, True),          # 상대오차(%, 배수 기준)
-    ExpressionType.UNIT_CONVERSION: (1.0, None, True),   # 상대오차(%) — 순수 산술 변환
+    ExpressionType.UNIT_CONVERSION: (0.5, None, True),   # 상대오차(%) — 단위환산·레벨 정확수치.
+                                                         #   *정확히 보도된 수준값*은 반올림(0.5%)만
+                                                         #   허용, 초과는 불일치(대체로밴드 없음).
+                                                         #   '약·가량' 근사는 APPROX(3%)로 별도 관대.
 }
 
 # 부등식형: 경계값보다 실제가 얼마나 모자라도 봐줄까
@@ -261,6 +351,39 @@ def _grade_extra_rse(grade_info) -> tuple[float | None, str]:
     return None, f"축B: {grade_info.survey_name} — 전수/혼합 등급이라 축A 임계값을 보정하지 않음."
 
 
+# ---------------------------------------------------------------------------
+# 판정 근거(reason) — 사람이 읽는 한 줄 요약. "왜 이렇게 판정했는지"를 수치로 제시.
+# ---------------------------------------------------------------------------
+
+_VERDICT_KR = {Verdict.MATCH: "일치", Verdict.MOSTLY_MATCH: "대체로 일치",
+               Verdict.MISMATCH: "불일치", Verdict.REVISED_DIFF: "개정상이",
+               Verdict.NEEDS_REVIEW: "검토필요"}
+
+# 증감 방향어 — "1.1% 감소"처럼 부호 없는 %주장에 방향을 부여(공식 증감률은 부호를 가짐).
+_DECREASE_WORDS = ("감소", "줄", "하락", "축소", "낮아", "내려", "마이너스", "역성장", "뒷걸음")
+
+# 축 W1-3: 퍼센트포인트(%p) 표기 감지 — %p는 상대%가 아니라 절대 pp 차이로 비교해야 한다.
+_PP_RE = re.compile(r"%\s*p|%\s*P|퍼센트\s*포인트|%\s*포인트|[0-9]\s*포인트")
+_EXPR_KR = {
+    ExpressionType.EXACT: "정확수치", ExpressionType.APPROX: "근사(약·가량)",
+    ExpressionType.FRACTION: "분수(N중M)", ExpressionType.MULTIPLE: "배수",
+    ExpressionType.NUMERIC_BOUND: "경계(이상·미만)", ExpressionType.FRACTION_BOUND: "분수경계",
+    ExpressionType.MULTIPLE_BOUND: "배수경계", ExpressionType.THRESHOLD: "임계(절반·과반)",
+    ExpressionType.UNIT_CONVERSION: "단위환산",
+}
+
+
+def _num(x: float | None) -> str:
+    """수치를 짧게 — 큰 값은 천단위 콤마, 작은 값은 불필요한 소수점 제거."""
+    if x is None:
+        return "-"
+    if abs(x) >= 1000:
+        return f"{x:,.0f}"
+    if x == int(x):
+        return str(int(x))
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
 def judge(
     text: str,
     official_value: float | None,
@@ -282,18 +405,22 @@ def judge(
     if official_value is None or parsed is None:
         return JudgeResult(Verdict.NEEDS_REVIEW, expr_type, None, official_value,
                             None, None,
-                            "공식값이 없거나 claim 표현을 파싱하지 못해 판정 불가.")
+                            "공식값이 없거나 claim 표현을 파싱하지 못해 판정 불가.",
+                            reason="검토필요: 공식값 없음 또는 주장 표현 파싱 실패")
 
     grade_info, extra_rse_pct, grade_note = None, None, ""
     if table_key is not None:
         grade_info = get_grade(table_key)
-        if grade_info is None:
+        # 등급 근거가 없고 개정형(축C)도 아니면 임의추정 없이 NEEDS_REVIEW.
+        # 개정형이면 등급이 없어도 진행(축B 보정 없이 축A로 판정 후 축C 라벨).
+        if grade_info is None and not is_revision_prone(table_key):
             return JudgeResult(
                 Verdict.NEEDS_REVIEW, expr_type, parsed.point, official_value, None, None,
                 f"table_key={table_key}에 대한 축B 통계 등급 근거가 아직 없음 "
                 "(kosis_statistical_grade.py 룩업 미등록) — 임의로 등급을 추정하지 않고 NEEDS_REVIEW 처리.",
+                reason=f"검토필요: 표 {table_key}의 통계등급(축B) 근거 미등록 — 임의추정 안 함",
             )
-        if expr_type not in _BOUND_TYPES:
+        if grade_info is not None and expr_type not in _BOUND_TYPES:
             extra_rse_pct, grade_note = _grade_extra_rse(grade_info)
 
     off_value = official_value
@@ -303,8 +430,26 @@ def judge(
         except ValueError as exc:
             return JudgeResult(Verdict.NEEDS_REVIEW, expr_type, parsed.point,
                                 official_value, None, grade_info and grade_info.grade,
-                                f"단위 변환 실패: {exc}")
+                                f"단위 변환 실패: {exc}",
+                                reason=f"검토필요: 단위환산 실패({claim_unit}↔{official_unit})")
         expr_type = ExpressionType.UNIT_CONVERSION
+    else:
+        # 레벨 단위 자동 정규화 — 공식값(천불·십억원 등)을 계열 기저단위로 환산하고,
+        # 큰 수준값은 절대오차(0.05pp) 대신 상대오차(반올림)로 비교(EXACT→UNIT_CONVERSION).
+        ob = _unit_base(official_unit)
+        if ob is not None and expr_type in (ExpressionType.EXACT, ExpressionType.APPROX,
+                                            ExpressionType.NUMERIC_BOUND):
+            fam, scale = ob
+            cf = _claim_currency_family(text)
+            if cf is not None and cf != fam:
+                return JudgeResult(
+                    Verdict.NEEDS_REVIEW, expr_type, parsed.point, official_value, None,
+                    grade_info and grade_info.grade,
+                    f"단위 계열 불일치: 주장({cf}) vs 공식({fam}) — 환율/이종단위라 비교 보류.",
+                    reason=f"검토필요: 단위계열 불일치({cf}↔{fam})")
+            off_value = official_value * scale
+            if expr_type == ExpressionType.EXACT:      # 레벨 정확수치 → 상대오차 비교로 전환
+                expr_type = ExpressionType.UNIT_CONVERSION
 
     # --- 부등식형(FRACTION_BOUND / THRESHOLD / MULTIPLE_BOUND) ---
     if parsed.bound is not None and parsed.direction is not None:
@@ -312,7 +457,9 @@ def judge(
         shortfall = (bound - off_value) if direction == "at_least" else (off_value - bound)
         shortfall = max(shortfall, 0.0)
 
-        if expr_type == ExpressionType.MULTIPLE_BOUND:
+        # MULTIPLE_BOUND(배수)·NUMERIC_BOUND(일반수치)는 경계값 크기가 제각각이라 상대%로,
+        # FRACTION_BOUND·THRESHOLD(비율 %)는 절대 pp로 미달분을 잰다.
+        if expr_type in (ExpressionType.MULTIPLE_BOUND, ExpressionType.NUMERIC_BOUND):
             metric = shortfall / bound * 100 if bound else 0.0
             th = _BOUND_TOLERANCE_REL_PCT
         else:
@@ -326,16 +473,33 @@ def judge(
         else:
             verdict = Verdict.MISMATCH
 
+        unit_label = "%" if expr_type in (
+            ExpressionType.MULTIPLE_BOUND, ExpressionType.NUMERIC_BOUND) else "pp"
         explanation = (
             f"{expr_type.value}: 경계값={bound}, 방향={direction}, 실제값={off_value}, "
-            f"모자람={metric:.2f}{'%' if expr_type == ExpressionType.MULTIPLE_BOUND else 'pp'}."
+            f"모자람={metric:.2f}{unit_label}."
         )
+        arrow = "≥" if direction == "at_least" else "≤"
+        cmp = ("기준 충족" if metric == 0
+               else f"미달 {metric:.2g}{unit_label}(허용 {th['match']:.2g}{unit_label})")
+        reason = (f"{_EXPR_KR[expr_type]}: 공식 {_num(off_value)} vs 기준 {arrow}{_num(bound)} · "
+                  f"{cmp} → {_VERDICT_KR[verdict]}")
         return JudgeResult(verdict, expr_type, bound, official_value, metric,
-                            grade_info and grade_info.grade, explanation)
+                            grade_info and grade_info.grade, explanation, reason)
 
     # --- 등식형(EXACT / APPROX / FRACTION / MULTIPLE / UNIT_CONVERSION) ---
     claimed = parsed.point
+    # 부호 정렬 — "1.1% 감소" 같은 증감 주장은 방향어로 부호를 맞춘다(공식 증감률은 부호를 가짐).
+    #   증감률(공식 단위 '%')에만 적용. 레벨(달러·명 등)엔 방향어가 있어도 부호를 바꾸지 않는다.
+    if claimed is not None and claimed > 0 and (official_unit == "%") \
+            and any(w in (text or "") for w in _DECREASE_WORDS):
+        claimed = -claimed
     match_th, mostly_th, is_relative = _EQUALITY_TOLERANCE[expr_type]
+    # 축 W1-3: %p(퍼센트포인트)는 상대%가 아니라 절대 pp 차이로 비교한다.
+    if _PP_RE.search(text) and is_relative:
+        is_relative = False
+        if expr_type == ExpressionType.APPROX:      # "약 2%포인트" — pp 허용치로 대체
+            match_th, mostly_th = 0.5, 1.5
     abs_error = abs(claimed - off_value)
     rel_error = (abs_error / off_value * 100) if off_value else None
 
@@ -351,11 +515,25 @@ def judge(
     else:
         verdict = Verdict.MISMATCH
 
+    # 축 C: 개정형 표에서 반올림을 넘는 차이는 (개정폭 이내면) '개정상이'로 라벨한다 —
+    # 개정을 허용오차로 흡수(넓히기)하지 않고 원인만 명시. 개정폭보다 크면 진짜 불일치.
+    axisc = ""
+    if (verdict is not Verdict.MATCH and is_revision_prone(table_key)
+            and rel_error is not None and rel_error <= REVISION_BAND_REL_PCT):
+        verdict = Verdict.REVISED_DIFF
+        axisc = " · 축C: 개정형(잠정→확정)이라 현재 확정값과 상이"
+
     explanation = (
         f"{expr_type.value}: claim={claimed}, official={off_value}, "
         f"abs_error={abs_error:.4f}, "
         f"rel_error={'%.2f%%' % rel_error if rel_error is not None else 'N/A'}, "
         f"match_threshold(보정후)={effective_match_th:.4f}. {grade_note}"
     )
+    unit = "%" if is_relative else "pp"
+    axisb = (f" · 표본오차 반영(RSE {extra_rse_pct:g}%)"
+             if extra_rse_pct is not None else "")
+    reason = (f"{_EXPR_KR[expr_type]}: 주장 {_num(claimed)} vs 공식 {_num(off_value)} · "
+              f"오차 {metric:.2g}{unit}(허용 {effective_match_th:.2g}{unit}){axisb}{axisc} "
+              f"→ {_VERDICT_KR[verdict]}")
     return JudgeResult(verdict, expr_type, claimed, official_value, metric,
-                        grade_info and grade_info.grade, explanation)
+                        grade_info and grade_info.grade, explanation, reason)

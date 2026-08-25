@@ -7,6 +7,10 @@ load_dotenv()
 API_KEY = os.environ["KOSIS_API_KEY"]
 
 LIST_URL = "https://kosis.kr/openapi/statisticsList.do"
+# statisticsData.do는 공개 예제상 userStatsId(사용자 통계표) 중심이다. 반면
+# orgId/tblId + objL1~objL8 + itmId로 실제 표의 셀을 선택하는 계약은 KOSIS의
+# 안내 사례가 사용하는 Param API에 맞춘다. 미사용 objL2~objL8도 빈 값으로
+# 명시해야 일부 표에서 '필수요청변수값 누락' 오류가 나지 않는다.
 DATA_URL = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
 META_URL = "https://kosis.kr/openapi/statisticsData.do"
 SEARCH_URL = "https://kosis.kr/openapi/statisticsSearch.do"
@@ -58,7 +62,9 @@ def get_data(org_id, tbl_id, obj_l1, itm_id, prd_se="Y",
         "method": "getList", "apiKey": API_KEY,
         "orgId": org_id, "tblId": tbl_id,
         "objL1": obj_l1, "itmId": itm_id, "prdSe": prd_se,
-        "format": "json", "jsonVD": "Y", **extra_obj_levels,
+        "format": "json", "jsonVD": "Y",
+        **{f"objL{level}": "" for level in range(2, 9)},
+        **extra_obj_levels,
     }
     if start_prd_de:
         params["startPrdDe"] = start_prd_de
@@ -71,6 +77,23 @@ def get_data(org_id, tbl_id, obj_l1, itm_id, prd_se="Y",
     if isinstance(data, dict) and "err" in data:
         raise RuntimeError(f"KOSIS API 오류: {data}")
     return data
+
+
+def get_data_from_query(query: dict) -> list[dict] | dict:
+    """claim_table_aligner가 만든 감사 가능한 셀 조회 조건을 그대로 실행한다.
+
+    query에는 인증키가 포함되지 않으며, 호출 시 이 모듈이 로드한 환경변수 키만
+    사용한다. 따라서 결과 audit record에 안전하게 저장할 수 있다.
+    """
+    levels = query.get("obj_levels")
+    if not isinstance(levels, dict) or not levels.get("objL1"):
+        raise ValueError("query requires obj_levels.objL1")
+    extra_levels = {key: value for key, value in levels.items() if key != "objL1"}
+    return get_data(
+        query["org_id"], query["tbl_id"], levels["objL1"], query["itm_id"],
+        prd_se=query["prd_se"], start_prd_de=query.get("start_prd_de"),
+        end_prd_de=query.get("end_prd_de"), **extra_levels,
+    )
 
 
 def get_meta(org_id: str, tbl_id: str, meta_type: str = "ITM", **extra_params) -> list[dict]:

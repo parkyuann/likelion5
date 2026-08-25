@@ -59,7 +59,7 @@ function History() {
   return (
     <div className="history">
       <div className="history-bar">
-        <span className="history-title">🕘 검증 기록</span>
+        <span className="history-title">검증 기록</span>
         {records.length > 0 && (
           <button className="history-clear" onClick={handleClear}>
             전체 삭제

@@ -8,7 +8,7 @@ function Explore() {
   return (
     <div className="explore">
       <div className="explore-bar">
-        <span className="explore-title">📊 KOSIS 통계표 탐색</span>
+        <span className="explore-title">KOSIS 통계표 탐색</span>
         <a
           className="explore-open"
           href={KOSIS_URL}

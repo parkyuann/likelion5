@@ -5,7 +5,6 @@ import Explore from "./Explore.jsx";
 import History from "./History.jsx";
 import AuthModal from "./Auth.jsx";
 import {
-  LogoMark,
   IconPlus,
   IconNewspaper,
   IconStar,
@@ -60,7 +59,6 @@ function Root() {
               tabIndex={0}
               title="새 검증"
             >
-              <span className="sidebar-logo"><LogoMark /></span>
               <div className="sidebar-brand-text">
                 <span className="sidebar-title">KOSIS 뉴스 수치 검증</span>
                 <span className="sidebar-badge">국가통계 팩트체크</span>

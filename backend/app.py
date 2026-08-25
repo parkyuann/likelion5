@@ -27,7 +27,9 @@ from backend import (
     analysis_service,
     auth_service,
     conversation_service,
+    develop_verify_service,
     favorites_service,
+    google_oauth,
     image_ocr_service,
     kakao_oauth,
     naver_oauth,
@@ -62,6 +64,7 @@ app.add_middleware(
 # 소셜 로그인(OAuth) 라우터: /v1/auth/{kakao,naver}/login, /callback
 app.include_router(kakao_oauth.router)
 app.include_router(naver_oauth.router)
+app.include_router(google_oauth.router)
 
 
 # --- 요청 본문 스키마 (프론트가 보낼 JSON 모양) ------------------------------
@@ -271,6 +274,71 @@ def verify_article(req: ArticleRequest) -> dict:
         max_claims=req.max_claims,
         explain=req.explain,
     )
+
+
+class DevelopVerifyRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=100_000, description="검증할 기사 본문 전체")
+    title: str = Field("", max_length=500, description="기사 제목(선택)")
+    date: str = Field("", max_length=40, description="작성일 YYYY-MM-DD(시점 해석, 선택)")
+    conversation_id: str | None = Field(
+        None, description="로그인 사용자가 기존 대화를 이어갈 때 전달하는 대화 ID"
+    )
+
+
+@app.post("/v1/verify/develop")
+def verify_develop(
+    req: DevelopVerifyRequest, user: dict | None = Depends(optional_user)
+) -> dict:
+    """develop 배포 파이프라인(run_trace)으로 기사 본문을 검증한다.
+
+    인프라(Qdrant·인코더·리랭커 URL)가 연결돼 있으면 라이브 판정까지, 없으면
+    구조화·라우팅까지 수행하고 프론트 표시 계약(results=segments)으로 반환한다.
+    로그인 사용자는 요청/결과가 대화 기록에 저장된다.
+    """
+    if req.conversation_id and user is None:
+        raise BackendError("AUTH_REQUIRED", "대화를 이어가려면 로그인이 필요합니다.", status_code=401)
+
+    def _persist_user_message() -> str:
+        conversation_id = conversation_service.ensure_conversation(
+            user["id"], req.conversation_id, req.text
+        )
+        conversation_service.add_message(
+            user["id"],
+            conversation_id,
+            role="user",
+            kind="article",
+            content=req.text,
+            payload={"title": req.title, "date": req.date},
+        )
+        return conversation_id
+
+    try:
+        result = develop_verify_service.verify_article_develop(
+            req.text, title=req.title, date=req.date
+        )
+    except BackendError as exc:
+        if user is not None:
+            conversation_id = _persist_user_message()
+            _record_error(user["id"], conversation_id, exc)
+            exc.detail = {**(exc.detail or {}), "conversation_id": conversation_id}
+        raise
+    except Exception as exc:
+        if user is not None:
+            _record_error(user["id"], _persist_user_message(), exc)
+        raise
+
+    if user is not None:
+        conversation_id = _persist_user_message()
+        conversation_service.add_message(
+            user["id"],
+            conversation_id,
+            role="assistant",
+            kind="article",
+            content=conversation_service.assistant_content(result),
+            payload=result,
+        )
+        result = {**result, "conversation_id": conversation_id}
+    return result
 
 
 @app.post("/v1/analyze")

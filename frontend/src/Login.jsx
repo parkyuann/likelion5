@@ -1,20 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./auth.jsx";
 import { LogoMark } from "./icons.jsx";
-import { startKakaoLogin, startNaverLogin } from "./api.js";
+import { startKakaoLogin, startNaverLogin, startGoogleLogin } from "./api.js";
 import "./Login.css";
 
-function onlyDigits(s) {
-  return (s || "").replace(/\D/g, "");
-}
-function isValidPhone(s) {
-  return /^01[016789]\d{7,8}$/.test(onlyDigits(s));
-}
-function gen6() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
-// 로그인 / 회원가입 모달 (프론트 목업 + 휴대폰 본인인증 목업)
+// 로그인 / 회원가입 모달 (이메일 + 소셜: 카카오·네이버·구글)
 function KakaoMark() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -29,6 +19,16 @@ function NaverMark() {
     </svg>
   );
 }
+function GoogleMark() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#4285F4" d="M23.52 12.27c0-.82-.07-1.6-.2-2.36H12v4.47h6.47a5.53 5.53 0 0 1-2.4 3.63v3h3.88c2.27-2.09 3.57-5.17 3.57-8.74z" />
+      <path fill="#34A853" d="M12 24c3.24 0 5.96-1.08 7.95-2.91l-3.88-3.01c-1.08.72-2.45 1.15-4.07 1.15-3.13 0-5.78-2.11-6.73-4.96H1.26v3.11A12 12 0 0 0 12 24z" />
+      <path fill="#FBBC05" d="M5.27 14.27a7.2 7.2 0 0 1 0-4.54V6.62H1.26a12 12 0 0 0 0 10.76z" />
+      <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.44-3.44A11.96 11.96 0 0 0 12 0 12 12 0 0 0 1.26 6.62l4.01 3.11C6.22 6.86 8.87 4.75 12 4.75z" />
+    </svg>
+  );
+}
 
 function Login({ onClose }) {
   const { login, register } = useAuth();
@@ -39,13 +39,6 @@ function Login({ onClose }) {
   const [error, setError] = useState("");
   const firstRef = useRef(null);
 
-  // ── 휴대폰 본인인증(목업) 상태 ──
-  const [phone, setPhone] = useState("");
-  const [sentCode, setSentCode] = useState(null); // 발송된(목업) 인증번호
-  const [codeInput, setCodeInput] = useState("");
-  const [phoneVerified, setPhoneVerified] = useState(false);
-  const [phoneMsg, setPhoneMsg] = useState("");
-
   useEffect(() => {
     firstRef.current?.focus();
     const onKey = (e) => e.key === "Escape" && onClose();
@@ -55,37 +48,6 @@ function Login({ onClose }) {
 
   const isSignup = mode === "signup";
 
-  function resetPhone() {
-    setPhone("");
-    setSentCode(null);
-    setCodeInput("");
-    setPhoneVerified(false);
-    setPhoneMsg("");
-  }
-
-  function sendCode() {
-    setPhoneMsg("");
-    if (!isValidPhone(phone)) {
-      setPhoneMsg("올바른 휴대폰 번호를 입력해 주세요.");
-      return;
-    }
-    const code = gen6();
-    setSentCode(code);
-    setCodeInput("");
-    setPhoneVerified(false);
-    // 데모 환경: 실제로는 SMS 발송. 여기선 화면에 인증번호를 보여줍니다.
-    setPhoneMsg(`데모용 인증번호 [${code}] — 실서비스에선 문자로 전송됩니다.`);
-  }
-
-  function verifyCode() {
-    if (onlyDigits(codeInput) === sentCode) {
-      setPhoneVerified(true);
-      setPhoneMsg("");
-    } else {
-      setPhoneMsg("인증번호가 일치하지 않습니다.");
-    }
-  }
-
   const [busy, setBusy] = useState(false);
 
   async function submit(e) {
@@ -94,7 +56,6 @@ function Login({ onClose }) {
     try {
       if (isSignup) {
         if (name.trim().length < 1) throw new Error("이름을 입력해 주세요.");
-        if (!phoneVerified) throw new Error("휴대폰 본인인증을 완료해 주세요.");
         if (password.length < 8)
           throw new Error("비밀번호는 8자 이상이어야 합니다.");
         setBusy(true);
@@ -114,7 +75,6 @@ function Login({ onClose }) {
   function switchMode() {
     setMode(isSignup ? "login" : "signup");
     setError("");
-    resetPhone();
   }
 
   return (
@@ -139,7 +99,7 @@ function Login({ onClose }) {
           </h2>
           <p className="auth-sub">
             {isSignup
-              ? "휴대폰 본인인증 후 계정을 만들 수 있어요."
+              ? "이메일로 간편하게 가입하거나 소셜 로그인을 이용하세요."
               : "로그인하고 검증 기록을 이어가세요."}
           </p>
         </div>
@@ -160,6 +120,14 @@ function Login({ onClose }) {
           >
             <NaverMark />
             네이버로 계속하기
+          </button>
+          <button
+            type="button"
+            className="social-btn google"
+            onClick={startGoogleLogin}
+          >
+            <GoogleMark />
+            구글로 계속하기
           </button>
         </div>
         <p className="auth-social-hint">
@@ -198,55 +166,6 @@ function Login({ onClose }) {
             />
           </label>
 
-          {isSignup && (
-            <div className="auth-field">
-              <span>
-                휴대폰 본인인증
-                {phoneVerified && <em className="auth-verified">✓ 인증 완료</em>}
-              </span>
-              <div className="auth-inline">
-                <input
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="010-1234-5678"
-                  autoComplete="tel"
-                  disabled={phoneVerified}
-                />
-                <button
-                  type="button"
-                  className="auth-inline-btn"
-                  onClick={sendCode}
-                  disabled={phoneVerified}
-                >
-                  {sentCode ? "재전송" : "인증번호 전송"}
-                </button>
-              </div>
-
-              {sentCode && !phoneVerified && (
-                <div className="auth-inline">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={codeInput}
-                    onChange={(e) => setCodeInput(e.target.value)}
-                    placeholder="인증번호 6자리"
-                  />
-                  <button
-                    type="button"
-                    className="auth-inline-btn"
-                    onClick={verifyCode}
-                  >
-                    확인
-                  </button>
-                </div>
-              )}
-
-              {phoneMsg && <p className="auth-hint">{phoneMsg}</p>}
-            </div>
-          )}
-
           <label className="auth-field">
             <span>비밀번호</span>
             <input
@@ -261,11 +180,7 @@ function Login({ onClose }) {
 
           {error && <p className="auth-error">{error}</p>}
 
-          <button
-            className="auth-submit"
-            type="submit"
-            disabled={busy || (isSignup && !phoneVerified)}
-          >
+          <button className="auth-submit" type="submit" disabled={busy}>
             {busy ? "처리 중…" : isSignup ? "회원가입" : "로그인"}
           </button>
         </form>
@@ -278,8 +193,7 @@ function Login({ onClose }) {
         </p>
 
         <p className="auth-note">
-          데모용 로그인 · 본인인증은 목업이며 입력 정보는 이 브라우저에만
-          저장됩니다.
+          데모용 로그인 · 입력 정보는 이 브라우저에만 저장됩니다.
         </p>
       </div>
     </div>

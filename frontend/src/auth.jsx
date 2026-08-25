@@ -3,7 +3,7 @@ import { authMe, authLogout, loginApi, registerApi } from "./api.js";
 
 /*
  * 인증 컨텍스트.
- * - 이메일·카카오·네이버: 모두 백엔드 세션(Bearer 토큰, TOKEN_KEY) 기반의 실제 로그인.
+ * - 이메일·카카오·네이버·구글: 모두 백엔드 세션(Bearer 토큰, TOKEN_KEY) 기반의 실제 로그인.
  *   소셜은 OAuth 콜백이 ?access_token=&provider= 를 붙여 프론트로 복귀 → 아래 마운트 효과가 처리.
  */
 
@@ -65,8 +65,8 @@ export function AuthProvider({ children }) {
     setUser(backendUser(res.user, "email"));
   }
 
-  // 이메일 회원가입 (백엔드). phone은 프론트 본인인증(목업) 통과 여부 확인용.
-  async function register(name, email, password /* , phone */) {
+  // 이메일 회원가입 (백엔드). 이름·이메일·비밀번호만 필요(전화번호 인증 없음).
+  async function register(name, email, password) {
     const res = await registerApi(email, password, name);
     localStorage.setItem(TOKEN_KEY, res.access_token);
     setUser(backendUser(res.user, "email"));

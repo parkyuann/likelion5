@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import "./ChatApp.css";
-import { analyzeInput, analyzeImage, ApiError } from "./api.js";
+import { analyzeInput, analyzeImage, verifyArticleDevelop, ApiError } from "./api.js";
 import { ImageIcon, AlertIcon, DocIcon, LinkIcon, CheckIcon, RefreshIcon, QuestionIcon } from "./icons.jsx";
 import { findVerificationMock, mockToDisplayMessages } from "./mockVerificationData.js";
 
@@ -100,7 +100,13 @@ function ArticleResult({ segments }) {
 
       <div className="c-article-text">
         {segments.map((seg) => {
-          if (!seg.verifiable) return <span key={seg.id}>{seg.text}</span>;
+          if (!seg.verifiable) {
+            // 수치 주장이 없는 문장도 밑줄은 유지(문장 사이 공백은 제외).
+            if ((seg.text || "").trim()) {
+              return <span key={seg.id} className="c-sentence">{seg.text}</span>;
+            }
+            return <span key={seg.id}>{seg.text}</span>;
+          }
           const meta = VERDICTS[seg.verdict];
           const open = openId === seg.id;
           return (
@@ -294,6 +300,45 @@ function mockDelayOverrideMs() {
   return Math.min(60, Math.max(1, seconds)) * 1000;
 }
 
+// 오프라인 데모용 고정 목업 사용 여부. 기본은 실제 파이프라인.
+// 예: http://localhost:5173/?mock=1
+function mockEnabled() {
+  if (typeof window === "undefined") return false;
+  const value = new URLSearchParams(window.location.search).get("mock");
+  return value === "1" || value === "true";
+}
+
+// 실제 검증 호출은 단계별 진행 신호를 주지 않으므로, 응답을 기다리는 동안
+// 단계를 타이머로 전진시키고(마지막 단계 직전까지) 응답이 오면 100%로 마무리한다.
+function startProgressAnimation(sourceType, setter, { stepMs = 1200 } = {}) {
+  const steps = SOURCE_LOADING_STEPS[sourceType] || SOURCE_LOADING_STEPS.auto;
+  const total = steps.length;
+  const completed = [];
+  const timers = [];
+  setter({ sourceType, completed: [], active: 0 });
+  // 마지막 단계는 응답 도착 시 완료 처리(그 전까진 active 상태로 대기).
+  for (let index = 1; index < total; index += 1) {
+    timers.push(
+      setTimeout(() => {
+        completed.push(index - 1);
+        setter({ sourceType, completed: [...completed], active: Math.min(index, total - 1) });
+      }, stepMs * index),
+    );
+  }
+  const clear = () => timers.forEach(clearTimeout);
+  return {
+    finish() {
+      clear();
+      setter({
+        sourceType,
+        completed: Array.from({ length: total }, (_, i) => i),
+        active: total - 1,
+      });
+    },
+    cancel: clear,
+  };
+}
+
 function VerificationProgress({ progress }) {
   const sourceType = progress.sourceType || "auto";
   const steps = SOURCE_LOADING_STEPS[sourceType] || SOURCE_LOADING_STEPS.auto;
@@ -385,9 +430,17 @@ function ChatApp({
     if (initial && !startedRef.current) {
       startedRef.current = true;
       if (initial.mock) {
-        runMockVerification(initial.mock, {
-          focusQuestion: initial.mock.input.focusQuestion,
-        });
+        // 기본은 실제 파이프라인. 목업은 ?mock=1 일 때만.
+        if (mockEnabled()) {
+          runMockVerification(initial.mock, {
+            focusQuestion: initial.mock.input.focusQuestion,
+          });
+        } else {
+          verifyText(initial.mock.input.raw, {
+            inputType: initial.mock.input.sourceType === "url" ? "url" : "article",
+            focusQuestion: initial.mock.input.focusQuestion || "",
+          });
+        }
         return;
       }
       if (initial.image) verifyImage(initial.image, initial.focusQuestion || "");
@@ -550,23 +603,61 @@ function ChatApp({
     inputType = "auto",
     focusQuestion = "",
   } = {}) {
-    const matchedMock = findVerificationMock(text);
-    if (matchedMock) {
-      // 사용자 말풍선은 이미 추가됐고, 목업도 단계별 로딩 후 결과를 표시합니다.
-      await runMockVerification(matchedMock, {
-        focusQuestion,
-      });
-      return;
+    // 오프라인 데모용 목업은 ?mock=1 일 때만 사용합니다(기본은 실제 파이프라인).
+    if (mockEnabled()) {
+      const matchedMock = findVerificationMock(text);
+      if (matchedMock) {
+        await runMockVerification(matchedMock, { focusQuestion });
+        return;
+      }
     }
     lastRequestRef.current = { kind: "text", text, inputType, focusQuestion };
-    setVerificationProgress({ sourceType: inputType, completed: [], active: 0 });
+    const isUrl = inputType === "url" || /^https?:\/\/\S+$/i.test(text.trim());
+    const progress = startProgressAnimation(
+      isUrl ? "url" : "article",
+      setVerificationProgress,
+    );
     setLoading(true);
     try {
-      handleResult(
-        await analyzeInput(text, { conversationId, inputType, focusQuestion }),
-        focusQuestion,
-      );
+      if (isUrl) {
+        // URL은 먼저 본문을 확보한 뒤 develop 파이프라인으로 검증한다.
+        const prepared = await analyzeInput(text, {
+          conversationId,
+          inputType: "url",
+          focusQuestion,
+        });
+        const document = prepared?.article_document;
+        if (prepared?.type === "article_document" && document?.text) {
+          const verified = await verifyArticleDevelop(document.text, {
+            conversationId: prepared.conversation_id || conversationId,
+            title: document.title || "",
+            date: document.published_date || "",
+          });
+          progress.finish();
+          handleResult(verified, focusQuestion);
+        } else {
+          progress.finish();
+          handleResult(prepared, focusQuestion);
+        }
+      } else {
+        // 기사 본문/텍스트는 develop 파이프라인으로 검증한다. 단 수치 주장이 없어
+        // 기사가 아니면(질문·잡담) 기존 라우터로 넘긴다(질문→KOSIS, 잡담→안내).
+        const verified = await verifyArticleDevelop(text, { conversationId });
+        if (verified?.type === "not_article") {
+          const routed = await analyzeInput(text, {
+            conversationId,
+            inputType,
+            focusQuestion,
+          });
+          progress.finish();
+          handleResult(routed, focusQuestion);
+        } else {
+          progress.finish();
+          handleResult(verified, focusQuestion);
+        }
+      }
     } catch (err) {
+      progress.cancel();
       handleError(err);
     } finally {
       setLoading(false);

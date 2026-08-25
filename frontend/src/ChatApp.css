@@ -520,6 +520,13 @@
   text-decoration-style: dashed;
   text-underline-offset: 4px;
 }
+/* 수치 주장이 없는 문장: 밑줄만 유지하고 클릭 대상은 아님 */
+.c-sentence {
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-decoration-style: dashed;
+  text-underline-offset: 4px;
+}
 .c-claim:hover {
   filter: brightness(0.97);
 }

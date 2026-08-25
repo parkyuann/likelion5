@@ -64,6 +64,25 @@ export async function analyzeInput(
   return parseResponse(response);
 }
 
+// 기사 본문을 develop 배포 파이프라인(run_trace)으로 검증한다.
+// 반환: { type:"article", status, live, summary, results:[segments], conversation_id? }
+export async function verifyArticleDevelop(
+  text,
+  { conversationId, title = "", date = "" } = {},
+) {
+  const response = await fetch(`${API_BASE_URL}/v1/verify/develop`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      text,
+      title,
+      date,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+    }),
+  });
+  return parseResponse(response);
+}
+
 export async function analyzeImage(file, { conversationId, focusQuestion = "" } = {}) {
   const form = new FormData();
   form.append("file", file);
@@ -108,6 +127,10 @@ export function startKakaoLogin() {
 
 export function startNaverLogin() {
   window.location.href = `${API_BASE_URL}/v1/auth/naver/login`;
+}
+
+export function startGoogleLogin() {
+  window.location.href = `${API_BASE_URL}/v1/auth/google/login`;
 }
 
 export async function authMe(token) {

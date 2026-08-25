@@ -108,6 +108,11 @@
   background: #03c75a;
   color: #ffffff;
 }
+.social-btn.google {
+  background: #ffffff;
+  color: #1f1f1f;
+  border: 1px solid #dadce0;
+}
 .auth-divider {
   display: flex;
   align-items: center;

@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./auth.jsx";
 import { LogoMark } from "./icons.jsx";
-import { startKakaoLogin, startNaverLogin, startGoogleLogin } from "./api.js";
 import "./Login.css";
 
-// 로그인 / 회원가입 모달 (이메일 + 소셜: 카카오·네이버·구글)
+// 로그인 / 회원가입 모달. OAuth는 운영 계약 확정 전까지 비활성화한다.
 function KakaoMark() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -37,6 +36,7 @@ function Login({ onClose }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const firstRef = useRef(null);
 
   useEffect(() => {
@@ -53,13 +53,18 @@ function Login({ onClose }) {
   async function submit(e) {
     e.preventDefault();
     setError("");
+    setNotice("");
     try {
       if (isSignup) {
         if (name.trim().length < 1) throw new Error("이름을 입력해 주세요.");
-        if (password.length < 8)
-          throw new Error("비밀번호는 8자 이상이어야 합니다.");
+        if (password.length < 12)
+          throw new Error("비밀번호는 12자 이상이어야 합니다.");
         setBusy(true);
         await register(name.trim(), email.trim(), password);
+        setPassword("");
+        setMode("login");
+        setNotice("가입이 완료되었습니다. 같은 이메일로 로그인해 주세요.");
+        return;
       } else {
         setBusy(true);
         await login(email.trim(), password);
@@ -75,6 +80,7 @@ function Login({ onClose }) {
   function switchMode() {
     setMode(isSignup ? "login" : "signup");
     setError("");
+    setNotice("");
   }
 
   return (
@@ -108,30 +114,33 @@ function Login({ onClose }) {
           <button
             type="button"
             className="social-btn kakao"
-            onClick={startKakaoLogin}
+            disabled
+            aria-disabled="true"
           >
             <KakaoMark />
-            카카오로 계속하기
+            카카오 로그인 (준비 중)
           </button>
           <button
             type="button"
             className="social-btn naver"
-            onClick={startNaverLogin}
+            disabled
+            aria-disabled="true"
           >
             <NaverMark />
-            네이버로 계속하기
+            네이버 로그인 (준비 중)
           </button>
           <button
             type="button"
             className="social-btn google"
-            onClick={startGoogleLogin}
+            disabled
+            aria-disabled="true"
           >
             <GoogleMark />
-            구글로 계속하기
+            구글 로그인 (준비 중)
           </button>
         </div>
         <p className="auth-social-hint">
-          기존 계정은 로그인되고, 처음 이용하는 계정은 회원가입됩니다.
+          소셜 로그인은 OAuth callback 계약 확정 후 제공됩니다.
         </p>
 
         <div className="auth-divider">
@@ -178,6 +187,7 @@ function Login({ onClose }) {
             />
           </label>
 
+          {notice && <p className="auth-notice">{notice}</p>}
           {error && <p className="auth-error">{error}</p>}
 
           <button className="auth-submit" type="submit" disabled={busy}>
@@ -193,7 +203,7 @@ function Login({ onClose }) {
         </p>
 
         <p className="auth-note">
-          데모용 로그인 · 입력 정보는 이 브라우저에만 저장됩니다.
+          인증 정보는 서버 세션 쿠키로 관리됩니다.
         </p>
       </div>
     </div>

@@ -1,0 +1,31 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    env_file:
+      - path: runtime.env
+        required: false
+    expose: ["8000"]
+    networks: [kosis_shadow_internal]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: deploy/nginx.Dockerfile
+    ports: ["${APP_HTTP_PORT:-8080}:8080"]
+    depends_on: [api]
+    networks: [kosis_shadow_internal]
+    read_only: true
+    tmpfs: ["/var/cache/nginx", "/var/run"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+networks:
+  kosis_shadow_internal:
+    external: true
+    name: kosis_shadow_internal

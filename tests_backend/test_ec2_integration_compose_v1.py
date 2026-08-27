@@ -32,7 +32,7 @@ def test_compose_contains_only_application_overlay_services():
 def test_encoder_is_internal_gpu_service_with_read_only_attestations():
     source = COMPOSE.read_text(encoding="utf-8")
     encoder = _section(source, "  bge-query-encoder:\n", "\n  nginx:")
-    assert 'image: "sha256:dc3c7538eaedd5aa1c565a4c1aeb4da0b872bcc021143be5adf891ce4af55481"' in encoder
+    assert 'image: "sha256:666dea4633e530cda4959c2b5682920ff408e8754b58fe728d787256bae9beb3"' in encoder
     assert "BGE_QUERY_ENCODER_IMAGE" not in encoder
     assert 'expose: ["8101"]' in encoder
     assert "ports:" not in encoder

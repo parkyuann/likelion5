@@ -1,13 +1,13 @@
 {
   "contract": "bge-query-encoder-image-receipt-v1",
   "status": "VERIFIED_EC2_INTEGRATION_DEV",
-  "verified_at": "2026-08-27T16:58:58+09:00",
+  "verified_at": "2026-08-27T17:14:48+09:00",
   "base_image": {
     "name": "news-verification-bge-preflight:py311-torch213-cu130",
     "digest": "sha256:b98d5ae3c07824c21e2f0242e9cf488c47563a6c0320e9876a4af245f7538adb"
   },
   "image": {
-    "reference": "sha256:dc3c7538eaedd5aa1c565a4c1aeb4da0b872bcc021143be5adf891ce4af55481",
+    "reference": "sha256:666dea4633e530cda4959c2b5682920ff408e8754b58fe728d787256bae9beb3",
     "registry": null,
     "user": "65532:65532",
     "read_only_rootfs": true,
@@ -15,7 +15,7 @@
   },
   "source": {
     "path": "backend/query_encoder_service.py",
-    "sha256": "0b7abfe21e746babb75d8dd509c9a13c22c9e0621c9c07b84a7d78391e634070"
+    "sha256": "6a80231f1b0c609b661648a838b8bf32a056aaef37f0351cbe2c28fc99414cae"
   },
   "dockerfile": {
     "path": "deploy/encoder.Dockerfile",
@@ -49,6 +49,8 @@
     "health": "READY",
     "probe_dimension": 1024,
     "probe_finite": true,
-    "probe_l2_norm": 1.00000001
+    "probe_l2_norm": 1.00000001,
+    "post_embed_health_checks": 5,
+    "post_embed_health_status": "healthy"
   }
 }

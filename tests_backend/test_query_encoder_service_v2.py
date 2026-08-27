@@ -123,6 +123,11 @@ def test_health_and_embedding_expose_only_pinned_v2_contract():
         assert len(body["items"]) == 1
         assert body["items"][0]["index"] == 0
         assert len(body["items"][0]["vector"]) == VECTOR_DIMENSION
+        # A second, independent connection must not be starved by the first
+        # HTTP/1.1 request on the deliberately single-worker service.
+        with request.urlopen(f"http://127.0.0.1:{server.server_port}/health", timeout=2) as response:
+            assert response.headers["Connection"].casefold() == "close"
+            assert json.loads(response.read().decode("utf-8"))["status"] == "READY"
     finally:
         server.shutdown()
         thread.join(timeout=2)

@@ -23,7 +23,7 @@ services:
   bge-query-encoder:
     # This EC2 integration image is content-addressed and attested in
     # encoder-image-receipt-ec2-20260827.json. Mutable tags cannot open this path.
-    image: "sha256:dc3c7538eaedd5aa1c565a4c1aeb4da0b872bcc021143be5adf891ce4af55481"
+    image: "sha256:666dea4633e530cda4959c2b5682920ff408e8754b58fe728d787256bae9beb3"
     expose: ["8101"]
     environment:
       BGE_QUERY_ENCODER_CONTRACT: bge-m3-ko-query-encoder-service-v2

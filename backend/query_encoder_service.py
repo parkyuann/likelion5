@@ -396,8 +396,13 @@ class EncoderRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        # HTTPServer is intentionally single-worker.  Closing every response
+        # prevents one idle HTTP/1.1 keep-alive connection from monopolising
+        # the server and starving Docker health checks.
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(payload)
+        self.close_connection = True
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib HTTPServer API
         if self.path != "/health":

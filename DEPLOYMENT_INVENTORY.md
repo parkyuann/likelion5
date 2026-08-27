@@ -9,7 +9,7 @@
 - 모델 closure SHA-256: `FD2D4A2ECB5443F856B6BB991D7D6D4DDA2B03DBE0FA428F6B9A6DA51ED3312F`
 - 모델: `dragonkue/BGE-m3-ko@7074d66aa46562342193ca4feb3d89bf9dad71b4`
 - EC2 preflight receipt SHA-256: `e092f65d5520f374e30c647f6f02d8203b4ddc6ddfd5d064acfd87f6bb28dff7`
-- 검증된 encoder image content ID: `sha256:dc3c7538eaedd5aa1c565a4c1aeb4da0b872bcc021143be5adf891ce4af55481`
+- 검증된 encoder image content ID: `sha256:666dea4633e530cda4959c2b5682920ff408e8754b58fe728d787256bae9beb3`
 - image receipt: `deploy/encoder-image-receipt-ec2-20260827.json`
 
 ## 이번 변경 파일
@@ -146,7 +146,9 @@ Staged git diff --check: passed; CRLF byte-sealed pipeline closure는 `.gitattri
   text 변환과 trailing-space 진단을 끄고 index blob 72/72 manifest SHA로 별도 검증
 HTTPS health: HTTP 200; HTTP 8080 -> HTTPS 8443 redirect 308
 BGE standalone: READY, CUDA, 1024 dimensions, finite, L2 norm 1.00000001
-Hybrid search after pin hardening, 3 runs: HTTP 200; 1.188s / 0.816s / 0.823s
+Hybrid search after keep-alive fix, 5 runs: HTTP 200;
+  0.838s / 0.825s / 0.823s / 0.823s / 0.826s
+Encoder post-embed health: 35초 후 healthcheck 5/5 exit 0, healthy, failing streak 0
 Hybrid Top-100: release match 100/100; BM25+dense evidence; source=hybrid_rrf
 Auth: signup 201; login 6/6; oldest eviction; me/current logout/logout-all passed
 Pipeline article after pin hardening: HTTP 200; 5.258s; structured_only; result 1

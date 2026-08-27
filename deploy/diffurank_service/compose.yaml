@@ -1,0 +1,71 @@
+# This is deliberately separate from deploy/compose.yaml on the data/BGE node.
+# It must run only on the full-L4 DiffuRank node and has no datastore services.
+name: news-verification-diffurank-shadow
+
+services:
+  diffurank:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: "news-verification-diffurank:${DIFFURANK_IMAGE_TAG:?set a receipt-bound image tag}"
+    env_file:
+      - path: runtime.env
+        required: false
+    ports:
+      # Bind only the instance's private VPC address.  Its security group must
+      # allow this port only from the data/BGE node or its security group.
+      - "${DIFFURANK_BIND_ADDRESS:?set the private VPC address}:8203:8203"
+    environment:
+      DIFFURANK_RELEASE_ID: "${DIFFURANK_RELEASE_ID:?set the pinned KOSIS release ID}"
+      DIFFURANK_BASE_MODEL_PATH: /models/base
+      DIFFURANK_ADAPTER_PATH: /models/adapter
+      DIFFURANK_SOURCE_PATH: /opt/diffusionrank/src
+      DIFFURANK_DEVICE: cuda
+      DIFFURANK_ROPE_SCALING_FACTOR: "${DIFFURANK_ROPE_SCALING_FACTOR:?set the recorded shadow parameter}"
+      DIFFURANK_MAX_CANDIDATES: "${DIFFURANK_MAX_CANDIDATES:-100}"
+      DIFFURANK_MAX_INPUT_TOKENS: "${DIFFURANK_MAX_INPUT_TOKENS:-1024}"
+      DIFFURANK_MAX_TEXT_CHARS: "${DIFFURANK_MAX_TEXT_CHARS:-12000}"
+      DIFFURANK_INTERNAL_TOKEN_FILE: /run/secrets/diffurank_internal_token
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - type: bind
+        source: "${DIFFURANK_BASE_MODEL_SOURCE:?set the exact local base snapshot path}"
+        target: /models/base
+        read_only: true
+      - type: bind
+        source: "${DIFFURANK_ADAPTER_SOURCE:?set the exact local final adapter path}"
+        target: /models/adapter
+        read_only: true
+    secrets:
+      - diffurank_internal_token
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          body=json.load(urllib.request.urlopen('http://127.0.0.1:8203/health', timeout=2));
+          raise SystemExit(0 if body.get('status') == 'READY' else 1)
+      interval: 15s
+      timeout: 3s
+      retries: 8
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+secrets:
+  diffurank_internal_token:
+    file: "${DIFFURANK_INTERNAL_TOKEN_SOURCE:?set a server-only token file}"

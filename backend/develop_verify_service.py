@@ -1,13 +1,12 @@
-"""develop_verify_service.py — develop 배포 파이프라인(run_trace)을 웹에서 부르는 얇은 층.
+"""Backend entry point for the selectively packaged develop pipeline.
 
-기사 검증의 **정본 경로**다(레거시 /verify/* 및 pipeline_service는 제거됨).
-대상은 ``src/develop`` 배포 파이프라인(``run_article_body_pipeline_trace_v1.run_trace``).
+The only supported article path is the packaged ``src.develop`` trace runner.
+Legacy ``src.run_pipeline`` and URL/image acquisition paths are never imported here.
 
 하는 일:
   1) 요청마다 격리된 임시 입출력 디렉터리를 만들고 입력 계약(JSONL)을 기록한다.
-  2) 인프라(Qdrant/인코더/리랭커 URL) 감지:
-       - 셋 다 있으면 stage="all"        → 라이브 검색·판정까지(04)
-       - 없으면 l1→l2→layers 순차 실행    → 구조화·라우팅까지(01~03)
+  2) ``PIPELINE_LIVE_STAGE_ENABLED=true``일 때만 live stage를 추가한다.
+     URL이 존재해도 false이면 항상 l1→l2→layers만 실행한다.
   3) 출력을 프론트 표시 계약(segments)으로 투영한다.
 
 인계서 요구: 내부 API 키·로컬 절대경로·원본 예외 문자열은 클라이언트 응답에 노출하지 않는다.
@@ -18,37 +17,16 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sys
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
 
 from backend.errors import BackendError
+from backend.runtime_gate import pipeline_live_stage_enabled
 
-# --- 파이프라인 import 경로 --------------------------------------------------
-# 이 파일: <root>/backend/develop_verify_service.py → parents[1] == <root>
-# develop 진입점은 `from ..hcx_claim_experiment` 상대 import(=`src` 네임스페이스
-# 패키지)와 일부 모듈의 bare import(`from claim_context_resolver ...`)를 함께 쓴다.
-# 따라서 repo 루트(→ `src.develop`)와 `src`(→ bare import) 둘 다 sys.path에 둔다.
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-for _path in (str(ROOT), str(SRC)):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-
-# .env(API 키·서비스 URL) 로드 — 파이프라인이 환경변수로 읽는다.
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(ROOT / ".env")
-except ImportError:
-    pass
-
 CONFIG_PATH = ROOT / "configs" / "pipeline_operational_v2.json"
-
-# 라이브(stage 04)에 필요한 외부 서비스 엔드포인트. 셋 다 있어야 판정까지 수행.
-_LIVE_ENV = ("QDRANT_URL", "BGE_QUERY_ENCODER_URL", "BGE_RERANKER_URL")
 
 # 라이브 판정 verdict → 프론트 verdict 코드(VERDICTS 키)
 _VERDICT_MAP = {"VERIFIED": "match", "REFUTED": "mismatch", "UNVERIFIABLE": "notfound"}
@@ -80,8 +58,36 @@ def _looks_like_question(text: str) -> bool:
     return any(marker in normalized for marker in _QUESTION_MARKERS)
 
 
-def _live_ready() -> bool:
-    return all((os.environ.get(name) or "").strip() for name in _LIVE_ENV)
+def _pipeline_runtime_root() -> Path:
+    configured = os.getenv("PIPELINE_RUNTIME_ROOT", "").strip()
+    return Path(configured) if configured else ROOT / "pipeline_runtime"
+
+
+def _load_trace_runner() -> tuple[Any, type[Exception]]:
+    """Load only the packaged closure, never the repository's legacy root modules."""
+
+    runtime_root = _pipeline_runtime_root()
+    if not (runtime_root / "src" / "develop" / "run_article_body_pipeline_trace_v1.py").is_file():
+        raise BackendError(
+            "PIPELINE_RUNTIME_SOURCE_PENDING",
+            "배포 이미지에 승인된 pipeline runtime closure가 없습니다.",
+            status_code=503,
+        )
+    import importlib
+    import sys
+
+    root_text = str(runtime_root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+    try:
+        module = importlib.import_module("src.develop.run_article_body_pipeline_trace_v1")
+        return module.run_trace, module.TraceStageError
+    except Exception as exc:
+        raise BackendError(
+            "PIPELINE_RUNTIME_SOURCE_PENDING",
+            "승인된 pipeline runtime closure를 불러올 수 없습니다.",
+            status_code=503,
+        ) from exc
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -237,10 +243,9 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
     if _looks_like_question(body):
         return {"type": "not_article", "reason": "question"}
 
-    # 파이프라인 import는 무겁고 외부 의존(requests 등)을 끌어오므로 지연 로드한다.
-    from src.develop.run_article_body_pipeline_trace_v1 import TraceStageError, run_trace
-
-    live = _live_ready()
+    # PENDING 경로가 먼저 닫힌 뒤, explicit article만 승인된 closure를 지연 로드한다.
+    run_trace, trace_stage_error = _load_trace_runner()
+    live = pipeline_live_stage_enabled()
     article_id = uuid.uuid4().hex
     workdir = Path(tempfile.mkdtemp(prefix="verify_develop_"))
     articles_path = workdir / "articles.jsonl"
@@ -274,7 +279,7 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
                 config_path=CONFIG_PATH if stage in ("all", "live") else None,
             )
         segments = _project_segments(out_root, body, live=live)
-    except TraceStageError as exc:
+    except trace_stage_error as exc:
         code = str(exc.args[0]) if exc.args else "PIPELINE_FAILED"
         raise BackendError(
             "VERIFY_PIPELINE_FAILED",

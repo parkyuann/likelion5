@@ -1,4 +1,4 @@
-"""Shared fail-closed gates for capabilities not present in this delivery."""
+"""Shared feature gates for the EC2 integration development environment."""
 
 from __future__ import annotations
 
@@ -13,10 +13,27 @@ from backend.errors import BackendError
 SEARCH_ADAPTER_PENDING = "SEARCH_ADAPTER_PENDING"
 APPLICATION_PRODUCT_STATE_PENDING = "APPLICATION_PRODUCT_STATE_PENDING"
 PIPELINE_RUNTIME_PENDING = "PIPELINE_RUNTIME_PENDING"
+PIPELINE_NATURAL_QUERY_PENDING = "PIPELINE_NATURAL_QUERY_PENDING"
+PIPELINE_URL_PENDING = "PIPELINE_URL_PENDING"
+PIPELINE_IMAGE_PENDING = "PIPELINE_IMAGE_PENDING"
+PIPELINE_RUNTIME_ENABLED_ENV = "PIPELINE_RUNTIME_ENABLED"
+PIPELINE_LIVE_STAGE_ENABLED_ENV = "PIPELINE_LIVE_STAGE_ENABLED"
+
+
+def pipeline_runtime_enabled() -> bool:
+    """The runtime flag is deliberately exact: only the literal ``true`` opens it."""
+
+    return os.getenv(PIPELINE_RUNTIME_ENABLED_ENV, "") == "true"
+
+
+def pipeline_live_stage_enabled() -> bool:
+    """Live stage is independently gated and never inferred from service URLs."""
+
+    return os.getenv(PIPELINE_LIVE_STAGE_ENABLED_ENV, "") == "true"
 
 
 def require_search_adapter() -> None:
-    """Reject every search-dependent route until the search team's adapter lands."""
+    """Compatibility guard for services that are outside the table-search route."""
 
     raise BackendError(
         SEARCH_ADAPTER_PENDING,
@@ -36,13 +53,14 @@ def require_application_product_state() -> None:
 
 
 def require_pipeline_runtime() -> None:
-    """Full verification pipeline remains closed until its source is delivered."""
+    """Open the article pipeline only when the exact runtime feature flag is true."""
 
-    raise BackendError(
-        PIPELINE_RUNTIME_PENDING,
-        "검증 pipeline runtime이 아직 연결되지 않았습니다.",
-        status_code=503,
-    )
+    if not pipeline_runtime_enabled():
+        raise BackendError(PIPELINE_RUNTIME_PENDING, "검증 pipeline runtime이 아직 활성화되지 않았습니다.", status_code=503)
+
+
+def raise_pipeline_pending(code: str, message: str) -> None:
+    raise BackendError(code, message, status_code=503)
 
 
 def _origin(value: str | None, *, from_referer: bool = False) -> str:

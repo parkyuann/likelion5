@@ -225,11 +225,11 @@ def test_opensearch_hit_contract_fails_closed(mutator: str) -> None:
 
 
 def test_opensearch_window_and_legacy_env_are_strict(monkeypatch: pytest.MonkeyPatch) -> None:
-    hits = [_hit(f"org:{index}", 1.0, text=str(index)) for index in range(1000)]
+    hits = [_hit(f"org:{index}", 1.0, text=str(index)) for index in range(100)]
     config = search_adapter.OpenSearchConfig("http://opensearch", RELEASE, "standard-v1", INDEX)
-    result = search_adapter.OpenSearchBM25Adapter(config, client=FakeSearchHTTP(hits)).search("x", limit=1, offset=999)
+    result = search_adapter.OpenSearchBM25Adapter(config, client=FakeSearchHTTP(hits)).search("x", limit=1, offset=99)
     assert result["total_relation"] == "gte"
-    assert result["candidates"][0]["table_key"] == "org:999"
+    assert result["candidates"][0]["table_key"] == "org:99"
     monkeypatch.setenv("OPENSEARCH_URL", "http://opensearch")
     monkeypatch.setenv("KOSIS_RELEASE_ID", RELEASE)
     monkeypatch.setenv("KOSIS_OPENSEARCH_INDEX", INDEX)
@@ -262,14 +262,27 @@ def test_empty_query_uses_metadata_only_and_hydrates_nonempty_in_candidate_order
         def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
             self.calls += 1
             return {"window": [
-                {"table_key": "org:t2", "source": "opensearch_bm25", "score": 2.0, "evidence": {}},
-                {"table_key": "org:t1", "source": "opensearch_bm25", "score": 1.0, "evidence": {}},
+                {"table_key": "org:t2", "release_id": RELEASE, "source": "opensearch_bm25", "score": 2.0, "evidence": {"record_id": "r2", "source_id": "s2", "field": "TITLE", "text_sha256": "a" * 64, "index": INDEX}},
+                {"table_key": "org:t1", "release_id": RELEASE, "source": "opensearch_bm25", "score": 1.0, "evidence": {"record_id": "r1", "source_id": "s1", "field": "TITLE", "text_sha256": "b" * 64, "index": INDEX}},
             ], "total_relation": "eq"}
+
+    class Dense:
+        def search_grouped_by_table(self, vector: list[float], **kwargs: Any) -> dict[str, Any]:
+            assert len(vector) == 1024
+            return {"window": [], "total_relation": "eq"}
+
+    class Encoder:
+        def encode(self, query: str) -> tuple[list[float], dict[str, Any]]:
+            return [0.0] * 1024, {"model_revision": "test-revision", "vector_dimension": 1024}
 
     metadata = Metadata()
     bm25 = BM25()
     monkeypatch.setenv("KOSIS_RELEASE_ID", RELEASE)
-    table_catalog_service.configure_adapters(metadata=metadata, bm25=bm25)
+    table_catalog_service.configure_adapters(metadata=metadata, bm25=bm25, dense=Dense(), encoder=Encoder())
+    monkeypatch.setenv("KOSIS_HYBRID_PATH_TOP_K", "100")
+    monkeypatch.setenv("KOSIS_HYBRID_FUSION_TOP_K", "100")
+    monkeypatch.setenv("KOSIS_HYBRID_RRF_K", "60")
+    monkeypatch.setenv("BGE_RERANKER_ENABLED", "false")
     empty = table_catalog_service.search_tables("  ")
     assert empty["items"][0]["org_name"] == "Organization"
     assert metadata.browse_calls == 1 and bm25.calls == 0
@@ -322,7 +335,7 @@ def test_qdrant_named_vector_and_authority_contract() -> None:
             return {"collections": [{"name": COLLECTION}]}
 
         def get_collection(self, **kwargs: Any) -> dict[str, Any]:
-            return {"status": "green", "config": {"params": {"vectors": {"dense": {"size": 1024, "distance": "Cosine"}}}}}
+            return {"status": "green", "config": {"params": {"vectors": {"size": 1024, "distance": "Cosine"}}}}
 
         def count(self, **kwargs: Any) -> dict[str, Any]:
             assert kwargs["exact"] is True
@@ -332,7 +345,7 @@ def test_qdrant_named_vector_and_authority_contract() -> None:
             return {"count": 1}
 
         def query_points(self, **kwargs: Any) -> dict[str, Any]:
-            assert kwargs["using"] == "dense"
+            assert "using" not in kwargs
             assert kwargs["query_filter"] is not None
             assert "snapshot_id" in repr(kwargs["query_filter"])
             assert RELEASE in repr(kwargs["query_filter"])
@@ -353,7 +366,7 @@ def test_qdrant_rejects_invalid_vector_and_authority() -> None:
             return {"collections": [{"name": COLLECTION}]}
 
         def get_collection(self, **kwargs: Any) -> dict[str, Any]:
-            return {"status": "green", "config": {"params": {"vectors": {"dense": {"size": 1024, "distance": "Cosine"}}}}}
+            return {"status": "green", "config": {"params": {"vectors": {"size": 1024, "distance": "Cosine"}}}}
 
         def count(self, **kwargs: Any) -> dict[str, Any]:
             return {"count": 1}
@@ -391,7 +404,7 @@ def test_qdrant_wrong_release_zero_fails_closed() -> None:
             return {"collections": [{"name": COLLECTION}]}
 
         def get_collection(self, **kwargs: Any) -> dict[str, Any]:
-            return {"status": "green", "config": {"params": {"vectors": {"dense": {"size": 1024, "distance": "Cosine"}}}}}
+            return {"status": "green", "config": {"params": {"vectors": {"size": 1024, "distance": "Cosine"}}}}
 
         def count(self, **kwargs: Any) -> dict[str, Any]:
             assert kwargs["count_filter"] is not None

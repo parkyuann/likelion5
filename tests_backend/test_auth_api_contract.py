@@ -80,13 +80,13 @@ def test_all_search_routes_fail_closed_before_service_call(monkeypatch):
     assert tables.status_code == 503
     assert tables.json()["code"] == "KOSIS_RELEASE_CONFIGURATION_PENDING"
 
-    for path, payload in [
-        ("/api/v1/analyze", {"text": "x"}),
-        ("/api/v1/verify/develop", {"text": "x"}),
+    for path, payload, expected_code in [
+        ("/api/v1/analyze", {"text": "x"}, "PIPELINE_NATURAL_QUERY_PENDING"),
+        ("/api/v1/verify/develop", {"text": "x"}, "PIPELINE_RUNTIME_PENDING"),
     ]:
         response = client.post(path, headers=CSRF, json=payload)
         assert response.status_code == 503
-        assert response.json()["code"] == "PIPELINE_RUNTIME_PENDING"
+        assert response.json()["code"] == expected_code
 
     image = client.post(
         "/api/v1/analyze/image",
@@ -94,7 +94,7 @@ def test_all_search_routes_fail_closed_before_service_call(monkeypatch):
         files={"file": ("sample.png", b"not-an-image", "image/png")},
     )
     assert image.status_code == 503
-    assert image.json()["code"] == "PIPELINE_RUNTIME_PENDING"
+    assert image.json()["code"] == "PIPELINE_IMAGE_PENDING"
 
     favorite = client.post("/api/v1/favorites", headers=CSRF, json={"table_key": "a:b"})
     assert favorite.status_code == 503

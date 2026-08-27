@@ -359,8 +359,8 @@ def test_search_entry_points_fail_closed_before_underlying_calls(
     assert response.status_code == 503
     expected_codes = {
         "/api/v1/tables": "KOSIS_RELEASE_CONFIGURATION_PENDING",
-        "/api/v1/analyze": "PIPELINE_RUNTIME_PENDING",
-        "/api/v1/analyze/image": "PIPELINE_RUNTIME_PENDING",
+        "/api/v1/analyze": "PIPELINE_NATURAL_QUERY_PENDING",
+        "/api/v1/analyze/image": "PIPELINE_IMAGE_PENDING",
         "/api/v1/verify/develop": "PIPELINE_RUNTIME_PENDING",
         "/api/v1/favorites": "APPLICATION_PRODUCT_STATE_PENDING",
     }

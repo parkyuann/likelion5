@@ -1,0 +1,17 @@
+{
+  "contract": "bge-query-encoder-runtime-lock-v1",
+  "base_image": "news-verification-bge-preflight",
+  "base_image_digest": "sha256:b98d5ae3c07824c21e2f0242e9cf488c47563a6c0320e9876a4af245f7538adb",
+  "python": "3.11.16",
+  "packages": {
+    "torch": "2.13.0+cu130",
+    "transformers": "5.15.1",
+    "sentence-transformers": "6.0.0",
+    "huggingface-hub": "1.28.0",
+    "numpy": "2.4.6"
+  },
+  "cuda": "13.0",
+  "offline_only": true,
+  "local_files_only": true,
+  "download_fallback": false
+}

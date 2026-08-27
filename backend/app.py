@@ -18,7 +18,11 @@ from backend.errors import BackendError
 from backend.runtime_gate import (
     require_application_product_state,
     require_csrf,
+    raise_pipeline_pending,
     require_pipeline_runtime,
+    PIPELINE_IMAGE_PENDING,
+    PIPELINE_NATURAL_QUERY_PENDING,
+    PIPELINE_URL_PENDING,
 )
 
 
@@ -253,17 +257,34 @@ def remove_favorite(table_key: str, user: dict = Depends(current_user)) -> Respo
 
 @app.post("/api/v1/verify/develop", dependencies=[Depends(require_csrf), Depends(require_pipeline_runtime)])
 def verify_develop(req: DevelopVerifyRequest, user: dict | None = Depends(optional_user)) -> dict:
-    del req, user
-    raise AssertionError("pipeline gate should run before handler")
+    del user
+    from backend.develop_verify_service import verify_article_develop
+
+    return verify_article_develop(req.text, title=req.title, date=req.date)
 
 
-@app.post("/api/v1/analyze", dependencies=[Depends(require_csrf), Depends(require_pipeline_runtime)])
+def _looks_like_url(value: str) -> bool:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(value.strip())
+    return parsed.scheme.casefold() in {"http", "https"} and bool(parsed.netloc)
+
+
+@app.post("/api/v1/analyze", dependencies=[Depends(require_csrf)])
 def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> dict:
-    del req, user
-    raise AssertionError("pipeline gate should run before handler")
+    del user
+    if req.input_type == "url" or (req.input_type == "auto" and _looks_like_url(req.text)):
+        raise_pipeline_pending(PIPELINE_URL_PENDING, "URL 기사 추출 경로가 아직 연결되지 않았습니다.")
+    if req.input_type != "article":
+        raise_pipeline_pending(PIPELINE_NATURAL_QUERY_PENDING, "자연어·자동 질의 경로가 아직 연결되지 않았습니다.")
+
+    require_pipeline_runtime()
+    from backend.develop_verify_service import verify_article_develop
+
+    return verify_article_develop(req.text)
 
 
-@app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf), Depends(require_pipeline_runtime)])
+@app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf)])
 def analyze_image(file: UploadFile = File(...), conversation_id: str | None = Form(None), focus_question: str = Form(""), user: dict | None = Depends(optional_user)) -> dict:
     del file, conversation_id, focus_question, user
-    raise AssertionError("pipeline gate should run before handler")
+    raise_pipeline_pending(PIPELINE_IMAGE_PENDING, "이미지 입력 경로가 아직 연결되지 않았습니다.")

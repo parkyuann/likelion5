@@ -33,6 +33,7 @@ REQUIRED_OPENSEARCH_FIELDS = frozenset(
 )
 REQUIRED_QDRANT_FIELDS = REQUIRED_OPENSEARCH_FIELDS - {"text"}
 CANDIDATE_AUTHORITY = "CANDIDATE_GENERATION_ONLY"
+SEARCH_CHANNEL_TOP_K = 100
 SEARCH_WINDOW_MAX = 1000
 
 
@@ -226,14 +227,14 @@ class OpenSearchBM25Adapter:
         if not normalized:
             raise _fail("EMPTY_SEARCH_QUERY", "검색어가 비어 있습니다.", 422)
         self.preflight()
-        response = self._request("POST", f"/{quote(self.config.index, safe='-_:.')}/_search", json=self._body(normalized, SEARCH_WINDOW_MAX))
+        response = self._request("POST", f"/{quote(self.config.index, safe='-_:.')}/_search", json=self._body(normalized, SEARCH_CHANNEL_TOP_K))
         try:
             payload = response.json()
             hits_payload = payload["hits"]
             raw_hits = hits_payload["hits"]
         except Exception as exc:
             raise _fail("SEARCH_SOURCE_CONTRACT_MISMATCH", "OpenSearch 검색 응답이 올바르지 않습니다.") from exc
-        if not isinstance(raw_hits, list) or len(raw_hits) > SEARCH_WINDOW_MAX:
+        if not isinstance(raw_hits, list) or len(raw_hits) > SEARCH_CHANNEL_TOP_K:
             raise _fail("SEARCH_SOURCE_CONTRACT_MISMATCH", "OpenSearch candidate window가 올바르지 않습니다.")
         if any(not isinstance(hit, Mapping) for hit in raw_hits):
             raise _fail("SEARCH_SOURCE_CONTRACT_MISMATCH", "OpenSearch candidate 형식이 올바르지 않습니다.")
@@ -242,7 +243,7 @@ class OpenSearchBM25Adapter:
             raise _fail("SEARCH_SOURCE_CONTRACT_MISMATCH", "OpenSearch collapse 계약이 지켜지지 않았습니다.")
         candidates.sort(key=lambda item: (-float(item["score"]), item["table_key"]))
         relation = _mapping_value(hits_payload.get("total"), "relation", "eq")
-        relation = "gte" if relation == "gte" or len(candidates) >= SEARCH_WINDOW_MAX else "eq"
+        relation = "gte" if relation == "gte" or len(candidates) >= SEARCH_CHANNEL_TOP_K else "eq"
         return {"candidates": candidates[page_offset : page_offset + page_limit], "window": candidates, "total": len(candidates), "total_relation": relation, "limit": page_limit, "offset": page_offset}
 
 
@@ -253,6 +254,15 @@ class QdrantConfig:
     collection: str
     vector_size: int
     receipt_sha256: str
+    vector_name: str = ""
+
+    def __post_init__(self) -> None:
+        if self.vector_name != "":
+            raise BackendError(
+                "QDRANT_VECTOR_CONFIGURATION_PENDING",
+                "현재 EC2 Qdrant는 unnamed vector만 지원합니다.",
+                status_code=503,
+            )
 
     @classmethod
     def from_env(cls) -> "QdrantConfig":
@@ -261,13 +271,14 @@ class QdrantConfig:
         collection = os.getenv("QDRANT_COLLECTION", "").strip()
         raw_size = os.getenv("QDRANT_VECTOR_SIZE", "1024").strip()
         receipt = os.getenv("QDRANT_RECEIPT_SHA256", "").strip()
+        vector_name = os.getenv("QDRANT_VECTOR_NAME", "")
         try:
             size = int(raw_size)
         except ValueError:
             size = -1
-        if not url or not release_id or not collection or size != 1024 or len(receipt) != 64 or any(char not in "0123456789abcdefABCDEF" for char in receipt):
+        if not url or not release_id or not collection or vector_name != "" or size != 1024 or len(receipt) != 64 or any(char not in "0123456789abcdefABCDEF" for char in receipt):
             raise BackendError("QDRANT_CONFIGURATION_PENDING", "Qdrant dense read 연결 설정이 올바르지 않습니다.", status_code=503)
-        return cls(url=url, release_id=release_id, collection=collection, vector_size=size, receipt_sha256=receipt.lower())
+        return cls(url=url, release_id=release_id, collection=collection, vector_size=size, receipt_sha256=receipt.lower(), vector_name="")
 
 
 def _status_name(value: Any) -> str:
@@ -279,6 +290,20 @@ def _vector_params(info: Any) -> Any:
     config = _mapping_value(info, "config")
     params = _mapping_value(config, "params")
     return _mapping_value(params, "vectors")
+
+
+def _unnamed_vector_params(info: Any) -> Any:
+    """Return the single unnamed vector configuration; reject named vectors."""
+
+    vectors = _vector_params(info)
+    if isinstance(vectors, Mapping):
+        if "dense" in vectors:
+            return None
+        if "size" in vectors and "distance" in vectors:
+            return vectors
+    if vectors is not None and _mapping_value(vectors, "size") is not None:
+        return vectors
+    return None
 
 
 class QdrantDenseAdapter:
@@ -330,13 +355,12 @@ class QdrantDenseAdapter:
             raise _fail("QDRANT_UNAVAILABLE", "Qdrant collection에 연결할 수 없습니다.") from exc
         if _status_name(_mapping_value(info, "status")) != "green":
             raise _fail("QDRANT_COLLECTION_CONTRACT_MISMATCH", "Qdrant collection 상태가 green이 아닙니다.")
-        vectors = _vector_params(info)
-        dense = vectors.get("dense") if isinstance(vectors, Mapping) else None
+        unnamed = _unnamed_vector_params(info)
         try:
-            size = int(_mapping_value(dense, "size", -1))
+            size = int(_mapping_value(unnamed, "size", -1))
         except (TypeError, ValueError):
             size = -1
-        if dense is None or size != self.config.vector_size or _status_name(_mapping_value(dense, "distance")) != "cosine":
+        if unnamed is None or size != self.config.vector_size or _status_name(_mapping_value(unnamed, "distance")) != "cosine":
             raise _fail("QDRANT_COLLECTION_CONTRACT_MISMATCH", "Qdrant dense vector 계약이 일치하지 않습니다.")
         count = _mapping_value(count_result, "count")
         if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
@@ -393,13 +417,98 @@ class QdrantDenseAdapter:
         self.preflight()
         query_filter = _qdrant_filter(self.config.release_id, selected_fields)
         try:
-            if hasattr(self._client, "query_points"):
-                result = self._client.query_points(collection_name=self.config.collection, query=[float(value) for value in vector], using="dense", query_filter=query_filter, limit=int(limit), with_payload=True, with_vectors=False)
-                points = _mapping_value(result, "points", result)
-            else:
-                points = self._client.search(collection_name=self.config.collection, query_vector=("dense", [float(value) for value in vector]), query_filter=query_filter, limit=int(limit), with_payload=True, with_vectors=False)
+            query_points = getattr(self._client, "query_points", None)
+            if query_points is None:
+                raise _fail("QDRANT_QUERY_API_UNAVAILABLE", "unnamed Qdrant query API를 사용할 수 없습니다.")
+            result = query_points(collection_name=self.config.collection, query=[float(value) for value in vector], query_filter=query_filter, limit=int(limit), with_payload=True, with_vectors=False)
+            points = _mapping_value(result, "points", result)
+        except BackendError:
+            raise
         except Exception as exc:
             raise _fail("QDRANT_UNAVAILABLE", "Qdrant dense 검색에 실패했습니다.") from exc
         if not isinstance(points, list):
             raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant 검색 응답이 올바르지 않습니다.")
         return [self._point(point) for point in points]
+
+    def search_grouped_by_table(
+        self,
+        vector: Sequence[float],
+        *,
+        fields: Iterable[str] | None = None,
+        limit: int = SEARCH_CHANNEL_TOP_K,
+    ) -> dict[str, Any]:
+        """Read one deterministic representative per table from the existing collection.
+
+        The extra 101st group is intentionally requested so a tied cutoff is never
+        resolved arbitrarily.  There is no ungrouped or legacy fallback.
+        """
+
+        if len(vector) != self.config.vector_size or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in vector
+        ):
+            raise _fail("QDRANT_VECTOR_INVALID", "dense query vector는 1,024개의 유한한 수여야 합니다.", 422)
+        try:
+            page_limit = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise _fail("INVALID_SEARCH_WINDOW", "검색 범위가 올바르지 않습니다.", 422) from exc
+        if page_limit != SEARCH_CHANNEL_TOP_K:
+            raise _fail("INVALID_SEARCH_WINDOW", "dense 채널은 고유 table Top-100만 허용합니다.", 422)
+        selected_fields = sorted(set(fields or ALLOWED_FIELDS))
+        if not selected_fields or not set(selected_fields).issubset(ALLOWED_FIELDS):
+            raise _fail("QDRANT_FIELD_INVALID", "Qdrant 검색 field가 허용되지 않습니다.", 422)
+        self.preflight()
+        query_filter = _qdrant_filter(self.config.release_id, selected_fields)
+        query_points_groups = getattr(self._client, "query_points_groups", None)
+        if query_points_groups is None or qdrant_models is None:
+            raise _fail("QDRANT_GROUP_QUERY_UNAVAILABLE", "Qdrant grouped query API를 사용할 수 없습니다.")
+        try:
+            result = query_points_groups(
+                collection_name=self.config.collection,
+                query=[float(value) for value in vector],
+                query_filter=query_filter,
+                group_by="table_key",
+                group_size=1,
+                limit=SEARCH_CHANNEL_TOP_K + 1,
+                search_params=qdrant_models.SearchParams(exact=True),
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            raise _fail("QDRANT_UNAVAILABLE", "Qdrant grouped dense 검색에 실패했습니다.") from exc
+        groups = _mapping_value(result, "groups")
+        if not isinstance(groups, list) or len(groups) > SEARCH_CHANNEL_TOP_K + 1:
+            raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant grouped 검색 응답이 올바르지 않습니다.")
+        grouped: list[tuple[str, str, dict[str, Any]]] = []
+        seen_group_keys: set[str] = set()
+        for group in groups:
+            group_id = _mapping_value(group, "id")
+            hits = _mapping_value(group, "hits")
+            if group_id is None or not str(group_id).strip() or not isinstance(hits, list) or len(hits) != 1:
+                raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant table group 계약이 일치하지 않습니다.")
+            candidate = self._point(hits[0])
+            table_key = candidate["table_key"]
+            if str(group_id) != table_key:
+                raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant group key와 payload table_key가 다릅니다.")
+            if table_key in seen_group_keys:
+                raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant table group이 중복됩니다.")
+            seen_group_keys.add(table_key)
+            point_id = str(candidate["evidence"]["point_id"])
+            grouped.append((table_key, point_id, candidate))
+        grouped.sort(key=lambda item: (-float(item[2]["score"]), item[0], item[1]))
+        if len(grouped) == SEARCH_CHANNEL_TOP_K + 1 and float(grouped[99][2]["score"]) == float(grouped[100][2]["score"]):
+            raise _fail("DENSE_BOUNDARY_TIE_UNRESOLVED", "dense Top-100 경계 동률을 결정할 수 없습니다.")
+        candidates = [item[2] for item in grouped[:SEARCH_CHANNEL_TOP_K]]
+        for rank, candidate in enumerate(candidates, start=1):
+            candidate["evidence"] = {**candidate["evidence"], "rank": rank}
+        relation = "gte" if len(grouped) == SEARCH_CHANNEL_TOP_K + 1 else "eq"
+        return {
+            "candidates": candidates,
+            "window": candidates,
+            "total": len(candidates),
+            "total_relation": relation,
+            "limit": SEARCH_CHANNEL_TOP_K,
+            "offset": 0,
+        }

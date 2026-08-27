@@ -83,4 +83,4 @@ BGE_RERANKER_ENABLED=false
 - runtime legacy fallback `0`, storage write methods `0`, secret matches `0`.
 - `git diff --check`: 통과.
 
-`IMPLEMENTATION_COMMIT_SHA=RECORDED_AFTER_COMMIT`
+`IMPLEMENTATION_COMMIT_SHA=7e386a8ea60183997e16db95714a45bf74c2eb20`

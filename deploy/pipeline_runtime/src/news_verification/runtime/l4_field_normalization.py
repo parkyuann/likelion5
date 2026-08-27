@@ -53,6 +53,7 @@ _CHANGE_SUFFIX_RE = re.compile(
 # the distinction from LEVEL using only explicit indicator semantics.
 _CHANGE_POINT_SUFFIX_RE = re.compile(
     r"(?:증감폭|증가폭|감소폭|상승폭|하락폭|변화폭|변동폭|"
+    r"증감량|증가량|감소량|상승량|하락량|변화량|변동량|"
     r"전월차|전년동월차|차이|증감액|증가금액|감소금액|"
     r"증감인원|증가인원|감소인원|증가수|감소수|변화)$"
 )
@@ -261,9 +262,11 @@ def absolute_period(period_raw: object, published_at: object) -> str:
     return str(resolved or text)
 
 
-def comparison_basis(
+def _comparison_basis(
     sentence_text: object,
     measurement: object,
+    *,
+    collapse_same_span: bool,
 ) -> tuple[str, str, int | None]:
     """Return a deterministic basis, its raw marker and marker position.
 
@@ -282,11 +285,41 @@ def comparison_basis(
         match = pattern.search(text)
         if match:
             matches.append((basis, match))
+    if collapse_same_span:
+        # The v2h shadow treats a specific YOY marker and the broader parser's
+        # exact same source span as one marker. Gate-off retains the sealed
+        # legacy ambiguity instead of changing replay handoff bytes.
+        by_span: dict[tuple[int, int], list[tuple[str, re.Match[str]]]] = {}
+        for basis, match in matches:
+            by_span.setdefault((match.start(), match.end()), []).append((basis, match))
+        precedence = {YOY: 0, MOM: 1, QOQ: 2, PERIOD_TO_PERIOD: 3}
+        matches = [
+            min(group, key=lambda item: precedence.get(item[0], 99))
+            for group in by_span.values()
+        ]
     distinct = {basis for basis, _ in matches}
     if len(distinct) != 1:
         return NO_BASIS, "", None
     basis, match = min(matches, key=lambda item: item[1].start())
     return basis, match.group().strip(), match.start()
+
+
+def comparison_basis(
+    sentence_text: object,
+    measurement: object,
+) -> tuple[str, str, int | None]:
+    return _comparison_basis(
+        sentence_text, measurement, collapse_same_span=False,
+    )
+
+
+def comparison_basis_monthly_v2h(
+    sentence_text: object,
+    measurement: object,
+) -> tuple[str, str, int | None]:
+    return _comparison_basis(
+        sentence_text, measurement, collapse_same_span=True,
+    )
 
 
 def _canonical_absolute(value: object) -> str:
@@ -388,17 +421,19 @@ def _preceding_measurement_raw(sentence: str, comparison_start: int | None) -> s
     return matches[-1].group().strip() if matches else ""
 
 
-def period_pair(
+def _period_pair(
     period_raw: object,
     sentence_text: object,
     measurement: object,
     published_at: object,
     fallback_measurement_raw: object = None,
+    *,
+    comparison_resolver: object,
 ) -> dict[str, Any]:
     """Build measurement/baseline periods without inventing an unknown basis."""
     raw = str(period_raw or "").strip()
     sentence = str(sentence_text or "")
-    basis, baseline_marker, comparison_start = comparison_basis(sentence, measurement)
+    basis, baseline_marker, comparison_start = comparison_resolver(sentence, measurement)
     baseline_only = bool(raw and _BASELINE_ONLY_RE.fullmatch(raw))
     if baseline_only:
         measurement_raw = (
@@ -449,6 +484,33 @@ def period_pair(
         "baseline": {"raw": baseline_raw, "absolute": baseline_absolute},
         "basis": basis,
     }
+
+
+def period_pair(
+    period_raw: object,
+    sentence_text: object,
+    measurement: object,
+    published_at: object,
+    fallback_measurement_raw: object = None,
+) -> dict[str, Any]:
+    return _period_pair(
+        period_raw, sentence_text, measurement, published_at,
+        fallback_measurement_raw, comparison_resolver=comparison_basis,
+    )
+
+
+def period_pair_monthly_v2h(
+    period_raw: object,
+    sentence_text: object,
+    measurement: object,
+    published_at: object,
+    fallback_measurement_raw: object = None,
+) -> dict[str, Any]:
+    return _period_pair(
+        period_raw, sentence_text, measurement, published_at,
+        fallback_measurement_raw,
+        comparison_resolver=comparison_basis_monthly_v2h,
+    )
 
 
 def _terms(pattern: re.Pattern[str], *sources: object) -> list[str]:
@@ -506,6 +568,7 @@ def compose_fields(
     assignment: dict[str, Any],
     *,
     published_at: object = None,
+    monthly_provenance_v2h: bool = False,
 ) -> dict[str, Any]:
     """Return the six retrieval fields for one value."""
     raw_indicator = assignment.get("indicator_label") or ""
@@ -527,7 +590,9 @@ def compose_fields(
         extract_value_direction(sentence, value_start, value_end)
         if value_start is not None and value_end is not None else None
     )
-    pair = period_pair(
+    pair_builder = period_pair_monthly_v2h if monthly_provenance_v2h else period_pair
+    basis_builder = comparison_basis_monthly_v2h if monthly_provenance_v2h else comparison_basis
+    pair = pair_builder(
         period_raw,
         sentence,
         kind,
@@ -536,9 +601,9 @@ def compose_fields(
     )
     baseline_level = assignment.get("indicator_pairing") == "PARENTHESIZED_BASELINE"
     if baseline_level:
-        _, _, comparison_start = comparison_basis(sentence, CHANGE_RATE)
+        _, _, comparison_start = basis_builder(sentence, CHANGE_RATE)
         current_raw = _preceding_measurement_raw(sentence, comparison_start)
-        comparison_pair = period_pair(
+        comparison_pair = pair_builder(
             current_raw or period_raw,
             sentence,
             CHANGE_RATE,
@@ -617,13 +682,15 @@ def compose_fields(
 def compose_all(
     assignments: list[dict[str, Any]],
     published_at_by_article: dict[str, Any] | None = None,
+    *,
+    monthly_provenance_v2h: bool = False,
 ) -> list[dict[str, Any]]:
     published = published_at_by_article or {}
     return [
         compose_fields(
             row,
             published_at=published.get(str(row.get("article_idx"))),
+            monthly_provenance_v2h=monthly_provenance_v2h,
         )
         for row in assignments
     ]
-

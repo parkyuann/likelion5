@@ -10,7 +10,9 @@ import argparse
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable, Mapping
 import uuid
@@ -192,7 +194,7 @@ def read_multiline_body(input_fn: Callable[[str], str] = input, output_fn: Calla
 
 def build_article(
     *, body: str, query: str, title: str = "", source_url: str = "", published_date: str = "",
-    image_path: str = "", article_id: str | None = None,
+    image_path: str = "", article_id: str | None = None, require_date: bool = True,
 ) -> dict[str, str]:
     """Build the existing live-article contract plus explicitly inert metadata."""
     body, query = str(body or "").strip(), str(query or "").strip()
@@ -200,12 +202,17 @@ def build_article(
         raise TerminalInputError("ARTICLE_BODY_REQUIRED")
     if not query:
         raise TerminalInputError("CLAIM_QUERY_REQUIRED")
-    resolved_date = str(published_date or date.today().isoformat()).strip()
-    try:
-        date.fromisoformat(resolved_date[:10])
-    except ValueError as exc:
-        raise TerminalInputError("ARTICLE_DATE_INVALID") from exc
-    return {
+    resolved_date = str(published_date or "").strip()
+    if not resolved_date and require_date:
+        raise TerminalInputError("ARTICLE_DATE_REQUIRED")
+    if resolved_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", resolved_date):
+        raise TerminalInputError("ARTICLE_DATE_INVALID")
+    if resolved_date:
+        try:
+            date.fromisoformat(resolved_date)
+        except ValueError as exc:
+            raise TerminalInputError("ARTICLE_DATE_INVALID") from exc
+    article = {
         "article_idx": str(article_id or f"terminal-{uuid.uuid4().hex[:12]}"),
         "title": str(title or query).strip(),
         "date": resolved_date[:10],
@@ -216,6 +223,16 @@ def build_article(
         "article_image_path": str(image_path or "").strip(),
         "image_processing": "NOT_IMPLEMENTED_METADATA_ONLY",
     }
+    if os.getenv("EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    } and resolved_date:
+        article["article_date_provenance"] = {
+            "date_source": "client_asserted",
+            "source_path": "terminal_argument",
+            "date_field": "date",
+            "article_text_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        }
+    return article
 
 
 def input_path_for_output(output_root: Path) -> Path:
@@ -930,7 +947,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--query", help="검증할 통계 주장 질의. 없으면 터미널에서 묻습니다.")
     parser.add_argument("--title", default="")
     parser.add_argument("--url", default="")
-    parser.add_argument("--date", dest="published_date", default="", help="기사 발행일 YYYY-MM-DD. 생략 시 오늘 날짜")
+    parser.add_argument("--date", dest="published_date", default="", help="기사 발행일 YYYY-MM-DD (필수)")
     parser.add_argument("--image", dest="image_path", default="", help="현재는 저장만 하며 이미지 분석에는 사용하지 않습니다.")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--output-parent", type=Path, default=DEFAULT_OUTPUT_PARENT)
@@ -1008,6 +1025,7 @@ def main(argv: list[str] | None = None) -> int:
                 title=query,
                 published_date=str(case_row.get("date") or ""),
                 article_id=str(case_binding["case_id"]),
+                require_date=False,
             )
             article["input_kind"] = INPUT_QUERY_ONLY_SYNTHETIC_CLAIM
             article["case_binding"] = dict(case_binding)
@@ -1041,7 +1059,7 @@ def main(argv: list[str] | None = None) -> int:
                 query = _interactive_value("검증 질의")
                 title = _interactive_value("기사 제목 (선택)")
                 source_url = ""
-                published_date = _interactive_value("기사 발행일 YYYY-MM-DD", date.today().isoformat())
+                published_date = _interactive_value("기사 발행일 YYYY-MM-DD")
                 input_kind = classify_input_mode(
                     body=body, url=source_url, query=query, title=title,
                     published_date=published_date, image_path=args.image_path,
@@ -1079,6 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
                     body=str(body or ""), query=str(query or ""), title=title,
                     source_url=source_url, published_date=published_date,
                     image_path=args.image_path,
+                    require_date=input_kind != INPUT_QUERY_ONLY_SYNTHETIC_CLAIM,
                 )
                 article["input_kind"] = input_kind
             article_path = write_terminal_input(article, output_root)
@@ -1193,6 +1212,3 @@ __all__ = [
     "acquisition_root_for_output", "INPUT_BODY_AND_QUERY", "INPUT_SUPPORTED_KHAN_URL_AND_QUERY",
     "INPUT_QUERY_ONLY_SYNTHETIC_CLAIM",
 ]
-
-
-

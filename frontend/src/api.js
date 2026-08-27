@@ -39,11 +39,19 @@ async function parseResponse(response) {
   return payload;
 }
 
-export async function analyzeInput(text, { conversationId, inputType = "auto", focusQuestion = "" } = {}) {
+export async function analyzeInput(text, {
+  conversationId,
+  inputType = "auto",
+  focusQuestion = "",
+  date = "",
+  dateSource = null,
+} = {}) {
   const response = await apiFetch("/v1/analyze", {
     method: "POST",
     body: JSON.stringify({
       text, input_type: inputType,
+      date,
+      date_source: dateSource,
       ...(focusQuestion ? { focus_question: focusQuestion } : {}),
       max_claims: 10, explain: false,
       ...(conversationId ? { conversation_id: conversationId } : {}),
@@ -52,10 +60,21 @@ export async function analyzeInput(text, { conversationId, inputType = "auto", f
   return parseResponse(response);
 }
 
-export async function verifyArticleDevelop(text, { conversationId, title = "", date = "" } = {}) {
+export async function verifyArticleDevelop(text, {
+  conversationId,
+  title = "",
+  date = "",
+  dateSource = null,
+} = {}) {
   const response = await apiFetch("/v1/verify/develop", {
     method: "POST",
-    body: JSON.stringify({ text, title, date, ...(conversationId ? { conversation_id: conversationId } : {}) }),
+    body: JSON.stringify({
+      text,
+      title,
+      date,
+      date_source: dateSource,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+    }),
   });
   return parseResponse(response);
 }

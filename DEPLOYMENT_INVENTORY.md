@@ -168,3 +168,23 @@ commit SHA: RECORDED_IN_HANDOFF_RESPONSE
 - `002_application_product_state` migration과 conversations/messages/favorites
 - 검색 고도화에 따른 retrieval-contract v2
 - DiffuRank
+
+## 2026-08-28 evidence-first statistics shadow implementation
+
+- 승인 설계 `설계도_근거중심_통계답변과_시계열주장_v2_20260828.md`와 preimplementation receipt는 수정하지 않았다.
+- 구현 범위: canonical runtime의 기간·동일 series 근거 계산·답변 생성, handoff deploy mirror와 manifest, backend evidence projection, frontend evidence-first display, focused tests.
+- `EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED` 기본값은 `false`이며 이번 작업에서 EC2 활성화·live 실행·commit/push는 하지 않았다.
+- `CURRENT_RELEASE` 답변은 `현재 KOSIS 통계표에서는`으로 시작하고 현재값·전년값·계산값·범위 연산·historical snapshot limitation을 포함한다. 내부 verdict는 호환성을 위해 유지한다.
+- runtime mirror 5개는 canonical source와 SHA-256 byte-identical이며 manifest에 `same_series_evidence_v1.py`를 추가했다.
+- focused 결과: canonical 73 passed, operational pipeline 27 passed, backend/frontend contract 2 passed.
+- 이번 단계 미실행: full suite, live experiment, EC2 변경, commit/push. 다음 단계에서 독립 승인 및 full/live 검증이 필요하다.
+
+## 2026-08-28 monthly provenance v2h shadow implementation
+
+- 독립 승인된 v2b~v2h 누적 계약을 `EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED=true` 경로에만 연결했다. 기존 public gate-off builder/projection/resolver는 유지한다.
+- terminal/backend explicit date는 인증된 발행일이 아니라 각각 `client_asserted/terminal_argument`, `client_asserted/backend_request` receipt다. 최종 근거와 ledger에는 client 제공 기준일 limitation을 보존한다.
+- Top-50 profile은 provider key당 1회 fetch, canonical raw snapshot, transform deep copy, profile/membership receipt로 고정한다. transform identity/inventory 위반과 candidate parent/assignment identity 위반은 query-plan 생성 전 fail-closed한다.
+- deploy runtime canonical/mirror 6개와 manifest를 실제 size/SHA-256로 동기화했다.
+- focused 결과: canonical 238 passed, backend 3 passed. 외부 HCX/KOSIS/metadata 호출은 없었다.
+- 추가 server-only gate: `EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED=false`를 기본으로 유지한다.
+- PENDING: full differential comparator, actual live, server-issued date clarification challenge, EC2 활성화, commit/push.

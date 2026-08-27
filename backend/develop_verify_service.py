@@ -15,10 +15,13 @@ Legacy ``src.run_pipeline`` and URL/image acquisition paths are never imported h
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import re
 import shutil
 import tempfile
 import uuid
+from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,64 @@ _QUESTION_MARKERS = (
     "했나요", "되나요", "알려", "조회", "찾아", "어때", "어떤가",
     "무엇", "뭐야", "뭔가요", "있나요", "없나요",
 )
+
+_ARTICLE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_SOURCES = {"user_feedback", "url_metadata", "api_request"}
+ARTICLE_DATE_PROMPT = "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요."
+
+
+def _evidence_first_statistics_enabled_monthly_v2h() -> bool:
+    return os.getenv("EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def build_article_date_provenance_monthly_v2h(
+    canonical_article_text: str,
+) -> dict[str, str]:
+    return {
+        "date_source": "client_asserted",
+        "source_path": "backend_request",
+        "date_field": "date",
+        "article_text_sha256": hashlib.sha256(
+            canonical_article_text.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def normalize_article_date(date: str | None, date_source: str | None) -> tuple[str, str] | None:
+    """Validate the explicit article date and apply the compatibility source default."""
+
+    value = "" if date is None else date
+    if not isinstance(value, str):
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일은 YYYY-MM-DD 형식이어야 합니다.", status_code=422)
+    if not value.strip():
+        return None
+    if not _ARTICLE_DATE_PATTERN.fullmatch(value):
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일은 YYYY-MM-DD 형식이어야 합니다.", status_code=422)
+    try:
+        calendar_date.fromisoformat(value)
+    except ValueError:
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일은 실제 달력 날짜여야 합니다.", status_code=422) from None
+
+    source = date_source or "api_request"
+    if source not in _DATE_SOURCES:
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일 출처가 올바르지 않습니다.", status_code=422)
+    return value, source
+
+
+def article_date_required_response() -> dict[str, Any]:
+    return {
+        "type": "needs_user_input",
+        "status": "awaiting_article_date",
+        "reason": "ARTICLE_DATE_REQUIRED",
+        "question": {
+            "id": "article_published_date",
+            "prompt": ARTICLE_DATE_PROMPT,
+            "input_mode": "DATE",
+            "required": True,
+        },
+    }
 
 
 def _looks_like_question(text: str) -> bool:
@@ -163,6 +224,10 @@ def _sentence_segment(
         "verdict": verdict,
         "answer": str(answer.get("explanation") or answer.get("headline") or ""),
     }
+    evidence_answer = answer.get("evidence_answer")
+    if isinstance(evidence_answer, dict) and str(evidence_answer.get("text") or "").strip():
+        segment["evidence_answer"] = evidence_answer
+        segment["answer"] = str(evidence_answer["text"])
     table = _live_table(ledger_for_sentence.get(sid) or {})
     if table:
         segment["table"] = table
@@ -228,7 +293,12 @@ def _project_segments(out_root: Path, body: str, *, live: bool) -> list[dict[str
     return segments
 
 
-def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[str, Any]:
+def verify_article_develop(
+    text: str,
+    title: str = "",
+    date: str | None = "",
+    date_source: str | None = None,
+) -> dict[str, Any]:
     """기사 본문을 develop 파이프라인으로 검증하고 프론트 표시 계약으로 반환한다.
 
     반환: type/status/live/summary + results(segments 배열). 각 segment는
@@ -243,16 +313,39 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
     if _looks_like_question(body):
         return {"type": "not_article", "reason": "question"}
 
+    evidence_first_statistics = _evidence_first_statistics_enabled_monthly_v2h()
+    normalized_date = normalize_article_date(
+        date, None if evidence_first_statistics else date_source
+    )
+    if normalized_date is None:
+        return article_date_required_response()
+    article_date, article_date_source = normalized_date
+
     # PENDING 경로가 먼저 닫힌 뒤, explicit article만 승인된 closure를 지연 로드한다.
     run_trace, trace_stage_error = _load_trace_runner()
     live = pipeline_live_stage_enabled()
     article_id = uuid.uuid4().hex
+    article_body_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
     workdir = Path(tempfile.mkdtemp(prefix="verify_develop_"))
     articles_path = workdir / "articles.jsonl"
     out_root = workdir / "out"
     articles_path.write_text(
         json.dumps(
-            {"article_idx": article_id, "title": title, "date": date, "article_text": body},
+            {
+                "article_idx": article_id,
+                "title": title,
+                "date": article_date,
+                "article_text": body,
+                "article_date_provenance": (
+                    build_article_date_provenance_monthly_v2h(body)
+                    if evidence_first_statistics else
+                    {
+                        "date_source": article_date_source,
+                        "date_field": "date",
+                        "article_text_sha256": article_body_sha256,
+                    }
+                ),
+            },
             ensure_ascii=False,
         )
         + "\n",
@@ -314,7 +407,8 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
         "status": "completed" if live else "structured_only",
         "live": live,
         "title": title,
-        "date": date,
+        "date": article_date,
+        "date_source": article_date_source,
         "summary": counts,
         "results": segments,
     }

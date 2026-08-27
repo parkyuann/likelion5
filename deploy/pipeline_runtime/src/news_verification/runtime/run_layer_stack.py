@@ -52,6 +52,7 @@ def run_stack(
     *,
     threshold: float = DEFAULT_THRESHOLD,
     sentence_span_iterator: Callable[[str], Iterator[tuple[int, int, int, str]]] | None = None,
+    monthly_provenance_v2h: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Assign roles, compose fields and route every value candidate."""
     layout_by_article: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -62,6 +63,15 @@ def run_stack(
         str(article.get("article_idx")): article.get("date")
         for article in articles
     }
+    if monthly_provenance_v2h is None:
+        monthly_provenance_v2h = any(
+            isinstance(article.get("article_date_provenance"), dict)
+            and article["article_date_provenance"].get("date_source") == "client_asserted"
+            and article["article_date_provenance"].get("source_path") in {
+                "terminal_argument", "backend_request",
+            }
+            for article in articles
+        )
     assignments: list[dict[str, Any]] = []
     for article in articles:
         article_idx = str(article.get("article_idx"))
@@ -74,7 +84,13 @@ def run_stack(
         ):
             assignment["article_idx"] = article_idx
             assignments.append(assignment)
-    routed = route_all(compose_all(assignments, published), threshold=threshold)
+    routed = route_all(
+        compose_all(
+            assignments, published,
+            monthly_provenance_v2h=bool(monthly_provenance_v2h),
+        ),
+        threshold=threshold,
+    )
     # The queries are the handoff artefact, so they are produced here rather
     # than by whoever consumes the file.
     return attach_query_variants(routed)
@@ -121,5 +137,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

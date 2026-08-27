@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date
 import hashlib
 import json
 import re
@@ -1130,10 +1131,781 @@ def validate_target_v2(projections: Sequence[CandidateProjection]) -> TargetReso
     return TargetResolution(**data, canonical_sha256=_sha(data))
 
 
+MONTHLY_PROFILE_RECEIPT_CONTRACT_V2H = "monthly-profile-receipt-v2f"
+MONTHLY_MEMBERSHIP_RECEIPT_CONTRACT_V2H = "monthly-membership-receipt-v2g"
+MONTHLY_PROFILE_STATUSES_V2H = {
+    "COMPLETE", "UNAVAILABLE", "INCOMPLETE", "TABLE_KEY_MISMATCH",
+    "TRANSFORM_ERROR", "TRANSFORM_INVALID", "TRANSFORM_TABLE_KEY_MISMATCH",
+    "TRANSFORM_INCOMPLETE",
+}
+
+
+def membership_receipt_sha256_monthly_v2h(
+    candidate_membership: Sequence[str],
+    profile_receipts: Sequence[Mapping[str, Any]],
+) -> str:
+    envelope = {
+        "contract_version": MONTHLY_MEMBERSHIP_RECEIPT_CONTRACT_V2H,
+        "candidate_membership": sorted({str(key) for key in candidate_membership}),
+        "profile_receipts": [
+            dict(receipt)
+            for receipt in sorted(profile_receipts, key=lambda row: str(row.get("table_key") or ""))
+        ],
+    }
+    return _sha(envelope)
+
+
+def placeholder_projection_monthly_v2h(table_key: str, reason: str) -> CandidateProjection:
+    data = {
+        "table_key": str(table_key),
+        "assignments": [],
+        "abstained": [],
+        "projection_status": "ABSTAIN",
+        "hold_reasons": [reason],
+    }
+    return CandidateProjection(
+        str(table_key), (), (), "ABSTAIN", (reason,), _sha(data)
+    )
+
+
+def project_candidate_monthly_v2h(
+    claim_core: Any,
+    profile: Mapping[str, Any] | None,
+    *,
+    table_key: str,
+    allow_unqualified_nationwide: bool = False,
+) -> CandidateProjection:
+    """Project one already pinned and identity-validated monthly profile."""
+
+    if profile is None:
+        return placeholder_projection_monthly_v2h(table_key, "PROFILE_UNAVAILABLE")
+    projection = project_candidate_v2(
+        claim_core, profile,
+        allow_unqualified_nationwide=allow_unqualified_nationwide,
+    )
+    return projection
+
+
+_MONTHLY_SURFACE_V2J = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+_MONTHLY_SHA256_V2J = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _canonical_equal_monthly_v2j(left: Any, right: Any) -> bool:
+    return _json_bytes(left) == _json_bytes(right)
+
+
+def _recompute_month_anchor_v2j(raw_text: str, article_date: str) -> tuple[str, str, str] | None:
+    try:
+        anchor = date.fromisoformat(article_date)
+    except (TypeError, ValueError):
+        return None
+    raw = re.sub(r"\s+", " ", raw_text).strip()
+    previous = re.fullmatch(r"지난 ([1-9]|1[0-2])월", raw)
+    current_year = re.fullmatch(r"올해 ([1-9]|1[0-2])월", raw)
+    explicit = re.fullmatch(r"((?:19|20)\d{2})년 ([1-9]|1[0-2])월", raw)
+    if previous:
+        month = int(previous.group(1))
+        if month == anchor.month:
+            return None
+        year = anchor.year if month < anchor.month else anchor.year - 1
+        return (
+            f"{year:04d}-{month:02d}",
+            "anchor-most-recent-named-month-same-year-v2e" if month < anchor.month
+            else "anchor-most-recent-named-month-previous-year-v2e",
+            "SAME_YEAR" if month < anchor.month else "PREVIOUS_YEAR",
+        )
+    if current_year:
+        month = int(current_year.group(1))
+        if month > anchor.month:
+            return None
+        return f"{anchor.year:04d}-{month:02d}", "anchor-current-year-observed-month-v2e", "CURRENT_YEAR_OBSERVED"
+    if explicit:
+        year, month = int(explicit.group(1)), int(explicit.group(2))
+        if (year, month) > (anchor.year, anchor.month):
+            return None
+        return f"{year:04d}-{month:02d}", "explicit-korean-year-month-v2e", "EXPLICIT_YEAR_MONTH"
+    return None
+
+
+def _claim_period_monthly_v2j(
+    period_atom: Mapping[str, Any],
+) -> tuple[tuple[str, str, str] | None, dict[str, Any] | None, str | None]:
+    surface = str(_get(period_atom, "surface", "") or "")
+    if not _MONTHLY_SURFACE_V2J.fullmatch(surface):
+        return None, None, "PERIOD_INVALID"
+    try:
+        date.fromisoformat(f"{surface}-01")
+    except ValueError:
+        return None, None, "PERIOD_INVALID"
+    provenance = _base_claim_prov(period_atom)
+    sentence_text = provenance.get("sentence_text")
+    period_evidence = provenance.get("period_evidence")
+    anchor_receipt = provenance.get("anchor_receipt")
+    date_receipt = provenance.get("anchor_date_provenance")
+    if not all(isinstance(value, Mapping) for value in (period_evidence, anchor_receipt, date_receipt)):
+        return None, None, "PERIOD_INVALID"
+    text = period_evidence.get("text")
+    start, end = period_evidence.get("start"), period_evidence.get("end")
+    sentence_id = period_evidence.get("sentence_id")
+    if (
+        not isinstance(sentence_text, str)
+        or not isinstance(text, str) or not text
+        or type(start) is not int or type(end) is not int
+        or sentence_id is None or not (0 <= start < end <= len(sentence_text))
+        or sentence_text[start:end] != text
+        or provenance.get("sentence_id") != sentence_id
+    ):
+        return None, None, "PERIOD_INVALID"
+    article_date = anchor_receipt.get("article_date")
+    anchor_valid = (
+        anchor_receipt.get("contract_version") == "monthly-period-anchor-v2h"
+        and anchor_receipt.get("lossless") is True
+        and anchor_receipt.get("date_source") == "client_asserted"
+        and anchor_receipt.get("raw_text") == text
+        and anchor_receipt.get("structured_period") == surface
+        and isinstance(article_date, str)
+    )
+    date_valid = (
+        date_receipt.get("date_source") == "client_asserted"
+        and date_receipt.get("source_path") in {"terminal_argument", "backend_request"}
+        and date_receipt.get("date_field") == "date"
+        and isinstance(date_receipt.get("article_text_sha256"), str)
+        and bool(_MONTHLY_SHA256_V2J.fullmatch(date_receipt["article_text_sha256"]))
+    )
+    recalculated = _recompute_month_anchor_v2j(text, article_date) if anchor_valid else None
+    if (
+        not anchor_valid or not date_valid or recalculated is None
+        or recalculated != (
+            anchor_receipt.get("structured_period"),
+            anchor_receipt.get("rule_id"),
+            anchor_receipt.get("calculation_branch"),
+        )
+    ):
+        return None, None, "PERIOD_INVALID"
+    api_period = surface.replace("-", "")
+    return ("M", api_period, api_period), {
+        "rule_id": str(anchor_receipt["rule_id"]),
+        "rule_version": 2,
+        "calculation_branch": str(anchor_receipt["calculation_branch"]),
+        "source_granularity": "MONTH",
+        "lossless": True,
+        "normalized_frequency": "M",
+        "normalized_start": api_period,
+        "normalized_end": api_period,
+        "raw_source_path": "monthly_v2h.period_evidence",
+        "raw_text": text,
+        "anchor_date_provenance": dict(date_receipt),
+    }, None
+
+
+def _monthly_core_valid_v2j(claim_core: Any) -> bool:
+    contract = getattr(claim_core, "contract_version", None)
+    atoms = getattr(claim_core, "atoms", None)
+    proposal = getattr(claim_core, "proposal_view", None)
+    provenance = getattr(claim_core, "provenance", None)
+    digest = getattr(claim_core, "canonical_sha256", None)
+    if (
+        contract != "monthly-claim-core-v2h" or not isinstance(atoms, Mapping)
+        or not isinstance(proposal, Mapping) or not isinstance(provenance, Mapping)
+        or not isinstance(digest, str)
+    ):
+        return False
+    try:
+        serialized_atoms = {
+            name: asdict(atom) if hasattr(atom, "__dataclass_fields__") else dict(atom)
+            for name, atom in atoms.items()
+        }
+    except (TypeError, ValueError):
+        return False
+    envelope = {
+        "atoms": serialized_atoms,
+        "proposal_view": proposal,
+        "provenance": provenance,
+        "contract_version": contract,
+    }
+    if hashlib.sha256(_json_bytes(envelope)).hexdigest() != digest:
+        return False
+    period_atom = _get_atom(claim_core, "period")
+    indicator_atom = _get_atom(claim_core, "indicator")
+    period_prov = _base_claim_prov(period_atom)
+    indicator_prov = _base_claim_prov(indicator_atom)
+    return (
+        _canonical_equal_monthly_v2j(provenance.get("period_evidence"), period_prov.get("period_evidence"))
+        and _canonical_equal_monthly_v2j(provenance.get("anchor_receipt"), period_prov.get("anchor_receipt"))
+        and _canonical_equal_monthly_v2j(provenance.get("indicator_receipt"), indicator_prov.get("indicator_receipt"))
+        and _canonical_equal_monthly_v2j(provenance.get("article_date_provenance"), period_prov.get("anchor_date_provenance"))
+    )
+
+
+def _whitespace_norm_v2j(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def _monthly_derived_count_dimension_matches_v2j(
+    indicator_atom: Mapping[str, Any],
+    dimension: Mapping[str, Any],
+    *,
+    dimension_index: int,
+) -> tuple[AxisBinding, ...]:
+    provenance = _base_claim_prov(indicator_atom)
+    receipt = provenance.get("indicator_receipt")
+    sentence_text = provenance.get("sentence_text")
+    if not isinstance(receipt, Mapping) or not isinstance(sentence_text, str):
+        return ()
+    subject = receipt.get("subject")
+    start, end = receipt.get("subject_start"), receipt.get("subject_end")
+    normalized_indicator = receipt.get("normalized_indicator")
+    if (
+        receipt.get("contract_version") != "monthly-indicator-receipt-v2h"
+        or receipt.get("rule_id") != "subject-particle-count-noun-v2b"
+        or receipt.get("sentence_id") is None
+        or provenance.get("sentence_id") != receipt.get("sentence_id")
+        or not isinstance(subject, str) or not subject
+        or type(start) is not int or type(end) is not int
+        or not (0 <= start < end <= len(sentence_text))
+        or sentence_text[start:end] != subject
+        or provenance.get("start") != start or provenance.get("end") != end
+        or provenance.get("text") != subject
+        or receipt.get("removed_particle") not in {"은", "는"}
+        or receipt.get("added_count_suffix") != "수"
+        or _whitespace_norm_v2j(normalized_indicator) != _whitespace_norm_v2j(subject + "수")
+    ):
+        return ()
+    subject_span = {
+        "article_idx": provenance.get("article_idx"),
+        "article_id": provenance.get("article_id"),
+        "sentence_id": receipt.get("sentence_id"),
+        "span_path": "monthly_v2j.indicator_subject",
+        "start": start,
+        "end": end,
+        "text": subject,
+    }
+    matches: list[AxisBinding] = []
+    for value_index, value in enumerate(dimension.get("values") or []):
+        if not isinstance(value, Mapping):
+            continue
+        label = str(value.get("value_name") or "")
+        parenthetical = re.search(r"\(([^()]*)\)\s*$", label)
+        inference = value.get("unit_inference")
+        unit_nm = str(value.get("unit_nm") or "").strip()
+        unit_id = str(value.get("unit_id") or "").strip()
+        if (
+            parenthetical is None or not isinstance(inference, Mapping)
+            or inference.get("rule_id") != "terminal-parenthetical-unit"
+            or inference.get("source_label") != label
+            or parenthetical.group(1).strip() != unit_nm
+            or not unit_nm or unit_id != f"LABEL:{unit_nm}"
+        ):
+            continue
+        base = label[:parenthetical.start()]
+        if _whitespace_norm_v2j(base) != _whitespace_norm_v2j(normalized_indicator):
+            continue
+        profile_path = f"dimensions[{dimension_index}].values[{value_index}]"
+        profile_unit = {
+            "unit_inference": dict(inference),
+            "unit_nm": unit_nm,
+            "unit_id": unit_id,
+        }
+        evidence = {
+            "claim_provenance": dict(subject_span),
+            "consumed_span": dict(subject_span),
+            "subject_consumed_span": dict(subject_span),
+            "derived_suffix_receipt": {
+                "rule_id": receipt.get("rule_id"),
+                "added_count_suffix": "수",
+                "source_span": None,
+            },
+            "profile_inventory_path": profile_path,
+            "profile_id": str(value.get("value_id") or ""),
+            "profile_label": label,
+            "profile_unit_provenance": profile_unit,
+            "match_rule": "monthly-derived-count-dimension-base-v2j",
+            "rule_id": "monthly-derived-count-dimension-base-v2j",
+            "span_path": subject_span["span_path"],
+            "article_idx": subject_span["article_idx"],
+            "sentence_id": subject_span["sentence_id"],
+            "start": start,
+            "end": end,
+            "text": subject,
+            "dimension_order": dimension_index + 1,
+            "axis_evidence": {
+                "profile_inventory_path": f"dimensions[{dimension_index}]",
+                "profile_label": str(dimension.get("obj_nm") or ""),
+                "profile_id": str(dimension.get("obj_id") or ""),
+            },
+            "value_evidence": {
+                "profile_inventory_path": profile_path,
+                "profile_label": label,
+                "profile_id": str(value.get("value_id") or ""),
+            },
+        }
+        matches.append(AxisBinding(
+            "DIMENSION", str(dimension.get("obj_id") or ""),
+            str(value.get("value_id") or ""), "indicator",
+            "DERIVED_COUNT_EXACT_BASE", evidence,
+        ))
+    return tuple(matches)
+
+
+def project_candidate_monthly_v2j(
+    claim_core: Any,
+    profile: Mapping[str, Any] | None,
+    *,
+    table_key: str,
+    allow_unqualified_nationwide: bool = False,
+) -> CandidateProjection:
+    """Project a receipt-validated monthly core without generic period fallback."""
+
+    if not _monthly_core_valid_v2j(claim_core):
+        return placeholder_projection_monthly_v2h(table_key, "PERIOD_INVALID")
+    if profile is None:
+        return placeholder_projection_monthly_v2h(table_key, "PROFILE_UNAVAILABLE")
+    table_info = _profile_table(profile)
+    table = table_info[0] if table_info else ""
+    if table != str(table_key):
+        return placeholder_projection_monthly_v2h(table_key, "PROFILE_INCOMPLETE")
+    if _incomplete(profile):
+        return placeholder_projection_monthly_v2h(table_key, "PROFILE_INCOMPLETE")
+
+    items = list(profile["items"])
+    dimensions = list(profile["dimensions"])
+    indicator_atom = _get_atom(claim_core, "indicator")
+    indicator = str(_get(indicator_atom, "surface", "") or "")
+    unit_atom = _get_atom(claim_core, "unit")
+    period_atom = _get_atom(claim_core, "period")
+    region_atom = _get_atom(claim_core, "region")
+    population_atom = _get_atom(claim_core, "population")
+    abstained: list[tuple[str, str]] = []
+    reasons: list[str] = []
+
+    item_options: list[tuple[dict[str, Any], dict[str, Any] | None, str]] = []
+    for idx, item in enumerate(items):
+        for start, end, text in _submatches(indicator, str(item.get("itm_nm"))):
+            prov = _subspan_provenance(indicator_atom, start, end, text, f"indicator.item[{idx}]")
+            if prov is not None:
+                item_options.append((item, prov, "indicator_item_subspan"))
+        for proposal in propose_semantic_alias_matches(
+            indicator, item.get("itm_nm"),
+            allow_parenthetical_base=allow_unqualified_nationwide,
+        ):
+            prov = _subspan_provenance(
+                indicator_atom, proposal.start, proposal.end, proposal.text,
+                f"indicator.item[{idx}].semantic_alias",
+            )
+            if prov is not None:
+                item_options.append((item, prov, proposal.rule_id))
+    if not item_options:
+        if len(items) == 1:
+            if _context_provenance(indicator_atom, "indicator.generic_item") is not None:
+                item_options.append((items[0], None, "SINGLETON_INVENTORY"))
+            else:
+                reasons.append("CLAIM_PROVENANCE_MISSING")
+        else:
+            abstained.append(("ITEM", "NO_SUBSPAN_MATCH"))
+    item_options = list({
+        (str(item.get("itm_id")), prov.get("start") if prov else None, prov.get("end") if prov else None):
+        (item, prov, rule) for item, prov, rule in item_options
+    }.values())
+    checked_items: list[tuple[dict[str, Any], dict[str, Any] | None, str, AxisBinding]] = []
+    for item, prov, rule in item_options:
+        index = next((i for i, candidate in enumerate(items) if candidate is item), items.index(item))
+        evidence = _evidence(
+            indicator_atom, profile_path=f"items[{index}].itm_nm",
+            profile_label=item.get("itm_nm"), profile_id=item.get("itm_id"),
+            path="indicator", consumed=prov, rule=rule,
+        )
+        if evidence is None:
+            reasons.append("CLAIM_PROVENANCE_MISSING")
+            continue
+        checked_items.append((item, prov, rule, AxisBinding(
+            "ITEM", str(item["itm_id"]), None, "indicator",
+            "EXACT_LABEL" if prov else "SINGLETON_INVENTORY",
+            {**evidence, "consumed_span": prov},
+        )))
+    if not checked_items and not item_options:
+        reasons.append("NO_COMPATIBLE_SERIES")
+
+    period_options: list[AxisBinding] = []
+    if _get(period_atom, "status") in {"EXPLICIT", "INFERRED"}:
+        parsed, normalization, period_reason = _claim_period_monthly_v2j(period_atom)
+        matched, range_reason = ([], period_reason) if period_reason else _profile_periods(profile, parsed)
+        if range_reason:
+            reasons.append(range_reason)
+        for candidate in matched:
+            span = _own_claim_span(period_atom)
+            evidence = _evidence(
+                period_atom, profile_path=f"periods[{candidate['index']}].PRD_SE",
+                profile_label=candidate["prd_se"], profile_id=candidate["prd_se"],
+                path="period", consumed=span, rule="period_frequency_and_range",
+            ) if span is not None else None
+            if evidence is None:
+                reasons.append("CLAIM_PROVENANCE_MISSING")
+                continue
+            evidence["period_normalization"] = dict(normalization or {})
+            period_options.append(AxisBinding(
+                "PERIOD", candidate["prd_se"], candidate["api"], "period",
+                "PERIOD_RANGE_COMPATIBLE", evidence,
+            ))
+    else:
+        reasons.append("PERIOD_UNKNOWN")
+
+    populations = tuple(_get(population_atom, "surface", ()) or ())
+    dim_options: list[list[AxisBinding]] = []
+    region_options: list[tuple[int, AxisBinding]] = []
+    population_options: list[tuple[str, int, AxisBinding]] = []
+    population_targets: dict[str, list[tuple[int, int]]] = {str(pop): [] for pop in populations}
+    derived_match_axes = 0
+    for dindex, dimension in enumerate(dimensions):
+        values = list(dimension["values"])
+        options: list[AxisBinding] = list(_monthly_derived_count_dimension_matches_v2j(
+            indicator_atom, dimension, dimension_index=dindex,
+        ))
+        if options:
+            derived_match_axes += 1
+        axis_matches = _submatches(indicator, str(dimension.get("obj_nm")))
+        for vindex, value in enumerate(values):
+            value_matches = _submatches(indicator, str(value.get("value_name")))
+            semantic_matches = propose_semantic_alias_matches(
+                indicator, value.get("value_name"),
+                allow_parenthetical_base=allow_unqualified_nationwide,
+            )
+            if _get(region_atom, "status") == "EXPLICIT" and _norm(_get(region_atom, "surface", "")) == _norm(value.get("value_name")):
+                evidence = _evidence(
+                    region_atom, profile_path=f"dimensions[{dindex}].values[{vindex}]",
+                    profile_label=value.get("value_name"), profile_id=value.get("value_id"),
+                    path="region_evidence", consumed=dict(_base_claim_prov(region_atom)),
+                    rule="region_evidence_dimension_value",
+                )
+                if evidence is not None:
+                    region_options.append((dindex, AxisBinding(
+                        "DIMENSION", str(dimension["obj_id"]), str(value["value_id"]),
+                        "region", "EXACT_LABEL", _annotate_dimension_evidence(
+                            evidence, dindex=dindex, dimension=dimension,
+                            vindex=vindex, value=value,
+                        ),
+                    )))
+                else:
+                    reasons.append("CLAIM_PROVENANCE_MISSING")
+            population_matches: list[dict[str, Any] | None] = []
+            if populations:
+                population_evidence = _base_claim_prov(population_atom).get("evidence", ())
+                for pop in populations:
+                    if _norm(pop) == _norm(value.get("value_name")):
+                        population_targets.setdefault(str(pop), []).append((dindex, vindex))
+                        matches = [
+                            dict(span) for span in population_evidence
+                            if isinstance(span, Mapping) and _norm(span.get("text")) == _norm(pop)
+                        ]
+                        population_matches.extend(matches or [None])
+            for population_span in population_matches:
+                if population_span is None:
+                    reasons.append("CLAIM_PROVENANCE_MISSING")
+                    continue
+                evidence = _evidence(
+                    population_atom, profile_path=f"dimensions[{dindex}].values[{vindex}]",
+                    profile_label=value.get("value_name"), profile_id=value.get("value_id"),
+                    path="population", consumed=population_span,
+                    rule="population_dimension_value",
+                )
+                if evidence:
+                    pop = str(next((p for p in populations if _norm(p) == _norm(value.get("value_name"))), ""))
+                    population_options.append((pop, dindex, AxisBinding(
+                        "DIMENSION", str(dimension["obj_id"]), str(value["value_id"]),
+                        "population", "EXACT_LABEL", _annotate_dimension_evidence(
+                            evidence, dindex=dindex, dimension=dimension,
+                            vindex=vindex, value=value,
+                        ),
+                    )))
+            for start, end, text in value_matches:
+                span = _subspan_provenance(
+                    indicator_atom, start, end, text,
+                    f"indicator.dimensions[{dindex}].values[{vindex}]",
+                )
+                if span is not None:
+                    evidence = _evidence(
+                        indicator_atom, profile_path=f"dimensions[{dindex}].values[{vindex}]",
+                        profile_label=value.get("value_name"), profile_id=value.get("value_id"),
+                        path="indicator", consumed=span, rule="indicator_dimension_value",
+                    )
+                    if evidence:
+                        options.append(AxisBinding(
+                            "DIMENSION", str(dimension["obj_id"]), str(value["value_id"]),
+                            "indicator", "EXACT_LABEL", _annotate_dimension_evidence(
+                                evidence, dindex=dindex, dimension=dimension,
+                                vindex=vindex, value=value,
+                            ),
+                        ))
+            for proposal in semantic_matches:
+                span = _subspan_provenance(
+                    indicator_atom, proposal.start, proposal.end, proposal.text,
+                    f"indicator.dimensions[{dindex}].values[{vindex}].semantic_alias",
+                )
+                if span is not None:
+                    evidence = _evidence(
+                        indicator_atom, profile_path=f"dimensions[{dindex}].values[{vindex}]",
+                        profile_label=value.get("value_name"), profile_id=value.get("value_id"),
+                        path="indicator", consumed=span, rule=proposal.rule_id,
+                    )
+                    if evidence:
+                        evidence["match_rule_version"] = proposal.rule_version
+                        options.append(AxisBinding(
+                            "DIMENSION", str(dimension["obj_id"]), str(value["value_id"]),
+                            "indicator", "SEMANTIC_ALIAS", _annotate_dimension_evidence(
+                                evidence, dindex=dindex, dimension=dimension,
+                                vindex=vindex, value=value,
+                            ),
+                        ))
+            if not value_matches and not semantic_matches and axis_matches and len(values) == 1:
+                for start, end, text in axis_matches:
+                    span = _subspan_provenance(
+                        indicator_atom, start, end, text, f"indicator.dimensions[{dindex}]",
+                    )
+                    if span is not None:
+                        evidence = _evidence(
+                            indicator_atom, profile_path=f"dimensions[{dindex}].values[{vindex}]",
+                            profile_label=value.get("value_name"), profile_id=value.get("value_id"),
+                            path="indicator", consumed=span, rule="axis_label_singleton_value",
+                        )
+                        if evidence:
+                            options.append(AxisBinding(
+                                "DIMENSION", str(dimension["obj_id"]), str(value["value_id"]),
+                                "indicator", "NORMALIZED_CONTAINMENT", _annotate_dimension_evidence(
+                                    evidence, dindex=dindex, dimension=dimension,
+                                    vindex=vindex, value=value,
+                                ),
+                            ))
+        options = _prune_strictly_subsumed_axis_matches(options)
+        if not options and allow_unqualified_nationwide and _get(region_atom, "status") != "EXPLICIT":
+            nationwide = _geographic_nationwide_default(
+                indicator_atom, dindex=dindex, dimension=dimension, values=values,
+            )
+            if nationwide is not None:
+                options.append(nationwide)
+        if not options:
+            abstained.append(("DIMENSION", f"UNBOUND:{dimension.get('obj_id')}"))
+        dim_options.append(list({
+            (binding.axis_id, binding.value_id, binding.evidence.get("start"), binding.evidence.get("end")): binding
+            for binding in options
+        }.values()))
+    if _get(region_atom, "status") == "EXPLICIT" and not region_options:
+        reasons.append("REGION_UNBOUND")
+    for pop in populations:
+        if not population_targets.get(str(pop)) or not [row for row in population_options if row[0] == str(pop)]:
+            reasons.append("POPULATION_UNBOUND")
+
+    cross_axis_derived_ambiguous = derived_match_axes > 1
+    if cross_axis_derived_ambiguous:
+        reasons.append("MULTIPLE_COMPATIBLE_SERIES")
+
+    assignments: list[CandidateAssignment] = []
+    unit_combo_failed = False
+    unit_provenance_missing = False
+    if checked_items and period_options and not cross_axis_derived_ambiguous:
+        dimension_products: list[tuple[AxisBinding, ...]] = []
+        region_scopes = region_options if _get(region_atom, "status") == "EXPLICIT" else [(None, None)]
+        population_scopes: list[tuple[Any, dict[int, AxisBinding]]] = [((), {})]
+        if populations:
+            by_surface = [[row for row in population_options if row[0] == str(pop)] for pop in populations]
+            population_scopes = []
+            if all(by_surface):
+                for choice in product(*by_surface):
+                    selected = {dindex: binding for _, dindex, binding in choice}
+                    if len(selected) == len(choice):
+                        population_scopes.append((choice, selected))
+        for region_index, region_binding in region_scopes:
+            for _, selected in population_scopes:
+                scoped: list[list[AxisBinding]] = []
+                for index, options in enumerate(dim_options):
+                    if region_index is not None and index == region_index:
+                        scoped.append([region_binding])
+                    elif index in selected:
+                        scoped.append([selected[index]])
+                    else:
+                        scoped.append(options)
+                if all(scoped):
+                    dimension_products.extend(tuple(product(*scoped)))
+        for item_tuple, period_binding, dim_tuple in product(checked_items, period_options, dimension_products):
+            item, _, _, item_binding = item_tuple
+            dim_bindings = list(dim_tuple)
+            unit_binding = None
+            if _get(unit_atom, "status") == "EXPLICIT":
+                item_index = next((i for i, candidate in enumerate(items) if candidate is item), items.index(item))
+                unit_source, conflict = _selected_series_unit_source(item, item_index, dim_bindings, dimensions)
+                claim_unit = str(_get(unit_atom, "surface", "") or "")
+                normalization = (
+                    _unit_compatibility(claim_unit, unit_source["profile_label"])
+                    if unit_source is not None and not conflict else None
+                )
+                if normalization is None:
+                    unit_combo_failed = True
+                    continue
+                unit_span = _own_claim_span(unit_atom)
+                evidence = _evidence(
+                    unit_atom, profile_path=unit_source["profile_inventory_path"],
+                    profile_label=unit_source["profile_label"], profile_id=unit_source["profile_id"],
+                    path="unit", consumed=unit_span,
+                    rule="selected_series_unit_exact" if normalization["rule_id"] == "unit-exact"
+                    else "selected_series_unit_scale_compatible",
+                ) if unit_span is not None else None
+                if evidence is None:
+                    unit_provenance_missing = True
+                    continue
+                evidence["unit_normalization"] = normalization
+                unit_binding = AxisBinding(
+                    "UNIT", unit_source["profile_id"], unit_source["profile_label"],
+                    "unit", "UNIT_COMPATIBLE", evidence,
+                )
+            bindings = [item_binding, *([unit_binding] if unit_binding else []), period_binding, *dim_bindings]
+            if _overlaps(bindings):
+                reasons.append("SPAN_REUSE")
+                continue
+            if any(not binding.evidence.get("profile_inventory_path") or not binding.evidence.get("claim_provenance") for binding in bindings):
+                reasons.append("CLAIM_PROVENANCE_MISSING")
+                continue
+            assignments.append(CandidateAssignment(
+                table, tuple(sorted(
+                    bindings, key=lambda binding: (
+                        binding.axis_kind, binding.axis_id,
+                        binding.value_id or "", binding.bound_atom,
+                    ),
+                )),
+            ))
+    if not assignments and unit_provenance_missing:
+        reasons.append("CLAIM_PROVENANCE_MISSING")
+    elif not assignments and unit_combo_failed:
+        reasons.append("UNIT_MISMATCH")
+    if not assignments and not reasons:
+        reasons.append("NO_COMPATIBLE_SERIES")
+    return _make_projection(table, assignments, abstained, reasons)
+
+
+def _monthly_identity_audit_v2h(
+    projections: Sequence[CandidateProjection],
+    candidate_membership: Sequence[str],
+    membership_sha256: str,
+) -> tuple[dict[str, Any], bool]:
+    membership = sorted({str(key) for key in candidate_membership})
+    projection_keys = [str(projection.table_key) for projection in projections]
+    duplicate_projection_keys = sorted({
+        key for key in projection_keys if projection_keys.count(key) > 1
+    })
+    missing = sorted(set(membership) - set(projection_keys))
+    unexpected = sorted(set(projection_keys) - set(membership))
+    assignment_mismatches = sorted(
+        (
+            {
+                "projection_table_key": str(projection.table_key),
+                "assignment_table_key": str(assignment.table_key),
+            }
+            for projection in projections
+            for assignment in projection.assignments
+            if str(assignment.table_key) != str(projection.table_key)
+        ),
+        key=lambda row: (row["projection_table_key"], row["assignment_table_key"]),
+    )
+    audit = {
+        "candidate_membership": membership,
+        "projection_table_keys": sorted(projection_keys),
+        "duplicate_projection_table_keys": duplicate_projection_keys,
+        "missing_projection_table_keys": missing,
+        "unexpected_projection_table_keys": unexpected,
+        "assignment_parent_mismatches": assignment_mismatches,
+        "membership_receipt_sha256": membership_sha256,
+    }
+    mismatch = (
+        len(projections) != len(set(membership))
+        or len(candidate_membership) != len(set(candidate_membership))
+        or bool(duplicate_projection_keys or missing or unexpected or assignment_mismatches)
+    )
+    return audit, mismatch
+
+
+def validate_target_monthly_v2h(
+    projections: Sequence[CandidateProjection],
+    *,
+    candidate_membership: Sequence[str],
+    profile_receipts: Sequence[Mapping[str, Any]],
+    missing_table_keys: Sequence[str] = (),
+    incomplete_table_keys: Sequence[str] = (),
+) -> TargetResolution:
+    """Validate candidate identity before coverage and global uniqueness."""
+
+    membership_sha = membership_receipt_sha256_monthly_v2h(
+        candidate_membership, profile_receipts
+    )
+    identity_audit, identity_mismatch = _monthly_identity_audit_v2h(
+        projections, candidate_membership, membership_sha
+    )
+    if identity_mismatch:
+        data = {
+            "outcome": "HOLD",
+            "hold_reason": "CANDIDATE_IDENTITY_MISMATCH",
+            "query_plan": None,
+            "chosen_table_key": None,
+            "compatible_series": [],
+            "audit": identity_audit,
+        }
+        return TargetResolution(**data, canonical_sha256=_sha(data))
+
+    receipts = [dict(receipt) for receipt in sorted(
+        profile_receipts, key=lambda row: str(row.get("table_key") or "")
+    )]
+    missing = sorted({str(key) for key in missing_table_keys} | {
+        str(row.get("table_key") or "") for row in receipts if row.get("status") == "UNAVAILABLE"
+    })
+    mismatched = sorted({
+        str(row.get("table_key") or "") for row in receipts
+        if row.get("status") in {"TABLE_KEY_MISMATCH", "TRANSFORM_TABLE_KEY_MISMATCH"}
+    })
+    incomplete = sorted({str(key) for key in incomplete_table_keys} | {
+        str(row.get("table_key") or "") for row in receipts
+        if row.get("status") not in {"COMPLETE", "UNAVAILABLE", "TABLE_KEY_MISMATCH", "TRANSFORM_TABLE_KEY_MISMATCH"}
+    })
+    invalid_receipts = [
+        row for row in receipts
+        if row.get("status") not in MONTHLY_PROFILE_STATUSES_V2H
+        or row.get("contract_version") != MONTHLY_PROFILE_RECEIPT_CONTRACT_V2H
+    ]
+    if missing or incomplete or mismatched or invalid_receipts:
+        audit = {
+            "projection_count": len(projections),
+            "assignment_count": 0,
+            "candidate_membership": sorted({str(key) for key in candidate_membership}),
+            "membership_receipt_sha256": membership_sha,
+            "missing_table_keys": missing,
+            "incomplete_table_keys": sorted(set(incomplete) | {
+                str(row.get("table_key") or "") for row in invalid_receipts
+            }),
+            "mismatched_table_keys": mismatched,
+            "profile_receipts": receipts,
+        }
+        data = {
+            "outcome": "HOLD",
+            "hold_reason": "PROFILE_COVERAGE_INCOMPLETE",
+            "query_plan": None,
+            "chosen_table_key": None,
+            "compatible_series": [],
+            "audit": audit,
+        }
+        return TargetResolution(**data, canonical_sha256=_sha(data))
+
+    base = validate_target_v2(projections)
+    audit = {
+        **base.audit,
+        "candidate_membership": sorted({str(key) for key in candidate_membership}),
+        "membership_receipt_sha256": membership_sha,
+    }
+    data = {
+        "outcome": base.outcome,
+        "hold_reason": base.hold_reason,
+        "query_plan": base.query_plan,
+        "chosen_table_key": base.chosen_table_key,
+        "compatible_series": base.compatible_series,
+        "audit": audit,
+    }
+    return TargetResolution(**data, canonical_sha256=_sha(data))
+
+
 # Migration aliases.
 project_candidate = project_candidate_v2
 validate_target = validate_target_v2
-
-
-
-

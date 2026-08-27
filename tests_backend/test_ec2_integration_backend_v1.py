@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -153,10 +155,10 @@ def test_pipeline_runtime_flag_is_exact_true(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_analyze_only_explicit_article_calls_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
-    called: list[tuple[str, str, str]] = []
+    called: list[tuple[str, str, str | None]] = []
 
-    def fake_verify(text: str, title: str = "", date: str = "") -> dict[str, Any]:
-        called.append((text, title, date))
+    def fake_verify(text: str, title: str = "", date: str = "", date_source: str | None = None) -> dict[str, Any]:
+        called.append((text, date, date_source))
         return {"type": "article", "status": "structured_only"}
 
     monkeypatch.setenv("PIPELINE_RUNTIME_ENABLED", "true")
@@ -164,9 +166,13 @@ def test_analyze_only_explicit_article_calls_verifier(monkeypatch: pytest.Monkey
     monkeypatch.setattr(develop_verify_service, "verify_article_develop", fake_verify)
     client = TestClient(app_module.app)
 
-    article = client.post("/api/v1/analyze", headers=CSRF, json={"text": "기사", "input_type": "article"})
+    article = client.post(
+        "/api/v1/analyze",
+        headers=CSRF,
+        json={"text": "기사", "input_type": "article", "date": "2026-08-27", "date_source": "user_feedback"},
+    )
     assert article.status_code == 200
-    assert called == [("기사", "", "")]
+    assert called == [("기사", "2026-08-27", "user_feedback")]
 
     query = client.post("/api/v1/analyze", headers=CSRF, json={"text": "2025년 출생아", "input_type": "query"})
     assert query.status_code == 503
@@ -182,10 +188,10 @@ def test_analyze_only_explicit_article_calls_verifier(monkeypatch: pytest.Monkey
 
 
 def test_verify_develop_invokes_service_after_runtime_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    called: list[tuple[str, str, str]] = []
+    called: list[tuple[str, str, str, str | None]] = []
 
-    def fake_verify(text: str, title: str = "", date: str = "") -> dict[str, Any]:
-        called.append((text, title, date))
+    def fake_verify(text: str, title: str = "", date: str = "", date_source: str | None = None) -> dict[str, Any]:
+        called.append((text, title, date, date_source))
         return {"type": "article", "status": "structured_only"}
 
     monkeypatch.setenv("PIPELINE_RUNTIME_ENABLED", "true")
@@ -197,7 +203,117 @@ def test_verify_develop_invokes_service_after_runtime_gate(monkeypatch: pytest.M
         json={"text": "기사", "title": "제목", "date": "2026-08-27"},
     )
     assert response.status_code == 200
-    assert called == [("기사", "제목", "2026-08-27")]
+    assert called == [("기사", "제목", "2026-08-27", "api_request")]
+
+
+@pytest.mark.parametrize("path,payload", [
+    ("/api/v1/verify/develop", {"text": "기사"}),
+    ("/api/v1/analyze", {"text": "기사", "input_type": "article"}),
+])
+def test_article_date_missing_is_awaited_before_disabled_runtime(
+    monkeypatch: pytest.MonkeyPatch, path: str, payload: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("PIPELINE_RUNTIME_ENABLED", "false")
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5173")
+    monkeypatch.setattr(
+        develop_verify_service,
+        "verify_article_develop",
+        lambda *args, **kwargs: pytest.fail("verifier must not be called"),
+    )
+    monkeypatch.setattr(
+        develop_verify_service,
+        "_load_trace_runner",
+        lambda: pytest.fail("runner must not be loaded"),
+    )
+
+    response = TestClient(app_module.app).post(path, headers=CSRF, json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "type": "needs_user_input",
+        "status": "awaiting_article_date",
+        "reason": "ARTICLE_DATE_REQUIRED",
+        "question": {
+            "id": "article_published_date",
+            "prompt": "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+            "input_mode": "DATE",
+            "required": True,
+        },
+    }
+
+
+def test_verify_question_precedes_date_and_runtime_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PIPELINE_RUNTIME_ENABLED", "false")
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5173")
+    runner_calls: list[str] = []
+
+    def fail_runner() -> Any:
+        runner_calls.append("called")
+        pytest.fail("runner must not be loaded for a question")
+
+    monkeypatch.setattr(develop_verify_service, "_load_trace_runner", fail_runner)
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/api/v1/verify/develop",
+        headers=CSRF,
+        json={"text": "2025년 출생아 수는 얼마인가요?"},
+    )
+    direct = develop_verify_service.verify_article_develop("2025년 출생아 수는 얼마인가요?")
+
+    assert response.status_code == 200
+    assert response.json() == {"type": "not_article", "reason": "question"}
+    assert direct == {"type": "not_article", "reason": "question"}
+    assert runner_calls == []
+
+
+def test_analyze_explicit_article_still_asks_for_missing_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PIPELINE_RUNTIME_ENABLED", "false")
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5173")
+
+    response = TestClient(app_module.app).post(
+        "/api/v1/analyze",
+        headers=CSRF,
+        json={"text": "2025년 출생아 수는 얼마인가요?", "input_type": "article"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "needs_user_input"
+    assert response.json()["reason"] == "ARTICLE_DATE_REQUIRED"
+
+
+def test_valid_date_passes_provenance_to_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeTraceError(Exception):
+        pass
+
+    def fake_run_trace(*, articles_path: Path, output_root: Path, stage: str, config_path: Path | None = None) -> None:
+        if not captured:
+            captured.update(json.loads(articles_path.read_text(encoding="utf-8").splitlines()[0]))
+        output_root.mkdir(parents=True, exist_ok=True)
+        if stage == "l1":
+            (output_root / "01_value_candidates.jsonl").write_text('{"kind":"value_unit"}\n', encoding="utf-8")
+            (output_root / "01_sentences.jsonl").write_text(
+                '{"sentence_id":"s1","char_start":0,"char_end":2}\n', encoding="utf-8"
+            )
+
+    monkeypatch.setattr(develop_verify_service, "_load_trace_runner", lambda: (fake_run_trace, FakeTraceError))
+    monkeypatch.setenv("PIPELINE_LIVE_STAGE_ENABLED", "false")
+
+    body = "기사"
+    result = develop_verify_service.verify_article_develop(
+        body, date="2026-08-24", date_source="user_feedback"
+    )
+
+    assert result["date"] == "2026-08-24"
+    assert result["date_source"] == "user_feedback"
+    assert captured["date"] == "2026-08-24"
+    assert captured["article_date_provenance"] == {
+        "date_source": "user_feedback",
+        "date_field": "date",
+        "article_text_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+    }
 
 
 def test_live_stage_false_ignores_service_urls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -221,7 +337,7 @@ def test_live_stage_false_ignores_service_urls(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setenv("BGE_RERANKER_URL", "http://reranker:8102")
     monkeypatch.setattr(develop_verify_service, "_load_trace_runner", lambda: (fake_run_trace, FakeTraceError))
 
-    result = develop_verify_service.verify_article_develop("기사")
+    result = develop_verify_service.verify_article_develop("기사", date="2026-08-24")
     assert stages == ["l1", "l2", "layers"]
     assert result["status"] == "structured_only"
     assert result["live"] is False

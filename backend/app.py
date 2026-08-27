@@ -115,6 +115,8 @@ class FavoriteCreateRequest(StrictModel):
 class AnalyzeRequest(StrictModel):
     text: str = Field(..., min_length=1, max_length=100_000)
     input_type: Literal["auto", "query", "url", "article"] = "auto"
+    date: str | None = Field("", max_length=40)
+    date_source: Literal["user_feedback", "url_metadata", "api_request"] | None = None
     max_claims: int = Field(10, ge=1, le=50)
     explain: bool = False
     focus_question: str = Field("", max_length=1000)
@@ -124,7 +126,8 @@ class AnalyzeRequest(StrictModel):
 class DevelopVerifyRequest(StrictModel):
     text: str = Field(..., min_length=1, max_length=100_000)
     title: str = Field("", max_length=500)
-    date: str = Field("", max_length=40)
+    date: str | None = Field("", max_length=40)
+    date_source: Literal["user_feedback", "url_metadata", "api_request"] | None = None
     conversation_id: str | None = None
 
 
@@ -255,12 +258,24 @@ def remove_favorite(table_key: str, user: dict = Depends(current_user)) -> Respo
     return Response(status_code=204)
 
 
-@app.post("/api/v1/verify/develop", dependencies=[Depends(require_csrf), Depends(require_pipeline_runtime)])
+@app.post("/api/v1/verify/develop", dependencies=[Depends(require_csrf)])
 def verify_develop(req: DevelopVerifyRequest, user: dict | None = Depends(optional_user)) -> dict:
     del user
-    from backend.develop_verify_service import verify_article_develop
+    from backend.develop_verify_service import (
+        _looks_like_question,
+        article_date_required_response,
+        normalize_article_date,
+        verify_article_develop,
+    )
 
-    return verify_article_develop(req.text, title=req.title, date=req.date)
+    if _looks_like_question(req.text.strip()):
+        return {"type": "not_article", "reason": "question"}
+    normalized_date = normalize_article_date(req.date, req.date_source)
+    if normalized_date is None:
+        return article_date_required_response()
+    date, date_source = normalized_date
+    require_pipeline_runtime()
+    return verify_article_develop(req.text, title=req.title, date=date, date_source=date_source)
 
 
 def _looks_like_url(value: str) -> bool:
@@ -278,10 +293,14 @@ def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> 
     if req.input_type != "article":
         raise_pipeline_pending(PIPELINE_NATURAL_QUERY_PENDING, "자연어·자동 질의 경로가 아직 연결되지 않았습니다.")
 
-    require_pipeline_runtime()
-    from backend.develop_verify_service import verify_article_develop
+    from backend.develop_verify_service import article_date_required_response, normalize_article_date, verify_article_develop
 
-    return verify_article_develop(req.text)
+    normalized_date = normalize_article_date(req.date, req.date_source)
+    if normalized_date is None:
+        return article_date_required_response()
+    date, date_source = normalized_date
+    require_pipeline_runtime()
+    return verify_article_develop(req.text, date=date, date_source=date_source)
 
 
 @app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf)])

@@ -36,6 +36,13 @@ CALL_LIMITS = {
     "query_encoder": 69, "qdrant_dense": 69, "reranker": 23,
     "metadata_api": 6000, "cell_api": 23, "hcx_answer": 46,
 }
+SAME_SERIES_EVIDENCE_CELL_API_LIMIT = 128
+PHYSICAL_CELL_API_TOTAL_LIMIT = CALL_LIMITS["cell_api"] + SAME_SERIES_EVIDENCE_CELL_API_LIMIT
+_CACHE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_CACHE_RECEIPT_KEYS = {
+    "contract_version", "scope", "key_contract", "misses", "hits",
+    "entries", "upstream_calls", "entry_receipts",
+}
 _STAGE_FILES = {
     "01": ({"01_sentences.jsonl", "01_value_candidates.jsonl"}, {"01_trace.log"}),
     "02": ({"02_l2_predictions.jsonl", "02_l2_results.jsonl"}, {"02_trace.log"}),
@@ -72,9 +79,81 @@ def _remove_runtime_temp(path: Path) -> None:
         return
 
 
-def enforce_call_limits(calls: Mapping[str, Any]) -> dict[str, dict[str, int]]:
+def _same_series_evidence_cell_usage_v2m(evidence_answers: Any) -> int:
+    if evidence_answers in (None, (), []):
+        return 0
+    if not isinstance(evidence_answers, (list, tuple)):
+        raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+    total = 0
+    for answer in evidence_answers:
+        if not isinstance(answer, Mapping):
+            raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+        evidence = answer.get("evidence_answer")
+        identity = evidence.get("identity") if isinstance(evidence, Mapping) else None
+        receipt = identity.get("cell_fetch_cache") if isinstance(identity, Mapping) else None
+        if answer.get("status") != "EVALUATED":
+            if receipt is not None:
+                raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+            continue
+        if not isinstance(receipt, Mapping) or set(receipt) != _CACHE_RECEIPT_KEYS:
+            raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+        if (
+            receipt.get("contract_version") != "same-series-cell-fetch-cache-v2l"
+            or receipt.get("scope") != "ONE_SYNTHESIS_INVOCATION"
+            or receipt.get("key_contract") != "canonical-full-query-plan-sha256-v1"
+        ):
+            raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+        counters = [receipt.get(name) for name in ("misses", "hits", "entries", "upstream_calls")]
+        if any(type(value) is not int or value < 0 for value in counters):
+            raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+        misses, _hits, entries, upstream_calls = counters
+        entry_receipts = receipt.get("entry_receipts")
+        if (
+            misses != entries or entries != upstream_calls
+            or not isinstance(entry_receipts, list) or len(entry_receipts) != entries
+        ):
+            raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+        query_hashes: list[str] = []
+        for entry in entry_receipts:
+            if not isinstance(entry, Mapping) or set(entry) != {"query_sha256", "response_sha256"}:
+                raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+            query_sha = entry.get("query_sha256")
+            response_sha = entry.get("response_sha256")
+            if (
+                not isinstance(query_sha, str) or _CACHE_SHA256_RE.fullmatch(query_sha) is None
+                or not isinstance(response_sha, str) or _CACHE_SHA256_RE.fullmatch(response_sha) is None
+            ):
+                raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+            query_hashes.append(query_sha)
+        if query_hashes != sorted(query_hashes) or len(query_hashes) != len(set(query_hashes)):
+            raise TraceStageError("CALL_BUDGET_RECEIPT_INVALID")
+        total += upstream_calls
+    return total
+
+
+def enforce_call_limits(
+    calls: Mapping[str, Any], evidence_answers: Any = None,
+) -> dict[str, dict[str, int]]:
     ledger: dict[str, dict[str, int]] = {}
     for name, limit in CALL_LIMITS.items():
+        if name == "cell_api":
+            total_cell_api = int(calls.get(name) or 0)
+            evidence_cell_api = _same_series_evidence_cell_usage_v2m(evidence_answers)
+            base_cell_api = total_cell_api - evidence_cell_api
+            if (
+                base_cell_api < 0 or base_cell_api > limit
+                or evidence_cell_api > SAME_SERIES_EVIDENCE_CELL_API_LIMIT
+                or total_cell_api > PHYSICAL_CELL_API_TOTAL_LIMIT
+            ):
+                raise TraceStageError("CALL_BUDGET_EXHAUSTED")
+            ledger[name] = {"used": base_cell_api, "limit": limit}
+            ledger["same_series_evidence_cell_api"] = {
+                "used": evidence_cell_api, "limit": SAME_SERIES_EVIDENCE_CELL_API_LIMIT,
+            }
+            ledger["physical_cell_api_total"] = {
+                "used": total_cell_api, "limit": PHYSICAL_CELL_API_TOTAL_LIMIT,
+            }
+            continue
         used = int(calls.get(name) or 0)
         if used > limit:
             raise TraceStageError("CALL_BUDGET_EXHAUSTED")
@@ -464,16 +543,19 @@ def run_live_stage(
                 f"[CELL] target={target} cell={cell} comparator={comparison}",
                 f"[ANSWER] target={target} verdict={answer.get('verdict') or row.get('verdict') or ''} reason={answer.get('reason') or resolution or ''}",
             ])
+        call_ledger = enforce_call_limits(calls, result.get("evidence_answers"))
         lines.extend([
             f"[RETRIEVAL] calls={int(calls.get('official_search') or 0)}/{CALL_LIMITS['official_search']}",
             f"[BINDING] metadata={int(calls.get('metadata_api') or 0)}/{CALL_LIMITS['metadata_api']}",
-            f"[CELL] cell={int(calls.get('cell_api') or 0)}/{CALL_LIMITS['cell_api']}",
+            f"[CELL] base={call_ledger['cell_api']['used']}/{call_ledger['cell_api']['limit']} "
+            f"evidence={call_ledger['same_series_evidence_cell_api']['used']}/{call_ledger['same_series_evidence_cell_api']['limit']} "
+            f"total={call_ledger['physical_cell_api_total']['used']}/{call_ledger['physical_cell_api_total']['limit']}",
             f"[ANSWER] answers={len(answer_rows)}/{len(articles)} l2=0/0 stack=0/0",
         ])
         _emit_log(root, "04", lines)
         predecessor = _sha_file(root / "03_manifest.json")
         manifest = _manifest(stage="04", root=root, article_path=article_path, articles=articles, predecessor_sha256=predecessor, data_names=_STAGE_FILES["04"][0], log_names=_STAGE_FILES["04"][1])
-        manifest["call_ledger"] = enforce_call_limits(calls)
+        manifest["call_ledger"] = call_ledger
         _publish_manifest(root, manifest)
         return manifest
     except TraceStageError:
@@ -554,7 +636,7 @@ def run_trace(
             if path.is_file() and not target.endswith("_failure.json"):
                 path.unlink()
             elif path.is_dir() and target == "04_runtime":
-                shutil.rmtree(path)
+                _remove_runtime_temp(path)
         failure_stage = stages[min(len(manifests), len(stages) - 1)]
         _atomic_bytes(root / f"{failure_stage}_failure.json", (json.dumps({"status": "FAILED", "error_code": str(exc.args[0]) if exc.args else "DOWNSTREAM_FAILED"}) + "\n").encode("utf-8"))
         raise

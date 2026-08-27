@@ -82,11 +82,17 @@ def test_all_search_routes_fail_closed_before_service_call(monkeypatch):
 
     for path, payload, expected_code in [
         ("/api/v1/analyze", {"text": "x"}, "PIPELINE_NATURAL_QUERY_PENDING"),
-        ("/api/v1/verify/develop", {"text": "x"}, "PIPELINE_RUNTIME_PENDING"),
     ]:
         response = client.post(path, headers=CSRF, json=payload)
         assert response.status_code == 503
         assert response.json()["code"] == expected_code
+
+    missing_date = client.post(
+        "/api/v1/verify/develop", headers=CSRF, json={"text": "x"}
+    )
+    assert missing_date.status_code == 200
+    assert missing_date.json()["type"] == "needs_user_input"
+    assert missing_date.json()["reason"] == "ARTICLE_DATE_REQUIRED"
 
     image = client.post(
         "/api/v1/analyze/image",

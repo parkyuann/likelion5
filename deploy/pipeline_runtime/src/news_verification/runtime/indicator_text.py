@@ -20,17 +20,21 @@ import re
 # ``2023년`` is not eaten by it.
 PERIOD_RE = re.compile(
     r"(?:(?:최근|지난|향후)\s*)?\d+\s*(?:년|개월|분기|주)\s*(?:간|동안)|"
+    r"지난\s*(?:0?[1-9]|1[0-2])월(?!\s*(?:간|물))|"
     r"(?:이달|지난달|이번\s*달|올해|지난해|작년|전년\s*동월|전년\s*동기|전년|"
     r"전월|전분기|전주|지난\s*주|이번\s*주|첫\s*주|둘째\s*주|셋째\s*주|"
     r"넷째\s*주|상반기|하반기|동월|동기|현재|당월|최근|"
-    r"\d{4}년(?:\s*\d+월)?(?:\s*\d+분기)?|\d+분기|\d+월)"
+    r"\d{4}년(?:\s*\d+월)?(?:\s*\d+분기)?|\d+분기|(?:0?[1-9]|1[0-2])월(?!\s*(?:간|물)))"
     r"\s*(?:대비|기준)?\s*"
 )
 
 # Measure nouns.  Kept to measure nouns on purpose — this is a grammatical
 # test, not a lexicon that grows with the corpus (CLAUDE.md 6.5절 4항).
 MEASURE_TAIL_RE = re.compile(
-    r"(?:증가율|감소율|상승률|하락률|증감률|변화율|성장률|비율|비중|점유율|지수)$"
+    r"(?:증가율|감소율|상승률|하락률|증감률|변화율|성장률|"
+    r"증가량|감소량|상승량|하락량|증감량|변화량|변동량|"
+    r"증가폭|감소폭|상승폭|하락폭|증감폭|변화폭|변동폭|"
+    r"비율|비중|점유율|지수)$"
 )
 
 # ``원화 기준`` / ``전년 대비`` state what a figure is compared against, never
@@ -63,5 +67,3 @@ def names_a_subject(indicator: object) -> bool:
     if not body:
         return False
     return not BASIS_TAIL_RE.search(body)
-
-

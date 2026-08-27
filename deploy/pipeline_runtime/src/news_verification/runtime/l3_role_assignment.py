@@ -453,6 +453,37 @@ def assign_roles(
     return assignments
 
 
+def attach_indicator_evidence_monthly_v2h(
+    assignment: dict[str, Any], article_text: str,
+    *, sentence_span_iterator: SentenceSpanIterator | None = None,
+) -> dict[str, Any]:
+    """Attach only a uniquely reproducible selected-L2-scope receipt."""
+
+    row = dict(assignment)
+    source_text = str(row.get("indicator_span_text") or "")
+    model_label = str(row.get("indicator_label") or "").strip()
+    sentence_id = row.get("indicator_sentence_id", row.get("article_sentence_id", row.get("sentence_id")))
+    sentence_rows = (
+        sentence_offset_map(article_text, sentence_span_iterator=sentence_span_iterator)
+        if sentence_span_iterator is not None else sentence_offset_map(article_text)
+    )
+    sentence = next(
+        (str(item.get("text") or "") for item in sentence_rows if item.get("sentence_id") == sentence_id),
+        "",
+    )
+    matches = list(re.finditer(re.escape(source_text), sentence)) if source_text else []
+    if model_label and len(matches) == 1:
+        match = matches[0]
+        row["indicator_evidence"] = {
+            "source_char_start": match.start(),
+            "source_char_end": match.end(),
+            "source_span_text": match.group(0),
+            "model_indicator_label": model_label,
+            "sentence_id": sentence_id,
+        }
+    return row
+
+
 def assignment_summary(assignments: list[dict[str, Any]]) -> dict[str, Any]:
     from collections import Counter
 
@@ -472,5 +503,3 @@ def assignment_summary(assignments: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "with_period": sum(1 for row in assignments if row.get("period_raw")),
     }
-
-

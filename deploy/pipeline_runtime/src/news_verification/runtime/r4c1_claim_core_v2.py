@@ -7,6 +7,7 @@ not know about KOSIS candidates, table identifiers, cells, scores, or values.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date
 import hashlib
 import json
 import re
@@ -113,10 +114,15 @@ def _anchored_period_normalization(
 
     raw = re.sub(r"\s+", " ", _text(raw_surface))
     structured = re.sub(r"\s+", " ", _text(structured_surface))
-    date_match = re.fullmatch(r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})", _text(article_date))
+    article_date_text = _text(article_date)
+    date_match = re.fullmatch(r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})", article_date_text)
     if not raw or not structured or not date_match:
         return None
-    anchor_year = int(date_match.group("year"))
+    try:
+        anchor_date = date.fromisoformat(article_date_text)
+    except ValueError:
+        return None
+    anchor_year = anchor_date.year
     rule_id = source_granularity = expected = ""
     if raw in {"작년", "지난해"}:
         rule_id, source_granularity, expected = "anchor-previous-year", "YEAR", str(anchor_year - 1)
@@ -125,6 +131,7 @@ def _anchored_period_normalization(
     else:
         quarter = re.fullmatch(r"올해\s*([1-4])분기", raw)
         month = re.fullmatch(r"(0?[1-9]|1[0-2])월", raw)
+        previous_named_month = re.fullmatch(r"지난\s*(0?[1-9]|1[0-2])월", raw)
         if quarter:
             rule_id = "anchor-current-year-quarter"
             source_granularity = "QUARTER"
@@ -133,6 +140,15 @@ def _anchored_period_normalization(
             rule_id = "anchor-current-year-month"
             source_granularity = "MONTH"
             expected = f"{anchor_year}.{int(month.group(1)):02d}"
+        elif previous_named_month:
+            named_month = int(previous_named_month.group(1))
+            anchor_month = anchor_date.month
+            if named_month == anchor_month:
+                return None
+            year = anchor_year if named_month < anchor_month else anchor_year - 1
+            rule_id = "anchor-most-recent-named-month"
+            source_granularity = "MONTH"
+            expected = f"{year}.{named_month:02d}"
         else:
             return None
     if _surface_norm(expected) != _surface_norm(structured):
@@ -462,6 +478,298 @@ def build_claim_core_v2(routed_value: Mapping[str, Any]) -> ClaimCore:
     return ClaimCore(atoms, proposal, provenance, CONTRACT_VERSION, digest)
 
 
+MONTHLY_CLAIM_PROVENANCE_CONTRACT_V2H = "monthly-claim-provenance-v2g"
+MONTHLY_CLAIM_CORE_CONTRACT_V2H = "monthly-claim-core-v2h"
+_MONTHLY_PERIOD_TOKEN_V2H = re.compile(
+    r"지난\s+(?:[1-9]|1[0-2])월|올해\s+(?:[1-9]|1[0-2])월|(?:19|20)\d{2}년\s+(?:[1-9]|1[0-2])월"
+)
+_MONTHLY_INVALID_MONTH_V2H = re.compile(
+    r"(?:지난\s+|올해\s+|(?:19|20)\d{2}년\s+)(?:0|1[3-9]|[2-9]\d+)월"
+)
+
+
+class MonthlyClaimProvenanceError(ValueError):
+    """Bounded v2h pre-projection failure with a canonical audit receipt."""
+
+    def __init__(self, code: str, audit: Mapping[str, Any]):
+        self.code = code
+        self.audit = dict(audit)
+        data = {
+            "contract_version": MONTHLY_CLAIM_PROVENANCE_CONTRACT_V2H,
+            "code": code,
+            "audit": self.audit,
+        }
+        self.canonical_sha256 = hashlib.sha256(_canonical_bytes(data)).hexdigest()
+        self.data = {**data, "canonical_sha256": self.canonical_sha256}
+        super().__init__(code)
+
+
+def _monthly_error_audit_v2h(
+    row: Mapping[str, Any], *, article_text_sha256: Any = None,
+    period_evidence: Mapping[str, Any] | None = None,
+    anchor_receipt: Mapping[str, Any] | None = None,
+    indicator_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "article_idx": _text(row.get("article_idx")),
+        "value_span_id": _text(row.get("value_span_id")),
+        "article_text_sha256": article_text_sha256 if article_text_sha256 else None,
+        "period_evidence": dict(period_evidence) if period_evidence else None,
+        "anchor_receipt": dict(anchor_receipt) if anchor_receipt else None,
+        "indicator_receipt": dict(indicator_receipt) if indicator_receipt else None,
+    }
+
+
+def _monthly_structured_period_v2h(row: Mapping[str, Any]) -> str:
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measurement = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    value = _text(measurement.get("absolute") or fields.get("period_absolute") or row.get("structured_period"))
+    return value if re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", value) else ""
+
+
+def _monthly_anchor_v2h(raw_text: str, article_date: str) -> tuple[str, dict[str, Any], str | None]:
+    anchor = date.fromisoformat(article_date)
+    anchor_month = (anchor.year, anchor.month)
+    normalized = re.sub(r"\s+", " ", raw_text).strip()
+    previous = re.fullmatch(r"지난 ([1-9]|1[0-2])월", normalized)
+    current_year = re.fullmatch(r"올해 ([1-9]|1[0-2])월", normalized)
+    explicit = re.fullmatch(r"((?:19|20)\d{2})년 ([1-9]|1[0-2])월", normalized)
+    branch = rule_id = ""
+    if previous:
+        month = int(previous.group(1))
+        if month == anchor.month:
+            return "", {}, "PERIOD_NAMED_MONTH_AMBIGUOUS"
+        year = anchor.year if month < anchor.month else anchor.year - 1
+        branch = "SAME_YEAR" if month < anchor.month else "PREVIOUS_YEAR"
+        rule_id = (
+            "anchor-most-recent-named-month-same-year-v2e"
+            if month < anchor.month else
+            "anchor-most-recent-named-month-previous-year-v2e"
+        )
+    elif current_year:
+        month = int(current_year.group(1))
+        year = anchor.year
+        if month > anchor.month:
+            return "", {}, "PERIOD_FUTURE_RELATIVE_TO_ARTICLE"
+        branch = "CURRENT_YEAR_OBSERVED"
+        rule_id = "anchor-current-year-observed-month-v2e"
+    elif explicit:
+        year, month = int(explicit.group(1)), int(explicit.group(2))
+        if (year, month) > anchor_month:
+            return "", {}, "PERIOD_FUTURE_RELATIVE_TO_ARTICLE"
+        branch = "EXPLICIT_YEAR_MONTH"
+        rule_id = "explicit-korean-year-month-v2e"
+    else:
+        return "", {}, "PERIOD_INVALID"
+    structured = f"{year:04d}-{month:02d}"
+    receipt = {
+        "contract_version": "monthly-period-anchor-v2h",
+        "raw_text": raw_text,
+        "article_date": article_date,
+        "date_source": "client_asserted",
+        "rule_id": rule_id,
+        "calculation_branch": branch,
+        "structured_period": structured,
+        "lossless": True,
+    }
+    return structured, receipt, None
+
+
+def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
+    """Build the sealed monthly ClaimCore without promoting model-only labels."""
+
+    row = dict(routed_value)
+    article_text = row.get("article_text")
+    article_date = _text(row.get("article_date") or row.get("date"))
+    date_receipt = row.get("article_date_provenance")
+    article_sha = (
+        hashlib.sha256(article_text.encode("utf-8")).hexdigest()
+        if isinstance(article_text, str) else None
+    )
+    date_valid = (
+        isinstance(article_text, str)
+        and bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", article_date))
+        and isinstance(date_receipt, Mapping)
+        and date_receipt.get("date_source") == "client_asserted"
+        and date_receipt.get("source_path") in {"terminal_argument", "backend_request"}
+        and date_receipt.get("date_field") == "date"
+        and date_receipt.get("article_text_sha256") == article_sha
+        and bool(re.fullmatch(r"[0-9a-f]{64}", str(date_receipt.get("article_text_sha256") or "")))
+    )
+    if date_valid:
+        try:
+            date.fromisoformat(article_date)
+        except ValueError:
+            date_valid = False
+    if not date_valid:
+        raise MonthlyClaimProvenanceError(
+            "ARTICLE_DATE_PROVENANCE_INVALID",
+            _monthly_error_audit_v2h(row, article_text_sha256=article_sha),
+        )
+
+    evidence = row.get("indicator_evidence")
+    sentence_id = row.get("article_sentence_id", row.get("sentence_id"))
+    if isinstance(evidence, Mapping):
+        sentence_id = evidence.get("sentence_id", sentence_id)
+    sentence = _sentence_text(row, sentence_id)
+    source_start = evidence.get("source_char_start") if isinstance(evidence, Mapping) else None
+    source_end = evidence.get("source_char_end") if isinstance(evidence, Mapping) else None
+    source_text = _text(evidence.get("source_span_text")) if isinstance(evidence, Mapping) else ""
+    model_label = _text(evidence.get("model_indicator_label")) if isinstance(evidence, Mapping) else ""
+    indicator_structural = (
+        isinstance(source_start, int) and isinstance(source_end, int)
+        and 0 <= source_start < source_end <= len(sentence)
+        and sentence[source_start:source_end] == source_text
+        and bool(model_label)
+    )
+    if not indicator_structural:
+        raise MonthlyClaimProvenanceError(
+            "INDICATOR_EVIDENCE_INVALID",
+            _monthly_error_audit_v2h(row, article_text_sha256=article_sha),
+        )
+
+    period_matches = list(_MONTHLY_PERIOD_TOKEN_V2H.finditer(source_text))
+    period_invalid = (
+        len(period_matches) != 1
+        or bool(_MONTHLY_INVALID_MONTH_V2H.search(source_text))
+        or bool(re.search(r"(?:\d+\s*주|[1-4]\s*분기)", source_text))
+    )
+    if period_invalid:
+        raise MonthlyClaimProvenanceError(
+            "PERIOD_INVALID",
+            _monthly_error_audit_v2h(row, article_text_sha256=article_sha),
+        )
+    period_match = period_matches[0]
+    period_evidence = {
+        "text": period_match.group(0),
+        "start": source_start + period_match.start(),
+        "end": source_start + period_match.end(),
+        "sentence_id": sentence_id,
+    }
+
+    subject_match = re.match(r"\s*([가-힣 ]{1,20}?)(은|는)", source_text[period_match.end():])
+    value_surface = _text(row.get("value_text"))
+    normalized_indicator = _text(
+        (row.get("retrieval_fields") or {}).get("indicator")
+        if isinstance(row.get("retrieval_fields"), Mapping) else ""
+    )
+    indicator_receipt = None
+    if subject_match:
+        subject = subject_match.group(1).strip()
+        relative_subject_start = period_match.end() + subject_match.start(1)
+        while relative_subject_start < len(source_text) and source_text[relative_subject_start].isspace():
+            relative_subject_start += 1
+        subject_end = relative_subject_start + len(subject)
+        expected_indicator = re.sub(r"\s+", " ", f"{subject} 수").strip()
+        value_occurrences = [match.span() for match in re.finditer(re.escape(value_surface), source_text)] if value_surface else []
+        subject_occurrences = [match.span() for match in re.finditer(re.escape(subject), source_text)] if subject else []
+        if (
+            subject and len(subject_occurrences) == 1 and len(value_occurrences) == 1
+            and re.sub(r"\s+", " ", normalized_indicator).strip() in {expected_indicator, expected_indicator.replace(" ", "")}
+        ):
+            indicator_receipt = {
+                "contract_version": "monthly-indicator-receipt-v2h",
+                "rule_id": "subject-particle-count-noun-v2b",
+                "sentence_id": sentence_id,
+                "subject": subject,
+                "subject_start": source_start + relative_subject_start,
+                "subject_end": source_start + subject_end,
+                "removed_particle": subject_match.group(2),
+                "added_count_suffix": "수",
+                "model_indicator_label": model_label,
+                "normalized_indicator": normalized_indicator,
+            }
+    if indicator_receipt is None:
+        raise MonthlyClaimProvenanceError(
+            "INDICATOR_EVIDENCE_INVALID",
+            _monthly_error_audit_v2h(
+                row, article_text_sha256=article_sha, period_evidence=period_evidence,
+            ),
+        )
+
+    structured_period = _monthly_structured_period_v2h(row)
+    calculated_period, anchor_receipt, anchor_error = _monthly_anchor_v2h(
+        period_evidence["text"], article_date
+    )
+    if anchor_error:
+        raise MonthlyClaimProvenanceError(
+            anchor_error,
+            _monthly_error_audit_v2h(
+                row, article_text_sha256=article_sha, period_evidence=period_evidence,
+                indicator_receipt=indicator_receipt,
+            ),
+        )
+    if not structured_period or structured_period != calculated_period:
+        raise MonthlyClaimProvenanceError(
+            "PERIOD_INVALID",
+            _monthly_error_audit_v2h(
+                row, article_text_sha256=article_sha, period_evidence=period_evidence,
+                anchor_receipt=anchor_receipt, indicator_receipt=indicator_receipt,
+            ),
+        )
+
+    working = dict(row)
+    working["period_raw"] = period_evidence["text"]
+    working["period_sentence_id"] = sentence_id
+    working["article_date"] = article_date
+    working["indicator_evidence"] = {
+        "surface": normalized_indicator,
+        "span": {
+            "start": indicator_receipt["subject_start"],
+            "end": indicator_receipt["subject_end"],
+            "text": indicator_receipt["subject"],
+        },
+    }
+    base = build_claim_core_v2(working)
+    atoms = dict(base.atoms)
+    indicator_atom = atoms["indicator"]
+    indicator_provenance = dict(indicator_atom.provenance)
+    indicator_provenance["indicator_receipt"] = indicator_receipt
+    indicator_provenance["source_span"] = {
+        "sentence_id": sentence_id,
+        "start": source_start,
+        "end": source_end,
+        "text": source_text,
+    }
+    atoms["indicator"] = ClaimAtom(
+        indicator_atom.role, indicator_atom.surface, "EXPLICIT", indicator_provenance
+    )
+    period_atom = atoms["period"]
+    period_provenance = dict(period_atom.provenance)
+    period_provenance.update({
+        "start": period_evidence["start"],
+        "end": period_evidence["end"],
+        "text": period_evidence["text"],
+        "sentence_id": sentence_id,
+        "span_path": "monthly_v2h.period_evidence",
+        "structured_surface": structured_period,
+        "period_evidence": period_evidence,
+        "anchor_receipt": anchor_receipt,
+        "anchor_date_provenance": dict(date_receipt),
+    })
+    atoms["period"] = ClaimAtom(period_atom.role, structured_period, "EXPLICIT", period_provenance)
+    provenance = {
+        **base.provenance,
+        "article_text_sha256": article_sha,
+        "article_date_provenance": dict(date_receipt),
+        "indicator_receipt": indicator_receipt,
+        "period_evidence": period_evidence,
+        "anchor_receipt": anchor_receipt,
+    }
+    proposal = {**base.proposal_view, "indicator": normalized_indicator}
+    data = {
+        "atoms": {name: asdict(atom) for name, atom in atoms.items()},
+        "proposal_view": proposal,
+        "provenance": provenance,
+        "contract_version": MONTHLY_CLAIM_CORE_CONTRACT_V2H,
+    }
+    return ClaimCore(
+        atoms, proposal, provenance, MONTHLY_CLAIM_CORE_CONTRACT_V2H,
+        hashlib.sha256(_canonical_bytes(data)).hexdigest(),
+    )
+
+
 # Short aliases are intentionally provided for callers migrating from v1.
 build_claim_core = build_claim_core_v2
 
@@ -475,5 +783,3 @@ claim_core_to_dict = claim_core_to_dict_v2
 
 def canonical_bytes(core_dict_without_sha: Mapping[str, Any]) -> bytes:
     return _canonical_bytes(core_dict_without_sha)
-
-

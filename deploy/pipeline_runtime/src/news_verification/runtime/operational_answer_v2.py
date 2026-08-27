@@ -328,11 +328,11 @@ def _deterministic_draft(packet: EvidencePacket) -> dict[str, Any]:
     )
     has_limitation = bool("LIMITATION" in placeholders and str(placeholders.get("LIMITATION") or "").strip())
     if packet.verdict == "VERIFIED":
-        headline = "공식 통계와 일치합니다."
-        explanation = "검증 대상 주장: {{CLAIM}}. 공식 통계와 일치합니다." if has_claim else "공식 통계와 일치합니다."
+        headline = "현재 확인된 공식 통계값을 설명합니다."
+        explanation = "검증 대상 주장: {{CLAIM}}. 현재 확인된 공식 통계값을 설명합니다." if has_claim else headline
     elif packet.verdict == "REFUTED":
-        headline = "공식 통계와 일치하지 않습니다."
-        explanation = "검증 대상 주장: {{CLAIM}}. 공식 통계와 일치하지 않습니다." if has_claim else "공식 통계와 일치하지 않습니다."
+        headline = "현재 확인된 공식 통계값을 설명합니다."
+        explanation = "검증 대상 주장: {{CLAIM}}. 현재 확인된 공식 통계값을 설명합니다." if has_claim else headline
     else:
         headline = "현재 근거만으로 검증할 수 없습니다."
         explanation = "검증 대상 주장: {{CLAIM}}. 현재 근거만으로 검증할 수 없습니다." if has_claim else headline
@@ -484,7 +484,6 @@ __all__ = [
     "NcpRagReasoningClient", "build_evidence_packet", "deterministic_fallback",
     "generate_guarded_answer", "validate_and_render_answer",
 ]
-
 
 
 

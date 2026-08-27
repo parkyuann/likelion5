@@ -342,7 +342,6 @@ def test_non_auth_mutations_are_also_csrf_protected(monkeypatch: pytest.MonkeyPa
             "/api/v1/analyze/image",
             {"method": "post", "files": {"file": ("sample.png", b"not-an-image", "image/png")}},
         ),
-        ("/api/v1/verify/develop", {"method": "post", "json": {"text": "기사 본문"}}),
         ("/api/v1/favorites", {"method": "post", "json": {"table_key": "org:table"}}),
     ],
 )
@@ -361,10 +360,25 @@ def test_search_entry_points_fail_closed_before_underlying_calls(
         "/api/v1/tables": "KOSIS_RELEASE_CONFIGURATION_PENDING",
         "/api/v1/analyze": "PIPELINE_NATURAL_QUERY_PENDING",
         "/api/v1/analyze/image": "PIPELINE_IMAGE_PENDING",
-        "/api/v1/verify/develop": "PIPELINE_RUNTIME_PENDING",
         "/api/v1/favorites": "APPLICATION_PRODUCT_STATE_PENDING",
     }
     assert response.json()["code"] == expected_codes[path]
+
+
+def test_verify_develop_missing_date_awaits_input_before_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "https://testserver")
+    client = TestClient(app_module.app, base_url="https://testserver")
+
+    response = client.post(
+        "/api/v1/verify/develop",
+        headers=CSRF_HEADERS,
+        json={"text": "기사 본문"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "needs_user_input"
+    assert response.json()["status"] == "awaiting_article_date"
+    assert response.json()["reason"] == "ARTICLE_DATE_REQUIRED"
 
 
 def test_table_catalog_service_has_no_local_fallback() -> None:

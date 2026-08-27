@@ -53,7 +53,12 @@ def test_routes_are_api_namespaced_and_capabilities_are_fail_closed():
     assert all(path == "/health" or path.startswith("/api/") for _, path, _ in routes)
     assert not any("/v1/auth" in path for _, path, _ in routes)
     source = (BACKEND / "app.py").read_text(encoding="utf-8")
-    assert source.count("Depends(require_pipeline_runtime)") == 1
+    assert source.count("Depends(require_pipeline_runtime)") == 0
+    assert source.count("require_pipeline_runtime()") == 2
+    verify_start = source.index("def verify_develop")
+    analyze_start = source.index("def analyze(")
+    assert "require_pipeline_runtime()" in source[verify_start:analyze_start]
+    assert "require_pipeline_runtime()" in source[analyze_start:]
     assert source.count("Depends(require_application_product_state)") == 7
     assert "Depends(optional_user)" not in source[source.index('@app.get("/api/v1/tables")'):source.index('@app.get("/api/v1/favorites"')]
 

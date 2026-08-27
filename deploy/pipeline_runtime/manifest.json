@@ -2,7 +2,7 @@
   "contract": "news-verification-materialized-deployment-v1",
   "source_bundle_manifest_sha256": "63251f70d95933492e23c4b978ecb1fa8f283329bd946c8f2e0630409891a51c",
   "release_id": "kosis_canonical_20260821_full_r3_13ko_views",
-  "runtime_module_files": 72,
+  "runtime_module_files": 73,
   "files": [
     {
       "path": "claim_context_resolver.py",
@@ -76,8 +76,8 @@
     },
     {
       "path": "develop/run_article_body_pipeline_trace_v1.py",
-      "size": 33571,
-      "sha256": "449f52511210f00bab7d870332fe93b21eff4f5d0f37f29897870e58cddc8cbb"
+      "size": 37970,
+      "sha256": "3e56d4144a20179fc4ac84fe946d8904ceae3047f7c39264293d2638ef8e924c"
     },
     {
       "path": "develop/run_l2_segmentation.py",
@@ -191,8 +191,8 @@
     },
     {
       "path": "news_verification/runtime/indicator_text.py",
-      "size": 2990,
-      "sha256": "828844c286ac9b882a00efb3a927a4cf5476b713ca3f8cdd26165b29e16df821"
+      "size": 3242,
+      "sha256": "e53c6faa13315cab6b5695000f8a0b038fcc9edb5aa52c9b474f7e063489336c"
     },
     {
       "path": "news_verification/runtime/kosis_catalog_crawler.py",
@@ -211,13 +211,13 @@
     },
     {
       "path": "news_verification/runtime/l3_role_assignment.py",
-      "size": 19497,
-      "sha256": "df8077fe959f597d08b4b45c9daa25758e1d246848e98ac7d910a7ed0daa47c4"
+      "size": 20810,
+      "sha256": "1c2fbcfb50420a8a0f6867b16103b9236e46499120d23ac91586e987cfbcd2ef"
     },
     {
       "path": "news_verification/runtime/l4_field_normalization.py",
-      "size": 26626,
-      "sha256": "dc53bb6fa466885c3b61c52a56c80cc9d49e38719232f97bb42396e76199ed22"
+      "size": 28941,
+      "sha256": "3aa61038445940f87296921451f5830c6dc273258bc04a3ee27d01ebb49e4868"
     },
     {
       "path": "news_verification/runtime/l5_routing.py",
@@ -236,8 +236,8 @@
     },
     {
       "path": "news_verification/runtime/operational_answer_v2.py",
-      "size": 19617,
-      "sha256": "228895754602a2eb7fa5831a5c3b2201ccdf0cd1fb6543e4d6704c19a8994d53"
+      "size": 19612,
+      "sha256": "cbffc64e82198a534291fe831d1acd35247e5aed4b0e1b44bcc5f5f9e928a78f"
     },
     {
       "path": "news_verification/runtime/operational_article_acquisition_v2.py",
@@ -281,8 +281,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_claim_core_v2.py",
-      "size": 21433,
-      "sha256": "b8ada6805412366edce79ca42473ad72820964e3fe9b0bc029210d0d890fd9b0"
+      "size": 34956,
+      "sha256": "4caced5d13b212045bf507cac2b439d521b001d64c9eaef37bbe7665626dba9a"
     },
     {
       "path": "news_verification/runtime/r4c1_live_metadata.py",
@@ -296,8 +296,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_projection_v2.py",
-      "size": 53509,
-      "sha256": "781ac315505bde0c05d45e2b214b991ccd08fc085a4ad0edc338712785040603"
+      "size": 89859,
+      "sha256": "e602993abad063b36c3a8c3da5c7acb810756f8bb477b4bd513856060ca82331"
     },
     {
       "path": "news_verification/runtime/retrieval_query.py",
@@ -306,13 +306,18 @@
     },
     {
       "path": "news_verification/runtime/run_layer_stack.py",
-      "size": 4590,
-      "sha256": "fd878cccacd4611b3a4f84ce1d9831be369d556de2a321878a28b4386b1ea30a"
+      "size": 5175,
+      "sha256": "391d3e4b600a8c6de067a68e2084ac9abb73459a7344da7b13868e74b26c3e49"
+    },
+    {
+      "path": "news_verification/runtime/same_series_evidence_v1.py",
+      "size": 49474,
+      "sha256": "722c6c32c065fd56aa4faf95c915fb1c9f399c37d15a398f28be6bc9062630af"
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "size": 114366,
-      "sha256": "e00362c8595456d7a7a314cc1a89f900d4063934f95111bf17288a6702db7f91"
+      "size": 140694,
+      "sha256": "0871417081355620b576939b2498e5bde07bfbe112198b0ed6e207306a086b26"
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",
@@ -321,8 +326,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_terminal_v1.py",
-      "size": 59350,
-      "sha256": "dfa6353828daaf341a6507909e4977bce7549c82bf3c01c61b828a53d177c06b"
+      "size": 60154,
+      "sha256": "6877e8b8f34d13f5cb917ba1548cf43979a381b521252d99c3d54f762d78539c"
     },
     {
       "path": "news_verification/runtime/services/__init__.py",

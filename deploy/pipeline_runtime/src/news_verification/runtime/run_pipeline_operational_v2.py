@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+from types import MappingProxyType
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 from urllib import request
@@ -28,6 +29,12 @@ from src.news_verification.runtime.bge_m3_ko_query_encoder_service import (
 )
 from src.news_verification.runtime.canonical_quantity import QuantityNormalizationError, compare_canonical, normalize_quantity
 from src.news_verification.runtime.operational_answer_v2 import Hcx007AnswerClient, build_evidence_packet, generate_guarded_answer
+from src.news_verification.runtime.same_series_evidence_v1 import (
+    FEATURE_GATE_ENV,
+    SameSeriesEvidenceError,
+    select_primary_target,
+    synthesize_same_series_evidence,
+)
 from src.news_verification.runtime.operational_gpu_receipts_v2 import GpuReceiptError, validate_gpu_receipts
 from src.news_verification.runtime.operational_live_adapters_v2 import (
     CountingAdapter,
@@ -45,6 +52,7 @@ from src.news_verification.runtime.operational_live_adapters_v2 import (
 )
 from src.news_verification.runtime.audit_budget_v1 import BudgetedCallable, HttpAttemptBudgetLedger
 from src.news_verification.runtime.l1_value_candidates import build_span_candidates, sentence_offset_map
+from src.news_verification.runtime.l3_role_assignment import attach_indicator_evidence_monthly_v2h
 from src.news_verification.runtime.adapters.shadow_compat import failure_recovery_api, user_intent_api
 
 def corrective_claim_query(*args: Any, **kwargs: Any) -> Any:
@@ -70,14 +78,23 @@ from src.news_verification.runtime.operational_retrieval_v2 import (
     rerank_top50,
     retrieve_parallel,
 )
-from src.news_verification.runtime.r4c1_claim_core_v2 import build_claim_core_v2
+from src.news_verification.runtime.r4c1_claim_core_v2 import (
+    MonthlyClaimProvenanceError,
+    build_claim_core_monthly_v2h,
+    build_claim_core_v2,
+)
 from src.news_verification.contracts.query_plan_inventory import validate_query_plan_inventory
 from src.news_verification.runtime.services.terminal_partition import build_terminal_partition
 from src.news_verification.runtime.r4c1_projection_v2 import (
     CandidateAssignment,
     CandidateProjection,
     TargetResolution,
+    membership_receipt_sha256_monthly_v2h,
+    placeholder_projection_monthly_v2h,
+    project_candidate_monthly_v2j,
+    project_candidate_monthly_v2h,
     project_candidate_v2,
+    validate_target_monthly_v2h,
     validate_target_v2,
 )
 from src.news_verification.runtime.run_pipeline_replay_v1 import run_replay, write_replay
@@ -111,6 +128,12 @@ def source_sentence(*args: Any, **kwargs: Any) -> Any:
 
 
 CONTRACT_VERSION = "kosis-operational-article-verification-v2"
+
+
+def _evidence_first_enabled(value: bool | None = None) -> bool:
+    if value is not None:
+        return bool(value)
+    return os.getenv(FEATURE_GATE_ENV, "false").strip().lower() in {"1", "true", "yes", "on"}
 DEFAULT_CONFIG = Path("configs/pipeline_operational_v2.json")
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9])\d[\d,.]*(?:조|억|만|천)?(?:원|명|가구|건|회|달러|%p?|포인트)?")
 
@@ -119,11 +142,27 @@ class OperationalPipelineError(RuntimeError):
     pass
 
 
-_TRACE_ERROR_KINDS = {"MISSING_SENTENCES", "UNRESOLVED_SPANS", "CALL_FAILED"}
+_TRACE_ERROR_KINDS = {
+    "MISSING_SENTENCES",
+    "UNRESOLVED_SPANS",
+    "CALL_FAILED",
+    "L2_RESPONSE_INVALID",
+}
+_TRACE_SPAN_FIELDS = {"indicator_scope", "source_region"}
+_TRACE_SPAN_ERROR_CODES = {
+    "EMPTY",
+    "NOT_FOUND",
+    "AMBIGUOUS",
+    "OCCURRENCE_INDEX_INVALID",
+    "UNKNOWN",
+}
 
 
 def _trace_safe_error(error: Mapping[str, Any]) -> dict[str, Any]:
-    kind = str(error.get("kind") or "")
+    if not isinstance(error, Mapping):
+        raise OperationalPipelineError("L2_RESPONSE_INVALID")
+    raw_kind = error.get("kind")
+    kind = raw_kind if isinstance(raw_kind, str) else ""
     if kind not in _TRACE_ERROR_KINDS:
         raise OperationalPipelineError("L2_RESPONSE_INVALID")
     result: dict[str, Any] = {
@@ -133,7 +172,48 @@ def _trace_safe_error(error: Mapping[str, Any]) -> dict[str, Any]:
     if kind == "MISSING_SENTENCES":
         result["sentence_ids"] = [int(value) for value in (error.get("sentence_ids") or []) if isinstance(value, int)]
     elif kind == "UNRESOLVED_SPANS":
-        result["count"] = int(error.get("count") or 0)
+        count = error.get("count")
+        details = error.get("details")
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 0 <= count <= 64
+            or not isinstance(details, list)
+            or len(details) != count
+        ):
+            raise OperationalPipelineError("L2_RESPONSE_INVALID")
+        safe_details: list[dict[str, Any]] = []
+        for detail in details:
+            if not isinstance(detail, dict) or set(detail) != {
+                "sentence_id",
+                "field",
+                "source_span_text",
+                "span_error_code",
+            }:
+                raise OperationalPipelineError("L2_RESPONSE_INVALID")
+            sentence_id = detail["sentence_id"]
+            source_span_text = detail["source_span_text"]
+            field = detail["field"]
+            span_error_code = detail["span_error_code"]
+            if (
+                isinstance(sentence_id, bool)
+                or not isinstance(sentence_id, int)
+                or not isinstance(field, str)
+                or field not in _TRACE_SPAN_FIELDS
+                or not isinstance(source_span_text, str)
+                or len(source_span_text) > 512
+                or not isinstance(span_error_code, str)
+                or span_error_code not in _TRACE_SPAN_ERROR_CODES
+            ):
+                raise OperationalPipelineError("L2_RESPONSE_INVALID")
+            safe_details.append({
+                "sentence_id": sentence_id,
+                "field": field,
+                "source_span_text": source_span_text,
+                "span_error_code": span_error_code,
+            })
+        result["count"] = count
+        result["details"] = safe_details
     return result
 
 
@@ -714,6 +794,310 @@ class Top50Resolution:
     projected_count: int
 
 
+@dataclass(frozen=True)
+class MonthlyTop50ResolutionV2H:
+    resolution: TargetResolution
+    projections: tuple[CandidateProjection, ...]
+    candidate_membership: tuple[str, ...]
+    projected_count: int
+    pinned_raw_profiles: Mapping[str, Mapping[str, Any]]
+    pinned_projection_profiles: Mapping[str, Mapping[str, Any]]
+    profile_receipts: tuple[dict[str, Any], ...]
+    membership_receipt_sha256: str
+
+
+def _monthly_profile_bytes_v2h(profile: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        profile, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str,
+    ).encode("utf-8")
+
+
+def _monthly_profile_inventory_complete_v2h(profile: Mapping[str, Any]) -> bool:
+    return all(
+        isinstance(profile.get(key), list) and bool(profile.get(key))
+        for key in ("items", "dimensions", "periods")
+    )
+
+
+def resolve_top50_monthly_v2h(
+    claim_core: Any,
+    ranked_candidates: Sequence[Any],
+    profile_provider: Callable[[str], Mapping[str, Any] | None],
+    *,
+    profile_transform: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    allow_unqualified_nationwide: bool = False,
+    table_context_terms: Sequence[str] = (),
+) -> MonthlyTop50ResolutionV2H:
+    """Pin, receipt, identity-check, and project one fixed Top-50 scope."""
+
+    scope = tuple(
+        str(getattr(row, "table_key", None) or row["table_key"])
+        for row in ranked_candidates[:50]
+    )
+    if len(scope) != len(set(scope)):
+        raise OperationalPipelineError("DUPLICATE_CANDIDATE_SCOPE")
+    raw_profiles: dict[str, Mapping[str, Any]] = {}
+    projection_profiles: dict[str, Mapping[str, Any]] = {}
+    receipts: list[dict[str, Any]] = []
+    for table_key in scope:
+        supplied = profile_provider(table_key)
+        raw_sha: str | None = None
+        projection_sha: str | None = None
+        status = "UNAVAILABLE"
+        raw_snapshot: Mapping[str, Any] | None = None
+        if isinstance(supplied, Mapping):
+            raw_bytes = _monthly_profile_bytes_v2h(supplied)
+            raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+            decoded = json.loads(raw_bytes.decode("utf-8"))
+            if isinstance(decoded, Mapping):
+                raw_snapshot = decoded
+                raw_profiles[table_key] = raw_snapshot
+                if str(raw_snapshot.get("table_key") or "") != table_key:
+                    status = "TABLE_KEY_MISMATCH"
+                elif not _monthly_profile_inventory_complete_v2h(raw_snapshot):
+                    status = "INCOMPLETE"
+                else:
+                    transform_input = json.loads(raw_bytes.decode("utf-8"))
+                    try:
+                        transformed = (
+                            profile_transform(transform_input)
+                            if profile_transform is not None else transform_input
+                        )
+                    except Exception:
+                        status = "TRANSFORM_ERROR"
+                    else:
+                        if not isinstance(transformed, Mapping):
+                            status = "TRANSFORM_INVALID"
+                        elif str(transformed.get("table_key") or "") != table_key:
+                            status = "TRANSFORM_TABLE_KEY_MISMATCH"
+                        elif not _monthly_profile_inventory_complete_v2h(transformed):
+                            status = "TRANSFORM_INCOMPLETE"
+                        else:
+                            projection_bytes = _monthly_profile_bytes_v2h(transformed)
+                            projection_snapshot = json.loads(projection_bytes.decode("utf-8"))
+                            projection_profiles[table_key] = projection_snapshot
+                            projection_sha = hashlib.sha256(projection_bytes).hexdigest()
+                            status = "COMPLETE"
+        receipts.append({
+            "contract_version": "monthly-profile-receipt-v2f",
+            "table_key": table_key,
+            "status": status,
+            "raw_profile_sha256": raw_sha,
+            "projection_profile_sha256": projection_sha,
+        })
+
+    membership_sha = membership_receipt_sha256_monthly_v2h(scope, receipts)
+    coverage_incomplete = any(receipt["status"] != "COMPLETE" for receipt in receipts)
+    normalized_terms = [
+        re.sub(r"[\s\-_./:(),]+", "", str(term or "")).casefold()
+        for term in table_context_terms if str(term or "").strip()
+    ]
+    context_matches: dict[str, bool] = {}
+    if not coverage_incomplete and normalized_terms:
+        context_matches = {
+            table_key: any(
+                term in re.sub(
+                    r"[\s\-_./:(),]+", "",
+                    str(projection_profiles[table_key].get("tbl_name") or ""),
+                ).casefold()
+                for term in normalized_terms
+            )
+            for table_key in scope
+        }
+        if not any(context_matches.values()):
+            context_matches = {}
+
+    if coverage_incomplete:
+        reason_by_key = {
+            receipt["table_key"]: (
+                "PROFILE_UNAVAILABLE"
+                if receipt["status"] == "UNAVAILABLE" else "PROFILE_INCOMPLETE"
+            )
+            for receipt in receipts
+        }
+        projections = tuple(
+            placeholder_projection_monthly_v2h(
+                table_key, reason_by_key.get(table_key, "PROFILE_INCOMPLETE")
+            )
+            for table_key in scope
+        )
+    else:
+        projections = tuple(
+            placeholder_projection_monthly_v2h(table_key, "TABLE_CONTEXT_MISMATCH")
+            if context_matches and not context_matches[table_key]
+            else project_candidate_monthly_v2h(
+                claim_core, projection_profiles[table_key], table_key=table_key,
+                allow_unqualified_nationwide=allow_unqualified_nationwide,
+            )
+            for table_key in scope
+        )
+    if len(projections) != len(scope):
+        raise OperationalPipelineError("EARLY_PROJECTION_EXIT")
+    resolution = validate_target_monthly_v2h(
+        projections,
+        candidate_membership=scope,
+        profile_receipts=receipts,
+    )
+    return MonthlyTop50ResolutionV2H(
+        resolution=resolution,
+        projections=projections,
+        candidate_membership=scope,
+        projected_count=len(projections),
+        pinned_raw_profiles=MappingProxyType(dict(raw_profiles)),
+        pinned_projection_profiles=MappingProxyType(dict(projection_profiles)),
+        profile_receipts=tuple(receipts),
+        membership_receipt_sha256=membership_sha,
+    )
+
+
+def resolve_top50_monthly_v2j(
+    claim_core: Any,
+    ranked_candidates: Sequence[Any],
+    profile_provider: Callable[[str], Mapping[str, Any] | None],
+    *,
+    profile_transform: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    allow_unqualified_nationwide: bool = False,
+    table_context_terms: Sequence[str] = (),
+) -> MonthlyTop50ResolutionV2H:
+    """Run the sealed v2h pinning gates with the v2j monthly projector."""
+
+    scope = tuple(
+        str(getattr(row, "table_key", None) or row["table_key"])
+        for row in ranked_candidates[:50]
+    )
+    if len(scope) != len(set(scope)):
+        raise OperationalPipelineError("DUPLICATE_CANDIDATE_SCOPE")
+    raw_profiles: dict[str, Mapping[str, Any]] = {}
+    projection_profiles: dict[str, Mapping[str, Any]] = {}
+    receipts: list[dict[str, Any]] = []
+    for table_key in scope:
+        supplied = profile_provider(table_key)
+        raw_sha: str | None = None
+        projection_sha: str | None = None
+        status = "UNAVAILABLE"
+        if isinstance(supplied, Mapping):
+            raw_bytes = _monthly_profile_bytes_v2h(supplied)
+            raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+            raw_snapshot = json.loads(raw_bytes.decode("utf-8"))
+            if isinstance(raw_snapshot, Mapping):
+                raw_profiles[table_key] = raw_snapshot
+                if str(raw_snapshot.get("table_key") or "") != table_key:
+                    status = "TABLE_KEY_MISMATCH"
+                elif not _monthly_profile_inventory_complete_v2h(raw_snapshot):
+                    status = "INCOMPLETE"
+                else:
+                    transform_input = json.loads(raw_bytes.decode("utf-8"))
+                    try:
+                        transformed = (
+                            profile_transform(transform_input)
+                            if profile_transform is not None else transform_input
+                        )
+                    except Exception:
+                        status = "TRANSFORM_ERROR"
+                    else:
+                        if not isinstance(transformed, Mapping):
+                            status = "TRANSFORM_INVALID"
+                        elif str(transformed.get("table_key") or "") != table_key:
+                            status = "TRANSFORM_TABLE_KEY_MISMATCH"
+                        elif not _monthly_profile_inventory_complete_v2h(transformed):
+                            status = "TRANSFORM_INCOMPLETE"
+                        else:
+                            projection_bytes = _monthly_profile_bytes_v2h(transformed)
+                            projection_profiles[table_key] = json.loads(projection_bytes.decode("utf-8"))
+                            projection_sha = hashlib.sha256(projection_bytes).hexdigest()
+                            status = "COMPLETE"
+        receipts.append({
+            "contract_version": "monthly-profile-receipt-v2f",
+            "table_key": table_key,
+            "status": status,
+            "raw_profile_sha256": raw_sha,
+            "projection_profile_sha256": projection_sha,
+        })
+
+    membership_sha = membership_receipt_sha256_monthly_v2h(scope, receipts)
+    coverage_incomplete = any(receipt["status"] != "COMPLETE" for receipt in receipts)
+    normalized_terms = [
+        re.sub(r"[\s\-_./:(),]+", "", str(term or "")).casefold()
+        for term in table_context_terms if str(term or "").strip()
+    ]
+    context_matches: dict[str, bool] = {}
+    if not coverage_incomplete and normalized_terms:
+        context_matches = {
+            table_key: any(
+                term in re.sub(
+                    r"[\s\-_./:(),]+", "",
+                    str(projection_profiles[table_key].get("tbl_name") or ""),
+                ).casefold()
+                for term in normalized_terms
+            )
+            for table_key in scope
+        }
+        if not any(context_matches.values()):
+            context_matches = {}
+
+    if coverage_incomplete:
+        reason_by_key = {
+            receipt["table_key"]: (
+                "PROFILE_UNAVAILABLE" if receipt["status"] == "UNAVAILABLE"
+                else "PROFILE_INCOMPLETE"
+            )
+            for receipt in receipts
+        }
+        projections = tuple(
+            placeholder_projection_monthly_v2h(
+                table_key, reason_by_key.get(table_key, "PROFILE_INCOMPLETE")
+            )
+            for table_key in scope
+        )
+    else:
+        projections = tuple(
+            placeholder_projection_monthly_v2h(table_key, "TABLE_CONTEXT_MISMATCH")
+            if context_matches and not context_matches[table_key]
+            else project_candidate_monthly_v2j(
+                claim_core, projection_profiles[table_key], table_key=table_key,
+                allow_unqualified_nationwide=allow_unqualified_nationwide,
+            )
+            for table_key in scope
+        )
+    if len(projections) != len(scope):
+        raise OperationalPipelineError("EARLY_PROJECTION_EXIT")
+    resolution = validate_target_monthly_v2h(
+        projections, candidate_membership=scope, profile_receipts=receipts,
+    )
+    if (
+        resolution.outcome != "QUERY_READY"
+        and any("MULTIPLE_COMPATIBLE_SERIES" in projection.hold_reasons for projection in projections)
+    ):
+        data = {
+            "outcome": "HOLD",
+            "hold_reason": "MULTIPLE_COMPATIBLE_SERIES",
+            "query_plan": None,
+            "chosen_table_key": None,
+            "compatible_series": resolution.compatible_series,
+            "audit": resolution.audit,
+        }
+        resolution = TargetResolution(
+            **data,
+            canonical_sha256=hashlib.sha256(
+                json.dumps(
+                    data, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), default=str,
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+    return MonthlyTop50ResolutionV2H(
+        resolution=resolution,
+        projections=projections,
+        candidate_membership=scope,
+        projected_count=len(projections),
+        pinned_raw_profiles=MappingProxyType(dict(raw_profiles)),
+        pinned_projection_profiles=MappingProxyType(dict(projection_profiles)),
+        profile_receipts=tuple(receipts),
+        membership_receipt_sha256=membership_sha,
+    )
+
+
 def resolve_top50(
     claim_core: Any,
     ranked_candidates: Sequence[Any],
@@ -877,6 +1261,44 @@ def compare_official_cell(
 
 def _target_id(row: Mapping[str, Any]) -> str:
     return f"{row.get('article_idx')}:{row.get('value_span_id') or row.get('sentence_id') or 'target'}"
+
+
+def _bounded_article_date_provenance(article: Mapping[str, Any], article_text: str) -> dict[str, Any]:
+    """Carry the bounded input date provenance into routed evidence."""
+    input_provenance = article.get("article_date_provenance")
+    if not isinstance(input_provenance, Mapping):
+        input_provenance = article.get("date_provenance")
+    provenance = dict(input_provenance) if isinstance(input_provenance, Mapping) else {}
+    date_source = str(article.get("date_source") or "").strip()
+    if date_source and "date_source" not in provenance:
+        provenance["date_source"] = date_source
+    provenance.setdefault("source_path", "operational_input")
+    provenance.setdefault("date_field", "date")
+    provenance["article_text_sha256"] = hashlib.sha256(article_text.encode("utf-8")).hexdigest()
+    return provenance
+
+
+ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H = (
+    "기준일은 client가 제공한 값이며 기사 원문에서 확인된 발행일은 아닙니다."
+)
+
+
+def _preprojection_resolution_monthly_v2h(
+    error: MonthlyClaimProvenanceError,
+) -> TargetResolution:
+    data = {
+        "outcome": "HOLD",
+        "hold_reason": error.code,
+        "query_plan": None,
+        "chosen_table_key": None,
+        "compatible_series": [],
+        "audit": {"preprojection": error.data},
+    }
+    digest = hashlib.sha256(json.dumps(
+        data, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str,
+    ).encode("utf-8")).hexdigest()
+    return TargetResolution(**data, canonical_sha256=digest)
 
 
 def build_article_summaries(
@@ -1055,8 +1477,10 @@ def run_new_articles_v2(
     claim_query: str | None = None,
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
+    evidence_first_statistics_shadow: bool | None = None,
 ) -> dict[str, Any]:
     """Execute the complete live contract with injectable external adapters."""
+    evidence_first_statistics_shadow = _evidence_first_enabled(evidence_first_statistics_shadow)
     if (precomputed_l2 is None) != (precomputed_routed is None):
         raise OperationalPipelineError("PRECOMPUTED_INPUT_INCOMPLETE")
     if precomputed_l2 is not None and precomputed_routed is not None:
@@ -1105,6 +1529,7 @@ def run_new_articles_v2(
             role_aware_dimension_shadow=role_aware_dimension_shadow, claim_query=claim_query,
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
+            evidence_first_statistics_shadow=evidence_first_statistics_shadow,
         )
         if len(pilot.get("stage_ledger") or []) == 0 or len(pilot.get("answers") or []) == 0:
             raise OperationalPipelineError("AUDIT_PILOT_BARRIER_PARTITION_MISSING")
@@ -1128,6 +1553,7 @@ def run_new_articles_v2(
             role_aware_dimension_shadow=role_aware_dimension_shadow, claim_query=claim_query,
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
+            evidence_first_statistics_shadow=evidence_first_statistics_shadow,
         )
         pilot_manifest, batch_manifest = pilot.get("l2", {}), batch.get("l2", {})
         merged_l2 = {**pilot_manifest, **batch_manifest,
@@ -1140,6 +1566,8 @@ def run_new_articles_v2(
             "answers": list(pilot.get("answers") or []) + list(batch.get("answers") or []),
             "stage_ledger": list(pilot.get("stage_ledger") or []) + list(batch.get("stage_ledger") or []),
             "article_summaries": list(pilot.get("article_summaries") or []) + list(batch.get("article_summaries") or []),
+            "evidence_answers": list(pilot.get("evidence_answers") or []) + list(batch.get("evidence_answers") or []),
+            "evidence_first_statistics_shadow": evidence_first_statistics_shadow,
         }
     def answer_for(packet: Any, target_id: str, *, rag: Any | None = None, use_rag: bool = False) -> dict[str, Any]:
         answerer = hcx_answerer
@@ -1162,6 +1590,20 @@ def run_new_articles_v2(
     else:
         routed = list(precomputed_routed.get("rows") or [])
         stack_recomputed = False
+    # Keep the stack result as an immutable evidence-only snapshot.  Claim
+    # selection is allowed to narrow the execution target below, but evidence
+    # synthesis must still see the complete LEVEL/change sibling population.
+    routed_evidence_snapshot = (
+        tuple(MappingProxyType(dict(row)) for row in routed if isinstance(row, Mapping))
+        if evidence_first_statistics_shadow else ()
+    )
+    primary_info: dict[str, Any] | None = None
+    primary_selection_error: str | None = None
+    if evidence_first_statistics_shadow:
+        try:
+            primary_info = select_primary_target(routed_evidence_snapshot)
+        except SameSeriesEvidenceError as exc:
+            primary_selection_error = exc.code
     query_selection: dict[str, Any] | None = None
     user_intent: dict[str, Any] | None = None
     intent_clarification = False
@@ -1183,6 +1625,48 @@ def run_new_articles_v2(
             routed, query_selection = select_query_target(routed, claim_query)
         if not routed and not intent_clarification:
             raise OperationalPipelineError("CLAIM_QUERY_TARGET_NOT_FOUND")
+    if evidence_first_statistics_shadow:
+        claim_query_selection = dict(query_selection or {})
+        claim_query_target_id = str(claim_query_selection.get("target_id") or "")
+        if not claim_query_target_id and len(routed) == 1:
+            claim_query_target_id = str(
+                routed[0].get("target_id") or routed[0].get("value_span_id") or ""
+            )
+        primary_audit = {
+            "claim_query": claim_query,
+            "claim_query_target_id": claim_query_target_id or None,
+            "claim_query_selection": claim_query_selection if claim_query is not None else None,
+            "user_intent": user_intent,
+            "primary_selection_source": "value_span_id_same_series_group",
+        }
+        if intent_clarification:
+            query_selection = {**claim_query_selection, **primary_audit}
+        elif primary_info is None:
+            routed = []
+            query_selection = {
+                **claim_query_selection,
+                **primary_audit,
+                "status": "PRIMARY_TARGET_NOT_EVALUATED",
+                "reason": primary_selection_error or "PRIMARY_TARGET_AMBIGUOUS",
+                "target_id": None,
+                "value_span_id": None,
+                "primary_target_id": None,
+            }
+        else:
+            primary = primary_info["primary"]
+            primary_value_span_id = str(primary.get("value_span_id") or "")
+            primary_target_id = _target_id(primary)
+            routed = [dict(primary)]
+            query_selection = {
+                **claim_query_selection,
+                **primary_audit,
+                "status": "PRIMARY_SELECTED",
+                "target_id": primary_value_span_id,
+                "value_span_id": primary_value_span_id,
+                "primary_target_id": primary_target_id,
+                "primary_group_key": [str(value) for value in primary_info["group_key"]],
+                "same_series_value_span_ids": list(primary_info["value_span_ids"]),
+            }
     article_index = {str(article.get("article_idx")): article for article in articles}
     if forced_budget_phase not in (None, "pilot", "batch"):
         raise OperationalPipelineError("AUDIT_BUDGET_PHASE_INVALID")
@@ -1239,11 +1723,19 @@ def run_new_articles_v2(
         row = dict(row)
         if sentence and sentence in article_text and date:
             row["article_date"] = date
-            row["article_date_provenance"] = {
-                "source_path": "operational_input",
-                "article_text_sha256": hashlib.sha256(article_text.encode("utf-8")).hexdigest(),
-                "date_field": "date",
-            }
+            if evidence_first_statistics_shadow:
+                row["article_text"] = article_text
+                input_date_receipt = article.get("article_date_provenance")
+                row["article_date_provenance"] = (
+                    dict(input_date_receipt) if isinstance(input_date_receipt, Mapping) else {}
+                )
+                row["sentences"] = {
+                    item["sentence_id"]: item["text"]
+                    for item in sentence_offset_map(article_text)
+                }
+                row = attach_indicator_evidence_monthly_v2h(row, article_text)
+            else:
+                row["article_date_provenance"] = _bounded_article_date_provenance(article, article_text)
         routing_class = str(row.get("routing_class") or "")
         if routing_class and routing_class != "KOSIS_CANDIDATE":
             gate_reason = f"L5_{routing_class}:{row.get('reason') or 'UNSPECIFIED'}"
@@ -1273,6 +1765,36 @@ def run_new_articles_v2(
                 "answer": answer,
             })
             continue
+        monthly_core = None
+        if evidence_first_statistics_shadow:
+            try:
+                monthly_core = build_claim_core_monthly_v2h(row)
+            except MonthlyClaimProvenanceError as exc:
+                preprojection_resolution = _preprojection_resolution_monthly_v2h(exc)
+                packet = build_evidence_packet(
+                    verdict="UNVERIFIABLE",
+                    claim_source={"sentence": sentence, "value": row.get("value_text")},
+                    binding_plan={}, official_cell={}, comparison={},
+                    limitation={
+                        "reason": exc.code,
+                        "article_date": ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H,
+                    },
+                    placeholders={"CLAIM": sentence, "LIMITATION": exc.code},
+                )
+                answer = {
+                    "article_idx": article_id, "target_id": target_id,
+                    **answer_for(packet, target_id),
+                }
+                answers.append(answer)
+                ledgers.append({
+                    "article_idx": article_id,
+                    "target_id": target_id,
+                    "value_span_id": row.get("value_span_id"),
+                    "resolution": asdict(preprojection_resolution),
+                    "article_date_limitation": ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H,
+                    "answer": answer,
+                })
+                continue
         retrieval_fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
         claim_query = {
             "indicator": retrieval_fields.get("indicator") or "",
@@ -1416,11 +1938,10 @@ def run_new_articles_v2(
         prefetch = getattr(profile_provider, "prefetch", None)
         if callable(prefetch):
             prefetch(candidate.table_key for candidate in reranked)
-        core = build_claim_core_v2(row)
-        top50 = resolve_top50(
-            core,
-            reranked,
-            profile_provider,
+        core = monthly_core if evidence_first_statistics_shadow else build_claim_core_v2(row)
+        resolver = resolve_top50_monthly_v2j if evidence_first_statistics_shadow else resolve_top50
+        top50 = resolver(
+            core, reranked, profile_provider,
             profile_transform=infer_profile_units if role_aware_dimension_shadow else None,
             allow_unqualified_nationwide=role_aware_dimension_shadow,
             table_context_terms=[
@@ -1448,7 +1969,7 @@ def run_new_articles_v2(
                     corrected_reranked = rerank_top50(rerank_text, union, correction_passages, reranker)
                     if callable(prefetch):
                         prefetch(candidate.table_key for candidate in corrected_reranked)
-                    corrected_top50 = resolve_top50(
+                    corrected_top50 = resolver(
                         core,
                         corrected_reranked,
                         profile_provider,
@@ -1494,13 +2015,23 @@ def run_new_articles_v2(
         cell_result: dict[str, Any] = {}
         comparison: dict[str, Any] = {}
         inventory_validation: dict[str, Any] = {"status": "NOT_APPLICABLE", "errors": []}
+        query_plan = dict(top50.resolution.query_plan or {})
+        chosen_profile: Mapping[str, Any] | None = None
+        official_unit = ""
+        profile_sha256 = ""
+        release_id = os.getenv("KOSIS_RELEASE_ID", "")
         if top50.resolution.outcome == "QUERY_READY" and assignment is not None:
-            chosen_profile = profile_provider(str(top50.resolution.chosen_table_key or ""))
-            validation_profile = (
-                infer_profile_units(chosen_profile)
-                if role_aware_dimension_shadow and chosen_profile is not None
-                else chosen_profile
-            )
+            chosen_key = str(top50.resolution.chosen_table_key or "")
+            if evidence_first_statistics_shadow:
+                chosen_profile = top50.pinned_raw_profiles.get(chosen_key)
+                validation_profile = top50.pinned_projection_profiles.get(chosen_key)
+            else:
+                chosen_profile = profile_provider(chosen_key)
+                validation_profile = (
+                    infer_profile_units(chosen_profile)
+                    if role_aware_dimension_shadow and chosen_profile is not None
+                    else chosen_profile
+                )
             inventory_errors = (
                 validate_query_plan_inventory(top50.resolution.query_plan or {}, validation_profile, core)
                 if validation_profile is not None
@@ -1512,20 +2043,22 @@ def run_new_articles_v2(
                 "table_key": top50.resolution.chosen_table_key,
                 "profile_sha256": chosen_profile.get("profile_sha256") if chosen_profile else None,
             }
+            unit_binding = next((binding for binding in assignment.bindings if binding.axis_kind == "UNIT"), None)
+            official_unit = str(unit_binding.evidence.get("profile_label") if unit_binding else "")
+            profile_sha256 = str(chosen_profile.get("profile_sha256") or "") if chosen_profile else ""
+            release_id = str((chosen_profile or {}).get("release_id") or release_id)
             if inventory_errors:
                 verdict, reason = "UNVERIFIABLE", "QUERY_PLAN_INVENTORY_INVALID"
             else:
                 if budget_ledger is not None:
                     cell_result = budget_ledger.execute(
                         budget_run_id or "audit", "cell",
-                        lambda: fetch_exact_single_cell(top50.resolution.query_plan or {}, cell_fetcher),
+                        lambda: fetch_exact_single_cell(query_plan, cell_fetcher),
                         target_id=target_id,
                     )
                 else:
-                    cell_result = fetch_exact_single_cell(top50.resolution.query_plan or {}, cell_fetcher)
+                    cell_result = fetch_exact_single_cell(query_plan, cell_fetcher)
             if not inventory_errors and cell_result["status"] == "CELL_RESOLVED":
-                unit_binding = next((binding for binding in assignment.bindings if binding.axis_kind == "UNIT"), None)
-                official_unit = str(unit_binding.evidence.get("profile_label") if unit_binding else "")
                 comparison = compare_official_cell(
                     str(row.get("value_text") or ""), str(row.get("value_unit") or ""),
                     cell_result["cell"], official_unit,
@@ -1547,6 +2080,9 @@ def run_new_articles_v2(
         )
         limitation_payload: dict[str, Any] = {}
         limitation_text = str(reason or "")
+        if evidence_first_statistics_shadow:
+            limitation_payload["article_date"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
+            limitation_text = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
         if nationwide_assumption:
             limitation_payload["assumption"] = "지역이 명시되지 않아 전국 기준으로 해석했습니다."
             limitation_text = "지역이 명시되지 않아 전국 기준으로 해석했습니다."
@@ -1556,7 +2092,7 @@ def run_new_articles_v2(
             verdict=verdict,
             claim_source={"sentence": sentence, "value": row.get("value_text")},
             binding_plan={
-                "query_plan": top50.resolution.query_plan,
+                "query_plan": query_plan,
                 "assignment": binding_payload,
                 "inventory_validation": inventory_validation,
                 "user_intent": user_intent,
@@ -1575,7 +2111,7 @@ def run_new_articles_v2(
         if user_intent is not None:
             answer["user_intent"] = user_intent
         answers.append(answer)
-        ledgers.append({
+        execution_ledger = {
             "article_idx": row.get("article_idx"),
             "value_span_id": row.get("value_span_id"),
             "retrieval": retrieval_audit,
@@ -1596,8 +2132,20 @@ def run_new_articles_v2(
             "inventory_validation": inventory_validation,
             "cell": cell_result,
             "comparison": comparison,
+            "query_plan": query_plan,
+            "table_key": top50.resolution.chosen_table_key,
+            "official_unit": official_unit,
+            "profile_sha256": profile_sha256,
+            "release_id": release_id,
+            "assignment_provenance": binding_payload,
             "answer": answer,
-        })
+        }
+        if evidence_first_statistics_shadow:
+            execution_ledger["target_id"] = target_id
+            execution_ledger["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
+            execution_ledger["profile_receipts"] = list(top50.profile_receipts)
+            execution_ledger["membership_receipt_sha256"] = top50.membership_receipt_sha256
+        ledgers.append(execution_ledger)
     for article_id in sorted(ready_ids - represented_articles):
         set_article_phase(article_id)
         article = article_index[article_id]
@@ -1609,6 +2157,47 @@ def run_new_articles_v2(
         answer = {"article_idx": article_id, "target_id": f"article:{article_id}", **answer_for(packet, f"article:{article_id}", rag=rag_reasoner, use_rag=use_rag)}
         answers.append(answer)
         ledgers.append({"article_idx": article_id, "resolution": "NO_ROUTED_TARGETS", "answer": answer})
+    evidence_results: list[dict[str, Any]] = []
+    if evidence_first_statistics_shadow:
+        for article in articles:
+            article_id = str(article.get("article_idx") or "")
+            article_routed = tuple(
+                row for row in routed_evidence_snapshot
+                if str(row.get("article_idx") or "") == article_id
+            )
+            article_ledgers = [row for row in ledgers if str(row.get("article_idx") or "") == article_id]
+            article_answers = [row for row in answers if str(row.get("article_idx") or "") == article_id]
+
+            def evidence_cell_fetcher(
+                query: dict[str, Any],
+                *,
+                _article_id: str = article_id,
+            ) -> list[dict[str, Any]] | dict[str, Any]:
+                if budget_ledger is None:
+                    return cell_fetcher(query)
+                period = str(query.get("start_prd_de") or query.get("end_prd_de") or "")
+                return budget_ledger.execute(
+                    budget_run_id or "audit", "cell", lambda: cell_fetcher(query),
+                    target_id=f"{_article_id}:evidence:{period}",
+                )
+
+            evidence_result = synthesize_same_series_evidence(
+                article=article,
+                routed_rows=article_routed,
+                ledgers=article_ledgers,
+                answers=article_answers,
+                cell_fetcher=evidence_cell_fetcher,
+                exact_fetcher=fetch_exact_single_cell,
+                feature_enabled=True,
+                release_id=os.getenv("KOSIS_RELEASE_ID", ""),
+            )
+            evidence_result["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
+            evidence_text = str(evidence_result.get("text") or "").strip()
+            if evidence_text and ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H not in evidence_text:
+                evidence_result["text"] = (
+                    f"{evidence_text} {ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H}"
+                )
+            evidence_results.append(evidence_result)
     l2_output = l2["manifest"]
     if precomputed_l2 is not None:
         l2_output = {
@@ -1629,6 +2218,8 @@ def run_new_articles_v2(
         "role_aware_dimension_shadow": role_aware_dimension_shadow,
         "failure_recovery_shadow": failure_recovery_shadow,
         "user_intent_shadow": user_intent,
+        "evidence_first_statistics_shadow": evidence_first_statistics_shadow,
+        "evidence_answers": evidence_results,
     }
 
 

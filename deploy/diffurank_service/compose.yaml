@@ -8,9 +8,6 @@ services:
       context: .
       dockerfile: Dockerfile
     image: "news-verification-diffurank:${DIFFURANK_IMAGE_TAG:?set a receipt-bound image tag}"
-    env_file:
-      - path: runtime.env
-        required: false
     ports:
       # Bind only the instance's private VPC address.  Its security group must
       # allow this port only from the data/BGE node or its security group.

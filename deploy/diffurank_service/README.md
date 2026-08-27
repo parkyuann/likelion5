@@ -30,6 +30,34 @@ the KOSIS retrieval owner approve an activation. The original final
 architecture's Late Binding, Strict Validator, Param API, and deterministic
 comparison remain downstream of this service.
 
+## Server-only launch configuration
+
+Keep the Compose interpolation values in a server-only file outside the Git
+worktree, for example `/srv/news_verification/diffurank/runtime.env`. Invoke
+Compose with `--env-file` explicitly; a service-level `env_file` would not
+provide values for Compose's own `${...}` interpolation.
+
+```dotenv
+DIFFURANK_IMAGE_TAG=<receipt-bound-git-commit>
+DIFFURANK_BIND_ADDRESS=<instance-1-private-vpc-ip>
+DIFFURANK_RELEASE_ID=kosis_canonical_20260821_full_r3_13ko_views
+DIFFURANK_ROPE_SCALING_FACTOR=4.0
+DIFFURANK_BASE_MODEL_SOURCE=/srv/news_verification/diffurank/models/base
+DIFFURANK_ADAPTER_SOURCE=/srv/news_verification/diffurank/models/final_adapter
+DIFFURANK_INTERNAL_TOKEN_SOURCE=/srv/news_verification/diffurank/secrets/internal_token
+```
+
+The token file itself is not represented in this file and must remain
+server-only with permissions readable only by the service UID and root. Start
+or recreate the service with:
+
+```bash
+sudo docker compose \
+  --env-file /srv/news_verification/diffurank/runtime.env \
+  -f /srv/news_verification/diffurank/service-worktree/deploy/diffurank_service/compose.yaml \
+  up -d --no-build
+```
+
 ## One-time base download and preflight
 
 Run the following on instance 1 after the image is built. The model cache is

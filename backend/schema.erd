@@ -1,3 +1,8 @@
+%% LEGACY_DO_NOT_IMPLEMENT
+%% 이 문서는 SQLite/Bearer 기반의 과거 제안이며, 현재 PostgreSQL/Redis application DB
+%% 또는 적용 migration 정본이 아닙니다. 구현·migration·운영 판단의 근거로 사용하지 마세요.
+%% 본문은 역사적 참고를 위해 보존합니다.
+
 %% KOSIS 팩트체크 — 데이터베이스 ERD (현재 구현 기준, 2026-08-21)
 %% 형식: Mermaid erDiagram (GitHub / VS Code Mermaid / https://mermaid.live 에서 렌더)
 %%

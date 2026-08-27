@@ -311,7 +311,7 @@ const SOURCE_LOADING_STEPS = {
 // 개발용 로딩 시간 설정. 화면에는 노출하지 않습니다.
 // 예: http://localhost:5173/?mockDelay=15 (1~60초)
 function mockDelayOverrideMs() {
-  if (typeof window === "undefined") return null;
+  if (!import.meta.env.DEV || typeof window === "undefined") return null;
   const seconds = Number(new URLSearchParams(window.location.search).get("mockDelay"));
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   return Math.min(60, Math.max(1, seconds)) * 1000;
@@ -320,7 +320,7 @@ function mockDelayOverrideMs() {
 // 오프라인 데모용 고정 목업 사용 여부. 기본은 실제 파이프라인.
 // 예: http://localhost:5173/?mock=1
 function mockEnabled() {
-  if (typeof window === "undefined") return false;
+  if (!import.meta.env.DEV || typeof window === "undefined") return false;
   const value = new URLSearchParams(window.location.search).get("mock");
   return value === "1" || value === "true";
 }

@@ -28,6 +28,7 @@ APPLICATION_SCHEMA_STATUS_ENV = "APPLICATION_SCHEMA_STATUS"
 APPLICATION_SCHEMA_REVISION_ENV = "APPLICATION_SCHEMA_REVISION"
 APPLICATION_DATABASE_URL_ENV = "APPLICATION_DATABASE_URL"
 SCHEMA_STATUS_PENDING = "PENDING_APPLICATION_SCHEMA_RECONCILIATION"
+APPLICATION_SCHEMA_REVISION = "001_application_auth"
 
 
 class RepositoryError(RuntimeError):
@@ -39,17 +40,13 @@ class RepositoryError(RuntimeError):
 
 
 def schema_ready() -> bool:
-    """Return whether an operator has explicitly attested the reconciled schema.
-
-    The actual revision is intentionally not guessed here.  A non-empty revision
-    supplied by deployment configuration is required in addition to the explicit
-    ``VERIFIED`` status.  The default remains pending.
-    """
+    """Return whether the exact, approved auth migration is attested."""
 
     return (
         os.getenv(APPLICATION_SCHEMA_STATUS_ENV, SCHEMA_STATUS_PENDING).strip().upper()
         == "VERIFIED"
-        and bool(os.getenv(APPLICATION_SCHEMA_REVISION_ENV, "").strip())
+        and os.getenv(APPLICATION_SCHEMA_REVISION_ENV, "").strip()
+        == APPLICATION_SCHEMA_REVISION
     )
 
 

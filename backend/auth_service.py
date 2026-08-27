@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - exercised by a dependency preflight
 
 PASSWORD_MIN_LENGTH = 12
 PASSWORD_MAX_LENGTH = 128
-LOCAL_PROVIDER = "email"
+LOCAL_PROVIDER = "local"
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 if PasswordHasher is not None and Type is not None:
@@ -159,9 +159,9 @@ def register_user(email: str, password: str, display_name: str) -> dict[str, Any
             )
             connection.execute(
                 "INSERT INTO auth_accounts "
-                "(user_id, provider, password_hash, created_at) "
-                "VALUES (%s, %s, %s, %s)",
-                (user_id, LOCAL_PROVIDER, password_hash, created_at),
+                "(user_id, provider, provider_user_id, provider_email, password_hash, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (user_id, LOCAL_PROVIDER, user_id, normalized_email, password_hash, created_at),
             )
     except RepositoryError as exc:
         raise _database_error(exc) from exc
@@ -182,8 +182,8 @@ def _find_local_account(email: str) -> Mapping[str, Any] | None:
             "u.created_at, u.last_login_at, a.password_hash "
             "FROM users AS u "
             "JOIN auth_accounts AS a ON a.user_id = u.id "
-            "WHERE lower(u.primary_email) = lower(%s) AND a.provider = %s",
-            (email, LOCAL_PROVIDER),
+            "WHERE a.provider = %s AND lower(a.provider_email) = lower(%s)",
+            (LOCAL_PROVIDER, email),
         ).fetchone()
 
 

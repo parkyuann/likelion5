@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -11,11 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend import auth_service, conversation_service, favorites_service, session_store
+from backend import auth_service, conversation_service, favorites_service, session_store, table_catalog_service
 from backend.auth_dependencies import current_session, current_user, optional_user
 from backend.database import RepositoryError
 from backend.errors import BackendError
-from backend.runtime_gate import require_csrf, require_search_adapter
+from backend.runtime_gate import (
+    require_application_product_state,
+    require_csrf,
+    require_pipeline_runtime,
+)
 
 
 class StrictModel(BaseModel):
@@ -55,6 +59,45 @@ class AuthSessionResponse(BaseModel):
 
     user: UserDTO
     expires_at: datetime
+
+
+class TableCandidate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    table_key: str
+    release_id: str
+    source: str
+    score: float
+    org_id: str | None
+    tbl_id: str | None
+    org_name: str | None
+    tbl_name: str | None
+    status: str | None
+    send_de: str | None
+    kosis_url: str
+    evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+class TableOrganization(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    name: str
+    count: int
+
+
+class TableSearchResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    release_id: str
+    items: list[TableCandidate]
+    total: int
+    total_relation: Literal["eq", "gte"]
+    limit: int
+    offset: int
+    organizations: list[TableOrganization]
+    organizations_relation: Literal["eq", "gte"]
 
 
 class ConversationCreateRequest(StrictModel):
@@ -165,63 +208,62 @@ def logout_all(authenticated: dict = Depends(current_session)) -> Response:
     return response
 
 
-@app.post("/api/v1/conversations", status_code=201, dependencies=[Depends(require_csrf)])
+@app.post("/api/v1/conversations", status_code=201, dependencies=[Depends(require_csrf), Depends(require_application_product_state)])
 def create_conversation(req: ConversationCreateRequest, user: dict = Depends(current_user)) -> dict:
     return conversation_service.create_conversation(user["id"], req.title)
 
 
-@app.get("/api/v1/conversations")
+@app.get("/api/v1/conversations", dependencies=[Depends(require_application_product_state)])
 def list_conversations(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user: dict = Depends(current_user)) -> dict:
     return conversation_service.list_conversations(user["id"], limit=limit, offset=offset)
 
 
-@app.get("/api/v1/conversations/{conversation_id}")
+@app.get("/api/v1/conversations/{conversation_id}", dependencies=[Depends(require_application_product_state)])
 def get_conversation(conversation_id: str, user: dict = Depends(current_user)) -> dict:
     return conversation_service.get_conversation(user["id"], conversation_id)
 
 
-@app.delete("/api/v1/conversations/{conversation_id}", status_code=204, dependencies=[Depends(require_csrf)])
+@app.delete("/api/v1/conversations/{conversation_id}", status_code=204, dependencies=[Depends(require_csrf), Depends(require_application_product_state)])
 def delete_conversation(conversation_id: str, user: dict = Depends(current_user)) -> Response:
     conversation_service.delete_conversation(user["id"], conversation_id)
     return Response(status_code=204)
 
 
-@app.get("/api/v1/tables", dependencies=[Depends(require_search_adapter)])
-def search_tables(q: str = Query("", max_length=200), org: str = Query("", max_length=200), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user: dict | None = Depends(optional_user)) -> dict:
-    require_search_adapter()
-    raise AssertionError("unreachable")
+# @app.get("/api/v1/tables") route inventory marker; response_model is attached below.
+@app.get("/api/v1/tables", response_model=TableSearchResponse)
+def search_tables(q: str = Query("", max_length=200), org: str = Query("", max_length=200), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)) -> dict:
+    return table_catalog_service.search_tables(q, limit=limit, offset=offset, organization=org)
 
 
-@app.get("/api/v1/favorites")
+@app.get("/api/v1/favorites", dependencies=[Depends(require_application_product_state)])
 def list_favorites(user: dict = Depends(current_user)) -> dict:
     return favorites_service.list_favorites(user["id"])
 
 
-@app.post("/api/v1/favorites", status_code=201, dependencies=[Depends(require_search_adapter), Depends(require_csrf)])
+@app.post("/api/v1/favorites", status_code=201, dependencies=[Depends(require_csrf), Depends(require_application_product_state)])
 def add_favorite(req: FavoriteCreateRequest, user: dict = Depends(current_user)) -> dict:
-    require_search_adapter()
-    raise AssertionError("unreachable")
+    return favorites_service.add_favorite(user["id"], req.table_key)
 
 
-@app.delete("/api/v1/favorites/{table_key}", status_code=204, dependencies=[Depends(require_csrf)])
+@app.delete("/api/v1/favorites/{table_key}", status_code=204, dependencies=[Depends(require_csrf), Depends(require_application_product_state)])
 def remove_favorite(table_key: str, user: dict = Depends(current_user)) -> Response:
     favorites_service.remove_favorite(user["id"], table_key)
     return Response(status_code=204)
 
 
-@app.post("/api/v1/verify/develop", dependencies=[Depends(require_search_adapter), Depends(require_csrf)])
+@app.post("/api/v1/verify/develop", dependencies=[Depends(require_csrf), Depends(require_pipeline_runtime)])
 def verify_develop(req: DevelopVerifyRequest, user: dict | None = Depends(optional_user)) -> dict:
-    require_search_adapter()
-    raise AssertionError("unreachable")
+    del req, user
+    raise AssertionError("pipeline gate should run before handler")
 
 
-@app.post("/api/v1/analyze", dependencies=[Depends(require_search_adapter), Depends(require_csrf)])
+@app.post("/api/v1/analyze", dependencies=[Depends(require_csrf), Depends(require_pipeline_runtime)])
 def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> dict:
-    require_search_adapter()
-    raise AssertionError("unreachable")
+    del req, user
+    raise AssertionError("pipeline gate should run before handler")
 
 
-@app.post("/api/v1/analyze/image", dependencies=[Depends(require_search_adapter), Depends(require_csrf)])
+@app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf), Depends(require_pipeline_runtime)])
 def analyze_image(file: UploadFile = File(...), conversation_id: str | None = Form(None), focus_question: str = Form(""), user: dict | None = Depends(optional_user)) -> dict:
-    require_search_adapter()
-    raise AssertionError("unreachable")
+    del file, conversation_id, focus_question, user
+    raise AssertionError("pipeline gate should run before handler")

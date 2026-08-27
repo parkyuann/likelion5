@@ -1,4 +1,6 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -70,10 +72,55 @@ def test_bearer_header_does_not_authenticate():
     assert response.json()["code"] == "AUTH_REQUIRED"
 
 
-def test_all_search_routes_fail_closed_before_service_call():
+def test_all_search_routes_fail_closed_before_service_call(monkeypatch):
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5173")
+    monkeypatch.delenv("KOSIS_RELEASE_ID", raising=False)
     client = TestClient(app_module.app)
-    assert client.get("/api/v1/tables").status_code == 503
-    assert client.post("/api/v1/analyze", headers=CSRF, json={"text": "x"}).status_code == 503
-    assert client.post("/api/v1/verify/develop", headers=CSRF, json={"text": "x"}).status_code == 503
-    assert client.post("/api/v1/analyze/image", headers=CSRF).status_code == 503
-    assert client.post("/api/v1/favorites", headers=CSRF, json={"table_key": "a:b"}).status_code == 503
+    tables = client.get("/api/v1/tables")
+    assert tables.status_code == 503
+    assert tables.json()["code"] == "KOSIS_RELEASE_CONFIGURATION_PENDING"
+
+    for path, payload in [
+        ("/api/v1/analyze", {"text": "x"}),
+        ("/api/v1/verify/develop", {"text": "x"}),
+    ]:
+        response = client.post(path, headers=CSRF, json=payload)
+        assert response.status_code == 503
+        assert response.json()["code"] == "PIPELINE_RUNTIME_PENDING"
+
+    image = client.post(
+        "/api/v1/analyze/image",
+        headers=CSRF,
+        files={"file": ("sample.png", b"not-an-image", "image/png")},
+    )
+    assert image.status_code == 503
+    assert image.json()["code"] == "PIPELINE_RUNTIME_PENDING"
+
+    favorite = client.post("/api/v1/favorites", headers=CSRF, json={"table_key": "a:b"})
+    assert favorite.status_code == 503
+    assert favorite.json()["code"] == "APPLICATION_PRODUCT_STATE_PENDING"
+
+
+def test_tables_openapi_declares_candidate_response_contract():
+    schema = app_module.app.openapi()
+    response_schema = schema["paths"]["/api/v1/tables"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    response_name = response_schema["$ref"].rsplit("/", 1)[-1]
+    response = schema["components"]["schemas"][response_name]
+    candidate_name = response["properties"]["items"]["items"]["$ref"].rsplit("/", 1)[-1]
+    candidate = schema["components"]["schemas"][candidate_name]
+    assert {
+        "table_key", "release_id", "source", "score", "org_id", "tbl_id", "org_name", "tbl_name",
+        "status", "send_de", "kosis_url", "evidence", "metadata",
+    }.issubset(set(candidate["required"]))
+    response_required = set(response["required"])
+    assert {"release_id", "items", "total", "total_relation", "limit", "offset", "organizations", "organizations_relation"}.issubset(response_required)
+    assert response["properties"]["total_relation"]["enum"] == ["eq", "gte"]
+    assert response["properties"]["organizations_relation"]["enum"] == ["eq", "gte"]
+
+
+def test_runtime_auth_openapi_sha_is_pinned():
+    path = Path(__file__).resolve().parents[1] / "contracts" / "auth-session-v1.yaml"
+    # Git stores the contract with LF. Normalize checkout line endings so the
+    # receipt is identical on Windows (CRLF) and EC2/Linux (LF).
+    canonical_bytes = path.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(canonical_bytes).hexdigest().upper() == "589A0E24282BBDEC86D40F5CD3CFD8667B7537E448CB422C419AEE6FDE4FC357"

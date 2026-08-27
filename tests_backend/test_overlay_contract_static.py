@@ -37,7 +37,7 @@ def test_database_is_external_postgresql_without_bootstrap():
     assert "ALTER TABLE " not in source.upper()
 
 
-def test_routes_are_api_namespaced_and_search_is_fail_closed():
+def test_routes_are_api_namespaced_and_capabilities_are_fail_closed():
     tree = ast.parse((BACKEND / "app.py").read_text(encoding="utf-8"))
     routes = []
     for node in tree.body:
@@ -53,7 +53,9 @@ def test_routes_are_api_namespaced_and_search_is_fail_closed():
     assert all(path == "/health" or path.startswith("/api/") for _, path, _ in routes)
     assert not any("/v1/auth" in path for _, path, _ in routes)
     source = (BACKEND / "app.py").read_text(encoding="utf-8")
-    assert source.count("Depends(require_search_adapter)") >= 5
+    assert source.count("Depends(require_pipeline_runtime)") == 3
+    assert source.count("Depends(require_application_product_state)") == 7
+    assert "Depends(optional_user)" not in source[source.index('@app.get("/api/v1/tables")'):source.index('@app.get("/api/v1/favorites"')]
 
 
 def test_redis_contract_is_fixed_and_atomic():

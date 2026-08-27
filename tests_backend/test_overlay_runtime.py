@@ -276,6 +276,50 @@ def test_auth_rejects_missing_csrf_and_does_not_use_header_token(
     assert set(header_only.json()) == {"code", "message"}
 
 
+def test_current_logout_invalidates_only_current_opaque_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeRedis()
+    monkeypatch.setattr(session_store, "_client", fake)
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "https://testserver")
+    first = session_store.create_session("user-logout", client=fake)
+    second = session_store.create_session("user-logout", client=fake)
+    monkeypatch.setattr(
+        auth_service,
+        "authenticate_session",
+        lambda session_id: {
+            "session_id": session_id,
+            "user": {"id": "user-logout"},
+            "expires_at": first.expires_at,
+        },
+    )
+    client = TestClient(app_module.app, base_url="https://testserver")
+    client.cookies.set(session_store.SESSION_COOKIE_NAME, first.session_id)
+    response = client.post("/api/auth/logout", headers=CSRF_HEADERS)
+    assert response.status_code == 204
+    assert session_store.get_session(first.session_id, client=fake) is None
+    assert session_store.get_session(second.session_id, client=fake) is not None
+
+
+def test_logout_all_invalidates_all_user_opaque_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeRedis()
+    monkeypatch.setattr(session_store, "_client", fake)
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "https://testserver")
+    records = [session_store.create_session("user-logout-all", client=fake) for _ in range(3)]
+    monkeypatch.setattr(
+        auth_service,
+        "authenticate_session",
+        lambda session_id: {
+            "session_id": session_id,
+            "user": {"id": "user-logout-all"},
+            "expires_at": records[-1].expires_at,
+        },
+    )
+    client = TestClient(app_module.app, base_url="https://testserver")
+    client.cookies.set(session_store.SESSION_COOKIE_NAME, records[-1].session_id)
+    response = client.post("/api/auth/logout-all", headers=CSRF_HEADERS)
+    assert response.status_code == 204
+    assert all(session_store.get_session(record.session_id, client=fake) is None for record in records)
+
+
 def test_non_auth_mutations_are_also_csrf_protected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "https://testserver")
     client = TestClient(app_module.app, base_url="https://testserver")
@@ -313,10 +357,17 @@ def test_search_entry_points_fail_closed_before_underlying_calls(
     request_kwargs["headers"] = CSRF_HEADERS
     response = getattr(client, kwargs["method"])(path, **request_kwargs)
     assert response.status_code == 503
-    assert response.json()["code"] == "SEARCH_ADAPTER_PENDING"
+    expected_codes = {
+        "/api/v1/tables": "KOSIS_RELEASE_CONFIGURATION_PENDING",
+        "/api/v1/analyze": "PIPELINE_RUNTIME_PENDING",
+        "/api/v1/analyze/image": "PIPELINE_RUNTIME_PENDING",
+        "/api/v1/verify/develop": "PIPELINE_RUNTIME_PENDING",
+        "/api/v1/favorites": "APPLICATION_PRODUCT_STATE_PENDING",
+    }
+    assert response.json()["code"] == expected_codes[path]
 
 
 def test_table_catalog_service_has_no_local_fallback() -> None:
     with pytest.raises(BackendError) as caught:
         table_catalog_service.get_table("org:table")
-    assert caught.value.code == "SEARCH_ADAPTER_PENDING"
+    assert caught.value.code == "KOSIS_RELEASE_CONFIGURATION_PENDING"

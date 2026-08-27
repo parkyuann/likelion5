@@ -11,6 +11,8 @@ from backend.errors import BackendError
 
 
 SEARCH_ADAPTER_PENDING = "SEARCH_ADAPTER_PENDING"
+APPLICATION_PRODUCT_STATE_PENDING = "APPLICATION_PRODUCT_STATE_PENDING"
+PIPELINE_RUNTIME_PENDING = "PIPELINE_RUNTIME_PENDING"
 
 
 def require_search_adapter() -> None:
@@ -19,6 +21,26 @@ def require_search_adapter() -> None:
     raise BackendError(
         SEARCH_ADAPTER_PENDING,
         "검색 adapter 계약과 구현이 아직 연결되지 않았습니다.",
+        status_code=503,
+    )
+
+
+def require_application_product_state() -> None:
+    """Product-state tables require the separately approved application 002."""
+
+    raise BackendError(
+        APPLICATION_PRODUCT_STATE_PENDING,
+        "application product-state migration이 아직 연결되지 않았습니다.",
+        status_code=503,
+    )
+
+
+def require_pipeline_runtime() -> None:
+    """Full verification pipeline remains closed until its source is delivered."""
+
+    raise BackendError(
+        PIPELINE_RUNTIME_PENDING,
+        "검증 pipeline runtime이 아직 연결되지 않았습니다.",
         status_code=503,
     )
 

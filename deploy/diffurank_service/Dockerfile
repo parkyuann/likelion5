@@ -5,9 +5,17 @@ FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8b
 ARG DIFFUSIONRANK_REPOSITORY=https://github.com/liuqi6777/DiffusionRank.git
 ARG DIFFUSIONRANK_COMMIT=8f38364f22db68a506e80a217add08fab739e8cf
 
+# `trust_remote_code` copies LLaDA's approved local Python module into a
+# cache at process startup. The runtime root filesystem is read-only, so keep
+# every runtime cache under the Compose-managed /tmp tmpfs rather than the
+# non-login service user's home directory.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    HOME=/tmp \
+    HF_HOME=/tmp/huggingface \
+    HF_MODULES_CACHE=/tmp/huggingface/modules \
+    TRANSFORMERS_CACHE=/tmp/huggingface/hub \
     PYTHONPATH=/opt/diffurank-service:/opt/diffusionrank/src
 
 RUN apt-get update \

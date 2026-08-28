@@ -131,7 +131,7 @@ def test_open_cutoff_tie_at_search_window_max_drops_tied_candidates(monkeypatch:
 
     result = _adapter(client).search_grouped_by_table([0.0] * 1024)
 
-    assert client.windows == [101, 202, 404, 808, 1000]
+    assert client.windows == [101, 1000]
     assert result["candidates"] == []
     assert result["window"] == []
     assert result["audit"] == {
@@ -139,7 +139,7 @@ def test_open_cutoff_tie_at_search_window_max_drops_tied_candidates(monkeypatch:
         "cutoff_score": 1.0,
         "observed_tied_count": 1000,
         "requested_window": 1000,
-        "expansions": [202, 404, 808, 1000],
+        "expansions": [1000],
     }
 
 
@@ -193,7 +193,7 @@ def test_dense_boundary_audit_survives_release_channel_counter_ledger_and_public
             "cutoff_score": 1.0,
             "observed_tied_count": 1000,
             "requested_window": 1000,
-            "expansions": [202, 404, 808, 1000],
+            "expansions": [1000],
         }],
     }
     (tmp_path / "03_routed.jsonl").write_text(

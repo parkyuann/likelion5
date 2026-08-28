@@ -1,7 +1,7 @@
 """develop_verify_service.py — develop 배포 파이프라인(run_trace)을 웹에서 부르는 얇은 층.
 
-옛 ``pipeline_service.py``와 같은 역할이지만 대상이 ``src/develop`` 배포 파이프라인
-(``run_article_body_pipeline_trace_v1.run_trace``)이다.
+기사 검증의 **정본 경로**다(레거시 /verify/* 및 pipeline_service는 제거됨).
+대상은 ``src/develop`` 배포 파이프라인(``run_article_body_pipeline_trace_v1.run_trace``).
 
 하는 일:
   1) 요청마다 격리된 임시 입출력 디렉터리를 만들고 입력 계약(JSONL)을 기록한다.
@@ -57,6 +57,27 @@ _PENDING_ANSWER = (
     "공식 통계(KOSIS) 검색·판정 인프라가 연결되면 자동으로 판정됩니다. "
     "현재는 검증 대상 문장과 검색 질의까지 준비했습니다."
 )
+
+# 짧은 단문 '질문'을 기사 검증 이전에 걸러낸다. 질문에 든 나이·연도 숫자
+# (예: "19세 이상 34세 이하")를 수치 주장으로 오인해 기사 검증으로 보내는 것을 막고,
+# 질의는 상위 라우터(→ KOSIS MCP)로 넘긴다.
+_QUESTION_MARKERS = (
+    "얼마", "몇", "인가요", "인가", "일까", "될까", "할까", "한가요",
+    "했나요", "되나요", "알려", "조회", "찾아", "어때", "어떤가",
+    "무엇", "뭐야", "뭔가요", "있나요", "없나요",
+)
+
+
+def _looks_like_question(text: str) -> bool:
+    """전체 입력이 짧은 통계 '질문'인지 보수적으로 판별한다(기사 오인 방지)."""
+    if "\n" in text:
+        return False  # 여러 줄이면 기사로 본다
+    normalized = " ".join(text.split())
+    if not normalized or len(normalized) > 200:
+        return False  # 길면 기사로 본다
+    if normalized.endswith("?"):
+        return True
+    return any(marker in normalized for marker in _QUESTION_MARKERS)
 
 
 def _live_ready() -> bool:
@@ -210,6 +231,11 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
     body = (text or "").strip()
     if not body:
         raise BackendError("ARTICLE_EMPTY", "검증할 기사 본문이 없습니다.", status_code=422)
+
+    # 짧은 통계 질문이면 기사 검증 대상이 아니다. 나이·연도 숫자를 수치 주장으로
+    # 오인하지 않도록 파이프라인 이전에 걸러 상위 라우터(→ KOSIS MCP)로 넘긴다.
+    if _looks_like_question(body):
+        return {"type": "not_article", "reason": "question"}
 
     # 파이프라인 import는 무겁고 외부 의존(requests 등)을 끌어오므로 지연 로드한다.
     from src.develop.run_article_body_pipeline_trace_v1 import TraceStageError, run_trace

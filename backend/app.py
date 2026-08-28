@@ -1,10 +1,10 @@
 """app.py — 뉴스 사실검증 백엔드 (FastAPI).
 
-기존 KOSIS 검증 파이프라인을 웹에서 호출할 수 있게 감싼 최소 서버.
-엔드포인트는 두 개뿐이다.
+KOSIS 검증 파이프라인을 웹에서 호출할 수 있게 감싼 서버.
+기사 검증은 develop 파이프라인(src/develop) 경로로 일원화되어 있다.
 
-  POST /verify/claim    주장/질의 한 문장 검증
-  POST /verify/article  기사 본문 전체 검증(주장 추출 → 각각 검증)
+  POST /v1/verify/develop  기사 본문 검증(src/develop 파이프라인)
+  POST /v1/analyze         입력 라우팅(질의→KOSIS MCP / 기사→검증)
 
 실행(저장소 루트에서):
     ./.venv/Scripts/python.exe -m uvicorn backend.app:app --reload --port 8000
@@ -33,7 +33,6 @@ from backend import (
     image_ocr_service,
     kakao_oauth,
     naver_oauth,
-    pipeline_service,
     table_catalog_service,
 )
 from backend.auth_dependencies import bearer_scheme, current_user, optional_user
@@ -68,21 +67,6 @@ app.include_router(google_oauth.router)
 
 
 # --- 요청 본문 스키마 (프론트가 보낼 JSON 모양) ------------------------------
-class ClaimRequest(BaseModel):
-    text: str = Field(..., description="검증할 주장/질의 한 문장",
-                      examples=["2024년 취업자 수가 전년보다 늘었나?"])
-    explain: bool = Field(True, description="자연어 근거 설명 생성 여부")
-
-
-class ArticleRequest(BaseModel):
-    text: str = Field(..., description="기사 본문 전체")
-    title: str = Field("", description="기사 제목(선택)")
-    date: str = Field("", description="작성일 YYYY-MM-DD(시점 해석에 사용, 선택)")
-    max_claims: int | None = Field(10, ge=1, le=50,
-                                   description="검증할 최대 주장 수(속도 안전장치)")
-    explain: bool = Field(False, description="주장별 자연어 설명 생성 여부(느림)")
-
-
 class AnalyzeRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=100_000,
                       description="간단한 통계 질문, 기사 URL 또는 기사 본문")
@@ -256,24 +240,6 @@ def add_favorite(req: FavoriteCreateRequest, user: dict = Depends(current_user))
 def remove_favorite(table_key: str, user: dict = Depends(current_user)) -> Response:
     favorites_service.remove_favorite(user["id"], table_key)
     return Response(status_code=204)
-
-
-@app.post("/verify/claim")
-def verify_claim(req: ClaimRequest) -> dict:
-    """주장/질의 한 문장을 검증한다."""
-    return pipeline_service.verify_claim(req.text, explain=req.explain)
-
-
-@app.post("/verify/article")
-def verify_article(req: ArticleRequest) -> dict:
-    """기사 본문에서 주장을 추출하고 각각 검증한다."""
-    return pipeline_service.verify_article(
-        req.text,
-        title=req.title,
-        date=req.date,
-        max_claims=req.max_claims,
-        explain=req.explain,
-    )
 
 
 class DevelopVerifyRequest(BaseModel):

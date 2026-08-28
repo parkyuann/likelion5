@@ -6,16 +6,13 @@ from typing import Any, Callable
 
 from backend.errors import BackendError
 from backend.input_router import RouteType
-from backend.kosis_mcp_client import KosisMcpClient, KosisMcpConfig, content_text
 from backend.llm_router import route_input_llm
+from backend.team_mcp_service import query as query_team_mcp
 from backend.url_article_service import prepare_url_article
 
 
 def _default_kosis_query(question: str) -> tuple[dict[str, Any], str, str]:
-    config = KosisMcpConfig.from_env()
-    with KosisMcpClient(config) as client:
-        result = client.query(question)
-    return result, content_text(result), config.tool_name
+    return query_team_mcp(question)
 
 
 def analyze(

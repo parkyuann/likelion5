@@ -163,28 +163,24 @@ URL은 SSRF 검사를 거쳐 본문과 메타데이터를 추출합니다. `/v1/
 }
 ```
 
-### `POST /verify/claim` — 주장 한 문장 검증
+### `POST /v1/verify/develop` — 기사 본문 검증 (정본)
+검증은 `src/develop` 파이프라인으로 일원화되었습니다. (레거시 `/verify/claim`·`/verify/article`은 제거됨)
 요청:
 ```json
-{ "text": "2024년 취업자 수가 전년보다 늘었나?", "explain": true }
+{ "text": "기사 본문 전체...", "title": "제목", "date": "2024-01-15" }
 ```
-
-### `POST /verify/article` — 기사 전체 검증
-요청:
-```json
-{ "text": "기사 본문 전체...", "title": "제목", "date": "2024-01-15", "max_claims": 10 }
-```
-응답의 `results` 는 추출된 주장별 검증 결과 목록입니다.
+응답의 `results` 는 문장별 세그먼트(검증 대상은 `verdict`·`answer` 포함) 목록입니다.
+간단한 통계 질문(예: "2024년 청년 실업률은 얼마인가요?")은 `/v1/analyze`가 KOSIS MCP로 라우팅합니다.
 
 ### `GET /health` — 서버 생존 확인
 `{ "status": "ok" }` 를 돌려줍니다. 프론트 연결 테스트에 사용하세요.
 
 ## 프론트에서 호출 예시
 ```js
-const res = await fetch("http://localhost:8000/verify/claim", {
+const res = await fetch("http://localhost:8000/v1/verify/develop", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ text: "2024년 취업자 수가 늘었나?" }),
+  body: JSON.stringify({ text: "기사 본문 전체..." }),
 });
 const data = await res.json();
 ```

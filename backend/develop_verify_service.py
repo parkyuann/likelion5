@@ -20,14 +20,15 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 from datetime import date as calendar_date
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from backend.errors import BackendError
 from backend.runtime_gate import pipeline_live_stage_enabled
-from backend.verification_checkpoint_store import CheckpointError, consume as consume_checkpoint, create as create_checkpoint, discard as discard_checkpoint, update_context
+from backend.verification_checkpoint_store import CheckpointError, consume as consume_checkpoint, create as create_checkpoint, discard as discard_checkpoint, read_option_page, update_context, validate_binding_continuation
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "configs" / "pipeline_operational_v2.json"
@@ -52,7 +53,10 @@ _QUESTION_MARKERS = (
 _ARTICLE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PERIOD_ANSWER_PATTERN = re.compile(r"^(?:\d{4}|\d{4}-\d{2}|\d{4}년\s*[1-4]분기|\d{4}년\s*(?:0?[1-9]|1[0-2])월)$")
 _DATE_SOURCES = {"user_feedback", "url_metadata", "api_request"}
-_CLARIFICATION_ROLES = ("article_date", "period", "region", "population", "indicator", "unit")
+_CLARIFICATION_ROLES = (
+    "article_date", "period", "indicator", "item", "unit", "source", "population",
+    "region", "sex", "age", "classification", "measurement_basis",
+)
 _CLARIFICATION_ROLE_PRIORITY = {role: index for index, role in enumerate(_CLARIFICATION_ROLES)}
 _RELATIVE_PERIOD_PATTERN = re.compile(
     r"(?:지난해|작년|올해)(?:\s*\d{1,2}\s*(?:월|달|분기|반기))?"
@@ -114,7 +118,8 @@ def _validate_clarification_answers(value: Any) -> list[dict[str, str]]:
         role = str(answer.get("role") or "").strip()
         raw = answer.get("value")
         text = raw.strip() if isinstance(raw, str) else ""
-        if role not in _CLARIFICATION_ROLES or question_id != f"clarify-{role}" or not text:
+        option_id = str(answer.get("option_id") or "").strip()
+        if role not in _CLARIFICATION_ROLES or not question_id or not text:
             raise BackendError("CLARIFICATION_INVALID", "추가 입력의 역할 또는 값이 올바르지 않습니다.", status_code=422)
         if role == "article_date":
             normalized = normalize_article_date(text, "user_feedback")
@@ -125,7 +130,10 @@ def _validate_clarification_answers(value: Any) -> list[dict[str, str]]:
                 raise BackendError("CLARIFICATION_INVALID", "시점은 YYYY, YYYY-MM, YYYY년 N월 또는 YYYY-QN 형식이어야 합니다.", status_code=422)
         elif not 1 <= len(text) <= 120:
             raise BackendError("CLARIFICATION_INVALID", "추가 입력은 1~120자의 자연어로 입력해 주세요.", status_code=422)
-        result.append({"question_id": question_id, "role": role, "value": text})
+        record = {"question_id": question_id, "role": role, "value": text}
+        if option_id:
+            record["option_id"] = option_id
+        result.append(record)
     return result
 
 
@@ -133,18 +141,111 @@ def _clarification_response(question: dict[str, Any], reason: str) -> dict[str, 
     role = str(question.get("role") or "")
     if role not in _CLARIFICATION_ROLES:
         return {}
+    question_id = str(question.get("id") or question.get("question_id") or "").strip()
+    if not question_id:
+        question_id = "cq-" + hashlib.sha256(
+            json.dumps({"role": role, "prompt": question.get("prompt")}, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:24]
+    input_mode = str(question.get("input_mode") or "FREE_TEXT")
+    raw_options = question.get("options") if isinstance(question.get("options"), list) else []
+    options: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_options):
+        if isinstance(item, str):
+            label = item
+            item = {"label": label}
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or item.get("display_label") or "").strip()
+        if not label:
+            continue
+        option_id = str(item.get("id") or item.get("option_id") or "").strip()
+        if not option_id:
+            option_id = "co-" + hashlib.sha256(f"{question_id}\0{index}\0{label}".encode("utf-8")).hexdigest()[:24]
+        options.append({
+            "id": option_id, "label": label,
+            "description": str(item.get("description") or ""),
+            "applicable_candidate_count": int(item.get("applicable_candidate_count") or len(item.get("applicability") or [])),
+        })
     return {
         "type": "needs_user_input",
         "status": "awaiting_clarification",
         "reason": reason,
         "question": {
-            "id": f"clarify-{role}",
+            "id": question_id,
             "role": role,
             "prompt": str(question.get("prompt") or "확인을 위해 통계 조건을 조금 더 알려주세요."),
-            "input_mode": str(question.get("input_mode") or "FREE_TEXT"),
-            "options": list(question.get("options") or []),
+            "input_mode": input_mode,
+            "allow_direct_input": bool(question.get("allow_direct_input", input_mode in {"DATE", "FREE_TEXT", "SEARCHABLE_OPTIONS"})),
+            "options": options[:20],
+            "page": {
+                "total": int(question.get("total") or len(options)),
+                "limit": 20,
+                "next_cursor": question.get("next_cursor"),
+                "search_supported": input_mode == "SEARCHABLE_OPTIONS",
+                "options_complete": not bool(question.get("next_cursor")),
+            },
+        },
+        "clarification_receipt": {
+            "contract_version": "clarification-plan-v2",
+            "plan_sha256": str(question.get("plan_sha256") or ""),
+            "candidate_membership_sha256": question.get("candidate_membership_sha256"),
+            "profile_bundle_sha256": question.get("profile_bundle_sha256"),
+            "speculative": bool(question.get("speculative")),
+            "cell_api_calls": 0,
+            "hcx_answer_calls": 0,
         },
     }
+
+
+def _pre_live_clarification_plan(
+    out_root: Path, *, body: str, article_date: str,
+) -> dict[str, Any] | None:
+    """Gate expensive retrieval when routed evidence cannot form a cell target."""
+    routed = _read_jsonl(out_root / "03_routed.jsonl")
+    if not routed:
+        return None
+    for row in routed:
+        fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), dict) else {}
+        period_text = " ".join(str(fields.get(key) or row.get(key) or "") for key in ("period_raw", "period", "period_context"))
+        if not article_date and period_text and _RELATIVE_PERIOD_PATTERN.search(period_text):
+            return {
+                "reason": "ARTICLE_DATE_REQUIRED_FOR_RELATIVE_PERIOD",
+                "question": {
+                    "id": "cq-" + hashlib.sha256(f"article_date:{hashlib.sha256(body.encode('utf-8')).hexdigest()}".encode()).hexdigest()[:24],
+                    "role": "article_date",
+                    "prompt": "기사에서 말한 상대 시점을 정확한 통계 시점으로 바꾸려면 기사 발행일이 필요합니다. 기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+                    "input_mode": "DATE", "allow_direct_input": True, "options": [], "speculative": False,
+                },
+                "resume_from_stage": "layers",
+                "changed_roles": [], "invalidated_stages": ["layers", "retrieval", "binding", "cell", "answer"],
+                "reusable_artifacts": ["l1", "l2", "layers"],
+            }
+    for row in routed:
+        fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), dict) else {}
+        if not fields and not any(key in row for key in ("indicator", "indicator_label", "period", "period_raw")):
+            continue
+        indicator = str(fields.get("indicator") or row.get("indicator") or row.get("indicator_label") or "").strip()
+        item = fields.get("item") or row.get("item")
+        indicator_missing = not indicator or indicator.casefold() in {"unknown", "ambiguous", "unavailable"}
+        # Item is retrieval-critical only when L3~L5 marked an explicit item
+        # family requirement; a normal indicator-only claim must still flow.
+        item_required = bool(fields.get("item_required") or fields.get("requires_item") or row.get("item_required"))
+        if indicator_missing or (item_required and item in (None, "", [], ())):
+            role = "indicator" if indicator_missing else "item"
+            return {
+                "reason": f"{role.upper()}_REQUIRED",
+                "question": {
+                    "id": "cq-" + hashlib.sha256(f"{role}:{hashlib.sha256(body.encode('utf-8')).hexdigest()}".encode()).hexdigest()[:24],
+                    "role": role,
+                    "prompt": "어떤 통계 지표를 확인할지 알려주세요." if role == "indicator" else "어떤 통계 항목을 확인할지 알려주세요.",
+                    "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "speculative": True,
+                },
+                "resume_from_stage": "layers",
+                "changed_roles": [role], "invalidated_stages": ["layers", "retrieval", "binding", "cell", "answer"],
+                "reusable_artifacts": ["l1", "l2", "layers"],
+                "speculative": True,
+            }
+    return None
 
 
 def _with_checkpoint(
@@ -225,15 +326,30 @@ def _public_answer_text(value: Any) -> str:
 def _pending_clarification(out_root: Path) -> dict[str, Any] | None:
     candidates: list[tuple[int, dict[str, Any], str]] = []
     for row in _read_jsonl(out_root / "04_stage_ledger.jsonl"):
+        plan = row.get("clarification_plan")
+        if isinstance(plan, dict) and isinstance(plan.get("question"), dict):
+            question = dict(plan["question"])
+            question["candidate_membership_sha256"] = plan.get("candidate_membership_sha256")
+            question["profile_bundle_sha256"] = plan.get("profile_bundle_sha256")
+            question["speculative"] = bool(plan.get("speculative"))
+            return _clarification_response(question, str(plan.get("reason") or "CLARIFICATION_REQUIRED"))
         recovery = row.get("failure_recovery_shadow")
         if not isinstance(recovery, dict):
             continue
+        # Once v2 planning is enabled, a legacy string-only question is not
+        # safe to resume because its option/question binding is unverifiable.
         question = recovery.get("question")
         if not isinstance(question, dict):
             post_retry = recovery.get("post_retry")
             question = post_retry.get("question") if isinstance(post_retry, dict) else None
         if not isinstance(question, dict):
             continue
+        if recovery.get("contract_version") != "clarification-plan-v2":
+            raise BackendError(
+                "CLARIFICATION_PLAN_INVALID",
+                "이전 재질의 정보의 검증 계약이 만료되었습니다. 원문을 다시 제출해 주세요.",
+                status_code=409,
+            )
         role = str(question.get("role") or "")
         if role not in _CLARIFICATION_ROLES:
             continue
@@ -245,6 +361,16 @@ def _pending_clarification(out_root: Path) -> dict[str, Any] | None:
         return None
     _, question, reason = sorted(candidates, key=lambda item: item[0])[0]
     return _clarification_response(question, reason)
+
+
+def _pending_clarification_plan(out_root: Path) -> dict[str, Any] | None:
+    """Return the sealed v2 plan for checkpoint creation, not its public view."""
+    for row in _read_jsonl(out_root / "04_stage_ledger.jsonl"):
+        plan = row.get("clarification_plan")
+        if isinstance(plan, dict) and plan.get("contract_version") == "clarification-plan-v2":
+            if isinstance(plan.get("question"), dict):
+                return dict(plan)
+    return None
 
 
 def _iter_period_field_texts(value: Any):
@@ -332,6 +458,8 @@ def _load_trace_runner() -> tuple[Any, type[Exception]]:
         # Keep the public loader tuple backward compatible while exposing the
         # continuation primitive to the service.
         setattr(module.run_trace, "_prepare_resume", module.prepare_resume)
+        runtime_module = importlib.import_module("src.news_verification.runtime.run_pipeline_operational_v2")
+        setattr(module.run_trace, "_run_speculative", runtime_module.run_live_from_files)
         return module.run_trace, module.TraceStageError
     except Exception as exc:
         raise BackendError(
@@ -792,6 +920,25 @@ def _live_status(out_root: Path) -> tuple[str, list[dict[str, Any]]]:
     return "unverifiable", receipts
 
 
+def get_clarification_options(
+    resume_token: str,
+    *,
+    question_id: str,
+    query: str = "",
+    cursor: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    if os.getenv("PIPELINE_CLARIFICATION_OPTIONS_ENABLED", "true").strip().lower() == "false":
+        raise BackendError("CLARIFICATION_OPTIONS_DISABLED", "추가 선택지 조회 기능이 비활성화되어 있습니다.", status_code=409)
+    try:
+        return read_option_page(
+            resume_token, question_id=question_id, query=query, cursor=cursor, limit=limit,
+        )
+    except CheckpointError as exc:
+        status = 422 if exc.code.endswith("LIMIT_INVALID") else 409
+        raise BackendError(exc.code, "추가 선택지를 조회할 수 없습니다.", status_code=status) from None
+
+
 def verify_article_develop(
     text: str,
     title: str = "",
@@ -851,6 +998,8 @@ def verify_article_develop(
                 clarification_history=clarification_history,
                 runtime_fingerprint=runtime_fingerprint,
                 config_sha256=config_sha256,
+                expected_question_id=clarification_history[-1].get("question_id") if clarification_history else None,
+                expected_role=clarification_history[-1].get("role") if clarification_history else None,
             )
         except CheckpointError as exc:
             raise BackendError(
@@ -862,8 +1011,29 @@ def verify_article_develop(
         articles_path = checkpoint.article_path
         out_root = checkpoint.output_root
         article_id = str(checkpoint.metadata.get("article_id") or "")
-        update_context(checkpoint, clarification_history)
         resume_from_stage = str(checkpoint.metadata.get("resume_from_stage") or "")
+        if resume_from_stage == "binding":
+            # The current Gate-B checkpoint does not yet contain complete
+            # candidate/profile bytes, only their receipts.  Never disguise a
+            # full live rerun as binding continuation.
+            if os.getenv("PIPELINE_BINDING_RESUME_ENABLED", "true").strip().lower() != "true":
+                raise BackendError(
+                    "BINDING_RESUME_PENDING",
+                    "선택 조건을 안전하게 이어 처리할 봉인 산출물이 아직 준비되지 않았습니다. 원문을 다시 제출해 주세요.",
+                    status_code=409,
+                )
+            try:
+                validate_binding_continuation(
+                    checkpoint,
+                    expected_release_id=os.getenv("KOSIS_RELEASE_ID", "").strip() or None,
+                )
+            except CheckpointError:
+                raise BackendError(
+                    "RESUME_ARTIFACT_INVALIDATED",
+                    "검증 재개 산출물의 후보·profile·release 봉인이 일치하지 않습니다.",
+                    status_code=409,
+                ) from None
+        update_context(checkpoint, clarification_history)
     else:
         article_id = uuid.uuid4().hex
         workdir = Path(tempfile.mkdtemp(prefix="verify_develop_"))
@@ -895,10 +1065,72 @@ def verify_article_develop(
     preserve_workdir = False
     live_status = "structured_only"
     target_receipts: list[dict[str, Any]] = []
+    stage_timings: dict[str, dict[str, int]] = {}
 
     def _value_claim_count() -> int:
         rows = _read_jsonl(out_root / "01_value_candidates.jsonl")
         return sum(1 for row in rows if row.get("kind") == "value_unit")
+
+    def _make_pending_checkpoint(
+        pending: dict[str, Any], resume_from: str,
+        plan_override: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        plan = dict(plan_override or {
+            "contract_version": "clarification-plan-v2",
+            "reason": str(pending.get("reason") or "CLARIFICATION_REQUIRED"),
+            "question": dict(pending.get("question") or {}),
+            "candidate_membership_sha256": pending.get("candidate_membership_sha256"),
+            "profile_bundle_sha256": pending.get("profile_bundle_sha256"),
+            "speculative": bool(pending.get("speculative")),
+        })
+        plan.setdefault("contract_version", "clarification-plan-v2")
+        plan.setdefault("reason", str(pending.get("reason") or "CLARIFICATION_REQUIRED"))
+        plan["question"] = dict(plan.get("question") or pending.get("question") or {})
+        question = plan["question"]
+        question.setdefault("id", "cq-" + uuid.uuid4().hex)
+        question.setdefault("role", "period")
+        question.setdefault("prompt", "확인을 위해 통계 조건을 조금 더 알려주세요.")
+        question.setdefault("input_mode", "FREE_TEXT")
+        options = question.get("options") if isinstance(question.get("options"), list) else []
+        bundle_options = []
+        for index, option in enumerate(options):
+            if isinstance(option, str):
+                option = {"label": option}
+            if not isinstance(option, dict):
+                continue
+            label = str(option.get("label") or option.get("display_label") or "").strip()
+            if not label:
+                continue
+            option_id = str(option.get("id") or option.get("option_id") or "co-" + hashlib.sha256(f"{question['id']}:{index}:{label}".encode()).hexdigest()[:24])
+            bundle_options.append({**option, "option_id": option_id, "display_label": label})
+        question["options"] = bundle_options
+        plan["question"] = question
+        if bundle_options:
+            plan["option_bundle"] = {"contract_version": "clarification-option-bundle-v2", "question_id": question["id"], "role": question["role"], "options": bundle_options}
+        cp = create_checkpoint(
+            workdir=workdir,
+            article_body_sha256=article_body_sha256,
+            title=supplied_title,
+            article_id=article_id,
+            clarification_history=clarification_history,
+            runtime_fingerprint=runtime_fingerprint,
+            config_sha256=config_sha256,
+            resume_from_stage=resume_from,
+            clarification_plan=plan,
+            option_bundle=plan.get("option_bundle"),
+            speculative_bundle=plan.get("speculative_bundle"),
+            binding_continuation=plan.get("binding_continuation"),
+            changed_roles=list(pending.get("changed_roles") or []),
+            invalidated_stages=list(pending.get("invalidated_stages") or []),
+            reusable_artifacts=list(pending.get("reusable_artifacts") or ["l1", "l2", "layers"]),
+        )
+        if cp.root != workdir:
+            shutil.rmtree(workdir, ignore_errors=True)
+        return _with_checkpoint(
+            _clarification_response({**question, "plan_sha256": _receipt_sha256(plan), "speculative": plan.get("speculative")}, str(plan["reason"])),
+            token=cp.token,
+            resume_from_stage=resume_from,
+        )
 
     try:
         # L1(결정론적·HCX 없음)은 최초 실행에서만 수행한다.  Resume은
@@ -911,19 +1143,60 @@ def verify_article_develop(
         # Checkpoint continuation starts only at the stage recorded when the
         # question was issued.  L1/L2 artifacts are immutable and never rerun.
         if resume_token:
-            if resume_from_stage not in {"layers", "live"}:
+            if resume_from_stage not in {"layers", "retrieval", "binding", "live"}:
                 raise BackendError("RESUME_CHECKPOINT_INVALID", "검증 재개 단계가 올바르지 않습니다.", status_code=409)
             prepare_resume = getattr(run_trace, "_prepare_resume", None)
             if prepare_resume is None:
                 raise BackendError("RESUME_CHECKPOINT_UNSUPPORTED", "현재 pipeline runtime은 재개를 지원하지 않습니다.", status_code=409)
             prepare_resume(out_root, resume_from_stage)
-            remaining = [resume_from_stage]
-            if resume_from_stage == "layers" and live:
+            # The trace has one physical live envelope.  A binding checkpoint
+            # supplies its sealed continuation bundle to that envelope, where
+            # retrieval/reranking/profile transport calls are bypassed.
+            remaining = ["layers"] if resume_from_stage == "layers" else []
+            if live:
                 remaining.append("live")
         else:
             # 수치 주장이 있으면 나머지 단계를 진행한다(인프라 있으면 live까지).
             remaining = ["l2", "layers"] + (["live"] if live else [])
         for stage in remaining:
+            if stage == "live" and live and os.getenv("PIPELINE_EARLY_CLARIFICATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
+                pending = _pre_live_clarification_plan(out_root, body=body, article_date=article_date)
+                if pending is not None:
+                    # Indicator/item are the only high-impact Gate-A roles.
+                    # Use the release-bound runtime planning path before asking;
+                    # failures are bounded to the safe free-text question.
+                    if pending.get("speculative"):
+                        planner = getattr(run_trace, "_run_speculative", None)
+                        if callable(planner):
+                            try:
+                                speculative_root = workdir / ".speculative_runtime"
+                                planned = planner(
+                                    _pipeline_config_path(), articles_path, speculative_root,
+                                    include_technical_canary=False,
+                                    precomputed_l2_manifest_path=out_root / "02_manifest.json",
+                                    precomputed_routed_manifest_path=out_root / "03_manifest.json",
+                                    role_aware_dimension_shadow=True,
+                                    planning_only=True,
+                                )
+                                runtime_plan = planned.get("clarification_plan") if isinstance(planned, Mapping) else None
+                                if isinstance(runtime_plan, Mapping):
+                                    pending = dict(runtime_plan)
+                                    pending["speculative"] = True
+                                    pending["speculative_bundle"] = runtime_plan.get("speculative_bundle")
+                                    pending["speculative_audit"] = planned.get("speculative_retrieval")
+                            except Exception:
+                                # Planning has no authority to turn a missing
+                                # field into a 5xx.  The checkpoint records the
+                                # bounded fallback and user input triggers full
+                                # retrieval on resume.
+                                pending = {**pending, "speculative_bundle": {"contract_version": "speculative-bundle-v1", "status": "FREE_TEXT_FALLBACK"}}
+                    preserve_workdir = True
+                    return {
+                        **_make_pending_checkpoint(pending, str(pending.get("resume_from_stage") or "layers")),
+                        "title": title, "date": article_date, "date_source": article_date_source,
+                        "clarification_history": clarification_history,
+                        "timing": {"contract_version": "pipeline-timing-v1", "stages": stage_timings, "resume": {"used": bool(resume_token), "from_stage": resume_from_stage or None}},
+                    }
             live_kwargs: dict[str, Any] = {}
             if stage == "live":
                 live_kwargs = {
@@ -936,14 +1209,18 @@ def verify_article_develop(
                 }
             if resume_token:
                 live_kwargs["clarification_context_path"] = checkpoint.context_path
-            run_trace(
-                articles_path=articles_path,
-                output_root=out_root,
-                stage=stage,
-                config_path=_pipeline_config_path() if stage in ("all", "live") else None,
-                failure_recovery_shadow=(stage == "live"),
-                **live_kwargs,
-            )
+            started = time.monotonic_ns()
+            trace_kwargs: dict[str, Any] = {
+                "articles_path": articles_path,
+                "output_root": out_root,
+                "stage": stage,
+                "config_path": _pipeline_config_path() if stage in ("all", "live") else None,
+            }
+            if stage == "live":
+                trace_kwargs["failure_recovery_shadow"] = True
+                trace_kwargs.update(live_kwargs)
+            run_trace(**trace_kwargs)
+            stage_timings[stage] = {"wall_ms": max(0, int(round((time.monotonic_ns() - started) / 1_000_000))), "calls": 1}
         segments = _project_segments(out_root, body, live=live)
         if live:
             live_status, target_receipts = _live_status(out_root)
@@ -956,41 +1233,29 @@ def verify_article_develop(
             if pending is None and not article_date:
                 pending = _pending_article_date_from_routed(out_root)
             if pending:
-                resume_from = "layers" if pending.get("question", {}).get("role") in {"article_date", "period"} else "live"
-                if checkpoint is None:
-                    source_workdir = workdir
-                    checkpoint = create_checkpoint(
-                        workdir=workdir,
-                        article_body_sha256=article_body_sha256,
-                        title=supplied_title,
-                        article_id=article_id,
-                        clarification_history=clarification_history,
-                        runtime_fingerprint=runtime_fingerprint,
-                        config_sha256=config_sha256,
-                        resume_from_stage=resume_from,
-                    )
-                    shutil.rmtree(source_workdir, ignore_errors=True)
-                else:
-                    next_checkpoint = create_checkpoint(
-                        workdir=workdir,
-                        article_body_sha256=article_body_sha256,
-                        title=supplied_title,
-                        article_id=article_id,
-                        clarification_history=clarification_history,
-                        runtime_fingerprint=runtime_fingerprint,
-                        config_sha256=config_sha256,
-                        resume_from_stage=resume_from,
-                    )
-                    discard_checkpoint(checkpoint)
-                    checkpoint = next_checkpoint
+                role = pending.get("question", {}).get("role")
+                resume_from = (
+                    "layers" if role in {"article_date", "period", "indicator"}
+                    else "retrieval" if role in {"item", "unit", "source", "population"}
+                    else "binding" if role in {"region", "sex", "age", "classification", "measurement_basis"}
+                    else "live"
+                )
+                old_checkpoint = checkpoint
+                checkpoint_response = _make_pending_checkpoint(
+                    pending,
+                    resume_from,
+                    plan_override=_pending_clarification_plan(out_root),
+                )
+                if old_checkpoint is not None:
+                    discard_checkpoint(old_checkpoint)
                 preserve_workdir = True
-                pending = _with_checkpoint(pending, token=checkpoint.token, resume_from_stage=resume_from)
                 return {
-                    **pending,
+                    **checkpoint_response,
                     "title": title,
                     "date": article_date,
                     "date_source": article_date_source,
                     "clarification_history": clarification_history,
+                    "timing": {"contract_version": "pipeline-timing-v1", "stages": stage_timings, "resume": {"used": bool(resume_token), "from_stage": resume_from_stage or None}},
                 }
     except BackendError:
         raise
@@ -1038,5 +1303,6 @@ def verify_article_develop(
         "clarification_history": clarification_history,
         "summary": counts,
         "target_receipts": target_receipts,
+        "timing": {"contract_version": "pipeline-timing-v1", "stages": stage_timings, "resume": {"used": bool(resume_token), "from_stage": resume_from_stage or None}},
         "results": segments,
     }

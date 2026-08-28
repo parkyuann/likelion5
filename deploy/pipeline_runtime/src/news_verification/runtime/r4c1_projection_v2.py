@@ -549,6 +549,7 @@ class CandidateProjection:
     projection_status: str
     hold_reasons: tuple[str, ...]
     canonical_sha256: str
+    slot_diagnostics: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def contract_version(self) -> str:
@@ -686,7 +687,13 @@ def _unit_compatibility(claim_unit: Any, profile_unit: Any) -> dict[str, Any] | 
     return None
 
 
-def _make_projection(table: str, assignments: Sequence[CandidateAssignment], abstained: Sequence[tuple[str, str]], reasons: Sequence[str]) -> CandidateProjection:
+def _make_projection(
+    table: str,
+    assignments: Sequence[CandidateAssignment],
+    abstained: Sequence[tuple[str, str]],
+    reasons: Sequence[str],
+    slot_diagnostics: Sequence[Mapping[str, Any]] = (),
+) -> CandidateProjection:
     ordered_assignments = tuple(sorted(assignments, key=lambda a: a.signature))
     data = {
         "table_key": table,
@@ -697,8 +704,61 @@ def _make_projection(table: str, assignments: Sequence[CandidateAssignment], abs
         "abstained": sorted(set(abstained)),
         "projection_status": "PROJECTED" if ordered_assignments else "ABSTAIN",
         "hold_reasons": tuple(sorted(set(reasons))),
+        "slot_diagnostics": [dict(item) for item in slot_diagnostics],
     }
-    return CandidateProjection(table, ordered_assignments, tuple(sorted(set(abstained))), data["projection_status"], tuple(sorted(set(reasons))), _sha(data))
+    return CandidateProjection(table, ordered_assignments, tuple(sorted(set(abstained))), data["projection_status"], tuple(sorted(set(reasons))), _sha(data), tuple(dict(item) for item in slot_diagnostics))
+
+
+def _slot_diagnostics(
+    table: str,
+    profile: Mapping[str, Any] | None,
+    assignments: Sequence[CandidateAssignment],
+    abstained: Sequence[tuple[str, str]],
+    reasons: Sequence[str],
+) -> tuple[dict[str, Any], ...]:
+    """Expose missing-slot evidence without turning it into a selector result."""
+    result: list[dict[str, Any]] = []
+    known_roles = {str(kind) for kind, _ in abstained}
+    role_reason = {
+        "ITEM": "indicator", "PERIOD": "period", "DIMENSION": "classification",
+        "UNIT": "unit",
+    }
+    if assignments:
+        bound = {str(binding.axis_kind) for assignment in assignments for binding in assignment.bindings}
+        for kind in ("ITEM", "PERIOD", "UNIT"):
+            if kind not in bound:
+                known_roles.add(kind)
+    dimensions = profile.get("dimensions") if isinstance(profile, Mapping) and isinstance(profile.get("dimensions"), list) else []
+    for dimension in dimensions:
+        if not isinstance(dimension, Mapping):
+            continue
+        label = str(dimension.get("obj_nm") or dimension.get("name") or "")
+        normalized = re.sub(r"\s+", "", label)
+        matches = [
+            role for role, terms in (("region", ("행정구역", "지역", "시도")), ("sex", ("성별", "성")), ("age", ("연령", "연령별", "나이")))
+            if any(term in normalized for term in terms)
+        ]
+        axis_role = matches[0] if len(matches) == 1 else "classification"
+        values = dimension.get("values") if isinstance(dimension.get("values"), list) else []
+        inventory = []
+        for value in values:
+            if isinstance(value, Mapping):
+                inventory.append({"label": str(value.get("obj_nm") or value.get("value_nm") or value.get("name") or ""), "axis_id": dimension.get("obj_id"), "value_id": value.get("value_id") or value.get("obj_id")})
+        status = "RESOLVED" if any(getattr(binding, "axis_id", None) == str(dimension.get("obj_id") or "") for assignment in assignments for binding in assignment.bindings) else "MISSING"
+        result.append({
+            "role": axis_role, "status": status, "table_key": table,
+            "profile_sha256": profile.get("profile_sha256") if isinstance(profile, Mapping) else None,
+            "axis_semantic_role": axis_role, "axis_inventory_path": "dimensions",
+            "option_inventory": inventory, "reason": "DIMENSION_UNBOUND" if status != "RESOLVED" else "",
+        })
+    for kind, reason in sorted(set(abstained)):
+        role = role_reason.get(str(kind), "classification")
+        result.append({"role": role, "status": "AMBIGUOUS" if "AMBIG" in str(reason) else "MISSING", "table_key": table, "profile_sha256": profile.get("profile_sha256") if isinstance(profile, Mapping) else None, "axis_semantic_role": role, "axis_inventory_path": None, "option_inventory": [], "reason": str(reason)})
+    for reason in sorted(set(reasons)):
+        role = "period" if str(reason).startswith("PERIOD") else "unit" if str(reason).startswith("UNIT") else None
+        if role and not any(item.get("role") == role for item in result):
+            result.append({"role": role, "status": "UNSUPPORTED" if "UNSUPPORTED" in str(reason) else "MISSING", "table_key": table, "profile_sha256": profile.get("profile_sha256") if isinstance(profile, Mapping) else None, "axis_semantic_role": role, "axis_inventory_path": None, "option_inventory": [], "reason": str(reason)})
+    return tuple(result)
 
 
 def _prune_strictly_subsumed_axis_matches(options: Sequence[AxisBinding]) -> list[AxisBinding]:
@@ -797,11 +857,11 @@ def project_candidate_v2(
     allow_unqualified_nationwide: bool = False,
 ) -> CandidateProjection:
     if profile is None:
-        return _make_projection("", (), (), ("PROFILE_UNAVAILABLE",))
+        return _make_projection("", (), (), ("PROFILE_UNAVAILABLE",), ({"role": "classification", "status": "PROFILE_INCOMPLETE", "reason": "PROFILE_UNAVAILABLE", "option_inventory": []},))
     table_info = _profile_table(profile)
     table = table_info[0] if table_info else ""
     if _incomplete(profile):
-        return _make_projection(table, (), (), ("PROFILE_INCOMPLETE",))
+        return _make_projection(table, (), (), ("PROFILE_INCOMPLETE",), ({"role": "classification", "status": "PROFILE_INCOMPLETE", "table_key": table, "profile_sha256": profile.get("profile_sha256"), "reason": "PROFILE_INCOMPLETE", "option_inventory": []},))
 
     items = list(profile["items"])
     dimensions = list(profile["dimensions"])
@@ -1105,7 +1165,7 @@ def project_candidate_v2(
         reasons.append("UNIT_MISMATCH")
     if not assignments and not reasons:
         reasons.append("NO_COMPATIBLE_SERIES")
-    return _make_projection(table, assignments, abstained, reasons)
+    return _make_projection(table, assignments, abstained, reasons, _slot_diagnostics(table, profile, assignments, abstained, reasons))
 
 
 def _query_plan(assignment: CandidateAssignment) -> dict[str, Any] | None:
@@ -1815,7 +1875,7 @@ def project_candidate_monthly_v2j(
         reasons.append("UNIT_MISMATCH")
     if not assignments and not reasons:
         reasons.append("NO_COMPATIBLE_SERIES")
-    return _make_projection(table, assignments, abstained, reasons)
+    return _make_projection(table, assignments, abstained, reasons, _slot_diagnostics(table, profile, assignments, abstained, reasons))
 
 
 def _monthly_identity_audit_v2h(

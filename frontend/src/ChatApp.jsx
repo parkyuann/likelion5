@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import "./ChatApp.css";
-import { analyzeInput, analyzeImage, verifyArticleDevelop, ApiError } from "./api.js";
+import { analyzeInput, analyzeImage, verifyArticleDevelop, fetchClarificationOptions, ApiError } from "./api.js";
 import { ImageIcon, AlertIcon, DocIcon, LinkIcon, CheckIcon, RefreshIcon, QuestionIcon } from "./icons.jsx";
 import { mockToDisplayMessages } from "./mockVerificationData.js";
 import { mockVerifyArticle } from "./uiMockData.js";
@@ -426,6 +426,9 @@ function ChatApp({
   const [sourceQuestion, setSourceQuestion] = useState("");
   const [pendingImage, setPendingImage] = useState(null); // { file, url }
   const [pendingClarification, setPendingClarification] = useState(null);
+  const [selectedClarificationOption, setSelectedClarificationOption] = useState(null);
+  const [clarificationOptionQuery, setClarificationOptionQuery] = useState("");
+  const [clarificationOptionPage, setClarificationOptionPage] = useState(null);
   const [loading, setLoading] = useState(false);
   const chatBodyRef = useRef(null);
   const fileRef = useRef(null);
@@ -439,6 +442,25 @@ function ChatApp({
   });
   const progressTimersRef = useRef([]); // 진행 애니메이션 타이머 정리용
   const onMessagesChangeRef = useRef(onMessagesChange);
+
+  useEffect(() => {
+    setSelectedClarificationOption(null);
+    setClarificationOptionQuery("");
+    setClarificationOptionPage(pendingClarification?.question?.page || null);
+    const question = pendingClarification?.question;
+    if (!pendingClarification || !question || question.input_mode !== "SEARCHABLE_OPTIONS") return undefined;
+    let cancelled = false;
+    fetchClarificationOptions({
+      resumeToken: pendingClarification.resumeToken,
+      questionId: question.id,
+      limit: question.page?.limit || 20,
+    }).then((page) => {
+      if (!cancelled) setClarificationOptionPage(page);
+    }).catch(() => {
+      if (!cancelled) setClarificationOptionPage(question.page || null);
+    });
+    return () => { cancelled = true; };
+  }, [pendingClarification]);
 
   useEffect(() => {
     onMessagesChangeRef.current = onMessagesChange;
@@ -913,7 +935,9 @@ function ChatApp({
   function handleSend() {
     if (loading) return;
     if (pendingClarification) {
-      const answer = input.trim();
+      const question = pendingClarification.question || {};
+      const selected = selectedClarificationOption;
+      const answer = (selected?.label || input).trim();
       if (!answer) return;
       setInput("");
       if (answer === "취소") {
@@ -925,7 +949,6 @@ function ChatApp({
         ]);
         return;
       }
-      const question = pendingClarification.question || {};
       if (question.input_mode === "DATE" && !isValidArticleDate(answer)) {
         setMessages((prev) => [
           ...prev,
@@ -938,11 +961,22 @@ function ChatApp({
         return;
       }
       const article = pendingClarification;
+      const visibleOptions = clarificationOptionPage?.options || question.options || [];
+      if (selected?.id && !visibleOptions.some((option) => option?.id === selected.id)) {
+        setSelectedClarificationOption(null);
+        setMessages((prev) => [...prev, { role: "assistant", kind: "clarification_request", text: "현재 표시된 선택지에서 다시 선택해 주세요." }]);
+        return;
+      }
       const clarificationAnswer = {
         question_id: question.id,
         role: question.role,
         value: answer,
+        ...(selected?.id ? { option_id: selected.id } : {}),
       };
+      if (["OPTIONS", "SEARCHABLE_OPTIONS"].includes(question.input_mode) && !selected && !question.allow_direct_input) {
+        setMessages((prev) => [...prev, { role: "assistant", kind: "clarification_request", text: "목록에서 하나를 선택해 주세요." }]);
+        return;
+      }
       const clarificationAnswers = [
         ...(article.clarificationAnswers || []),
         clarificationAnswer,
@@ -1188,6 +1222,68 @@ function ChatApp({
             />
           </label>
         )}
+        {pendingClarification && ["OPTIONS", "SEARCHABLE_OPTIONS"].includes(pendingClarification.question?.input_mode) && (
+          <div className="chat-clarification-options" role="group" aria-label="추가 확인 선택지">
+            {pendingClarification.question?.input_mode === "SEARCHABLE_OPTIONS" && (
+              <input
+                value={clarificationOptionQuery}
+                onChange={(e) => {
+                  setClarificationOptionQuery(e.target.value);
+                  setSelectedClarificationOption(null);
+                  setClarificationOptionPage(null);
+                }}
+                onKeyDown={async (e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
+                  try {
+                    const page = await fetchClarificationOptions({
+                      resumeToken: pendingClarification.resumeToken,
+                      questionId: pendingClarification.question.id,
+                      query: clarificationOptionQuery,
+                      limit: pendingClarification.question.page?.limit || 20,
+                    });
+                    setSelectedClarificationOption(null);
+                    setClarificationOptionPage(page);
+                  } catch (error) {
+                    pushError(error);
+                  }
+                }}
+                placeholder="선택지 검색"
+                aria-label="선택지 검색"
+              />
+            )}
+            <div className="chat-clarification-option-list">
+              {(clarificationOptionPage?.options || pendingClarification.question?.options || []).map((option) => (
+                <button
+                  type="button"
+                  key={option.id}
+                  className={selectedClarificationOption?.id === option.id ? "selected" : ""}
+                  onClick={() => { setSelectedClarificationOption(option); setInput(""); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {clarificationOptionPage?.page?.next_cursor && (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const page = await fetchClarificationOptions({
+                      resumeToken: pendingClarification.resumeToken,
+                      questionId: pendingClarification.question.id,
+                      query: clarificationOptionQuery,
+                      cursor: clarificationOptionPage.page.next_cursor,
+                      limit: pendingClarification.question.page?.limit || 20,
+                    });
+                    setSelectedClarificationOption(null);
+                    setClarificationOptionPage(page);
+                  } catch (error) { pushError(error); }
+                }}
+              >다음 선택지</button>
+            )}
+          </div>
+        )}
         <div className="chat-input">
           <button
             className="chat-attach-btn"
@@ -1213,6 +1309,10 @@ function ChatApp({
               pendingClarification
                 ? pendingClarification.question?.input_mode === "DATE"
                   ? "기사 발행일 YYYY-MM-DD 입력 또는 '취소'"
+                  : ["OPTIONS", "SEARCHABLE_OPTIONS"].includes(pendingClarification.question?.input_mode)
+                    ? pendingClarification.question?.allow_direct_input
+                      ? "목록에서 선택하거나 직접 입력 또는 '취소'"
+                      : "목록에서 선택하거나 '취소'"
                   : "추가 통계 조건을 입력하거나 '취소'"
                 : pendingImage
                 ? "이미지가 첨부되었습니다"

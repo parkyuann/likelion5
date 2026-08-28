@@ -123,7 +123,25 @@ class AnalyzeRequest(StrictModel):
     explain: bool = False
     focus_question: str = Field("", max_length=1000)
     conversation_id: str | None = None
-    clarification_answers: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    clarification_answers: list["ClarificationAnswerRequest"] = Field(default_factory=list, max_length=3)
+
+
+class ClarificationAnswerRequest(StrictModel):
+    question_id: str = Field(..., min_length=1, max_length=160)
+    role: Literal[
+        "article_date", "period", "indicator", "item", "unit", "source", "population",
+        "region", "sex", "age", "classification", "measurement_basis",
+    ]
+    value: str = Field(..., min_length=1, max_length=120)
+    option_id: str | None = Field(None, min_length=1, max_length=160)
+
+
+class ClarificationOptionsRequest(StrictModel):
+    resume_token: str = Field(..., min_length=32, max_length=256)
+    question_id: str = Field(..., min_length=1, max_length=160)
+    query: str = Field("", max_length=200)
+    cursor: str | None = Field(None, max_length=2048)
+    limit: int = Field(20, ge=1, le=50)
 
 
 class DevelopVerifyRequest(StrictModel):
@@ -132,7 +150,7 @@ class DevelopVerifyRequest(StrictModel):
     date: str | None = Field("", max_length=40)
     date_source: Literal["user_feedback", "url_metadata", "api_request"] | None = None
     conversation_id: str | None = None
-    clarification_answers: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    clarification_answers: list[ClarificationAnswerRequest] = Field(default_factory=list, max_length=3)
     resume_token: str | None = Field(None, min_length=32, max_length=256)
 
 
@@ -294,17 +312,29 @@ def verify_develop(req: DevelopVerifyRequest, user: dict | None = Depends(option
     if _looks_like_question(req.text.strip()):
         return {"type": "not_article", "reason": "question"}
     require_pipeline_runtime()
-    kwargs = {
-        "title": req.title,
-        "date": req.date,
-        "date_source": req.date_source,
-        "clarification_answers": req.clarification_answers,
-    }
+    kwargs = {"title": req.title, "date": req.date, "date_source": req.date_source or "api_request"}
+    # Keep the legacy injectable verifier signature usable for tests and
+    # technical canaries when no v2 clarification payload is present.
+    if req.clarification_answers:
+        kwargs["clarification_answers"] = [item.model_dump() for item in req.clarification_answers]
     if req.resume_token is not None:
         kwargs["resume_token"] = req.resume_token
     return verify_article_develop(
         req.text,
         **kwargs,
+    )
+
+
+@app.post("/api/v1/verify/develop/options", dependencies=[Depends(require_csrf)])
+def verify_develop_options(req: ClarificationOptionsRequest) -> dict[str, Any]:
+    from backend.develop_verify_service import get_clarification_options
+
+    return get_clarification_options(
+        req.resume_token,
+        question_id=req.question_id,
+        query=req.query,
+        cursor=req.cursor,
+        limit=req.limit,
     )
 
 
@@ -330,12 +360,10 @@ def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> 
     from backend.develop_verify_service import verify_article_develop
 
     require_pipeline_runtime()
-    return verify_article_develop(
-        req.text,
-        date=req.date,
-        date_source=req.date_source,
-        clarification_answers=req.clarification_answers,
-    )
+    kwargs: dict[str, Any] = {"date": req.date, "date_source": req.date_source or "api_request"}
+    if req.clarification_answers:
+        kwargs["clarification_answers"] = [item.model_dump() for item in req.clarification_answers]
+    return verify_article_develop(req.text, **kwargs)
 
 
 @app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf)])

@@ -98,9 +98,29 @@ export async function verifyArticleDevelop(text, {
       title,
       date,
       date_source: dateSource,
-      clarification_answers: clarificationAnswers,
+      clarification_answers: clarificationAnswers.map((answer) => ({
+        question_id: answer.question_id,
+        role: answer.role,
+        value: answer.value,
+        ...(answer.option_id ? { option_id: answer.option_id } : {}),
+      })),
       ...(resumeToken ? { resume_token: resumeToken } : {}),
       ...(conversationId ? { conversation_id: conversationId } : {}),
+    }),
+  });
+  return parseResponse(response);
+}
+
+export async function fetchClarificationOptions({ resumeToken, questionId, query = "", cursor = null, limit = 20 } = {}) {
+  await checkReleaseVersion();
+  const response = await apiFetch("/v1/verify/develop/options", {
+    method: "POST",
+    body: JSON.stringify({
+      resume_token: resumeToken,
+      question_id: questionId,
+      query,
+      cursor,
+      limit,
     }),
   });
   return parseResponse(response);

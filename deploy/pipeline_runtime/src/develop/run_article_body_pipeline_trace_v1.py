@@ -318,7 +318,7 @@ def _load_clarification_context(path: str | Path | None) -> dict[str, Any] | Non
         value = json.loads(context_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from exc
-    if not isinstance(value, dict) or value.get("contract_version") != "clarification-context-v1":
+    if not isinstance(value, dict) or value.get("contract_version") not in {"clarification-context-v1", "clarification-context-v2"}:
         raise TraceStageError("CLARIFICATION_CONTEXT_INVALID")
     answers = value.get("clarification_answers")
     if not isinstance(answers, list) or len(answers) > 3 or not isinstance(value.get("article_body_sha256"), str):
@@ -350,10 +350,9 @@ def _apply_clarification_context(
         answer = article_date_answers[-1]
         resolved_date = str(answer.get("value") or "").strip()
         try:
-            if (
-                str(answer.get("question_id") or "") != "clarify-article_date"
-                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", resolved_date)
-            ):
+            if (not str(answer.get("question_id") or "").strip()
+                or str(answer.get("role") or "") != "article_date"
+                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", resolved_date)):
                 raise ValueError
             calendar_date.fromisoformat(resolved_date)
         except ValueError:
@@ -384,6 +383,14 @@ def _apply_clarification_context(
             updated["date"] = resolved_date
             updated["article_date"] = resolved_date
             updated["article_date_provenance"] = provenance
+        fields = dict(updated.get("clarification_fields") if isinstance(updated.get("clarification_fields"), Mapping) else {})
+        for answer in answers:
+            role = str(answer.get("role") or "").strip()
+            value = str(answer.get("value") or "").strip()
+            if role and role != "article_date" and value:
+                fields[role] = value
+        if fields:
+            updated["clarification_fields"] = fields
         hydrated.append(updated)
     return hydrated
 
@@ -720,6 +727,7 @@ def run_live_stage(
     deterministic_answer_only: bool = False,
     terminal_invocation: Mapping[str, Any] | None = None,
     clarification_context_path: str | Path | None = None,
+    binding_continuation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run live only from validated L2/L3 predecessor manifests."""
     # Keep the working directory as a short sibling.  Nesting it below a
@@ -757,6 +765,7 @@ def run_live_stage(
             user_intent_shadow=user_intent_shadow,
             deterministic_answer_only=deterministic_answer_only,
             clarification_context_path=clarification_context_path,
+            binding_continuation_path=binding_continuation_path,
         )
         if int((result.get("l2") or {}).get("external_model_calls") or 0) != 0:
             raise TraceStageError("CALL_BUDGET_EXHAUSTED")
@@ -841,7 +850,7 @@ def run_live_stage(
 def prepare_resume(root: str | Path, resume_from_stage: str) -> None:
     """Remove only downstream outputs before continuing a sealed checkpoint."""
     path = Path(root).resolve()
-    if resume_from_stage not in {"layers", "live"}:
+    if resume_from_stage not in {"layers", "retrieval", "binding", "live"}:
         raise TraceStageError("RESUME_STAGE_INVALID")
     stages = ("03", "04") if resume_from_stage == "layers" else ("04",)
     for stage in stages:
@@ -942,6 +951,11 @@ def run_trace(
                 deterministic_answer_only=query_only,
                 terminal_invocation=terminal_invocation,
                 clarification_context_path=clarification_context_path,
+                binding_continuation_path=(
+                    Path(clarification_context_path).resolve().parent / "binding_continuation.json"
+                    if clarification_context_path and (Path(clarification_context_path).resolve().parent / "binding_continuation.json").is_file()
+                    else None
+                ),
             )
         return manifests
     except TraceStageError as exc:

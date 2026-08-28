@@ -691,12 +691,19 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
         while relative_subject_start < len(source_text) and source_text[relative_subject_start].isspace():
             relative_subject_start += 1
         subject_end = relative_subject_start + len(subject)
-        expected_indicator = re.sub(r"\s+", " ", f"{subject} 수").strip()
+        normalized_subject = re.sub(r"\s+", " ", subject).strip()
+        expected_indicator = re.sub(r"\s+", " ", f"{normalized_subject} 수").strip()
+        normalized_indicator_text = re.sub(r"\s+", " ", normalized_indicator).strip()
+        normalization_branch = None
+        if normalized_indicator_text == normalized_subject:
+            normalization_branch = "source_subject"
+        elif normalized_indicator_text in {expected_indicator, expected_indicator.replace(" ", "")}:
+            normalization_branch = "count_normalized_subject"
         value_occurrences = [match.span() for match in re.finditer(re.escape(value_surface), source_text)] if value_surface else []
         subject_occurrences = [match.span() for match in re.finditer(re.escape(subject), source_text)] if subject else []
         if (
             subject and len(subject_occurrences) == 1 and len(value_occurrences) == 1
-            and re.sub(r"\s+", " ", normalized_indicator).strip() in {expected_indicator, expected_indicator.replace(" ", "")}
+            and normalization_branch is not None
         ):
             indicator_receipt = {
                 "contract_version": "monthly-indicator-receipt-v2h",
@@ -708,7 +715,9 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
                 "removed_particle": subject_match.group(2),
                 "added_count_suffix": "수",
                 "model_indicator_label": model_label,
-                "normalized_indicator": normalized_indicator,
+                "normalized_indicator": expected_indicator,
+                "input_normalized_indicator": normalized_indicator,
+                "normalization_branch": normalization_branch,
             }
     if indicator_receipt is None:
         raise MonthlyClaimProvenanceError(

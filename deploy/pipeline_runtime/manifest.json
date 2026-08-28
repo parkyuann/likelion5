@@ -281,8 +281,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_claim_core_v2.py",
-      "size": 36210,
-      "sha256": "6217e0869de39cedba2fcf24f0e01d44d9a276dd6faf9ffef8f6ebe510633751"
+      "size": 36734,
+      "sha256": "e36cb9aeb2cd8f2a2341c57303ee037d211c4a0167011fb3a629ff59229954dd"
     },
     {
       "path": "news_verification/runtime/r4c1_live_metadata.py",

@@ -550,7 +550,13 @@ class QdrantDenseAdapter:
                     "expansions": list(expansion_windows),
                 }
                 break
-            requested_window = min(SEARCH_WINDOW_MAX, max(requested_window * 2, SEARCH_CHANNEL_TOP_K * 2 + 2))
+            # The boundary decision is made against the same sealed maximum
+            # window either way.  Intermediate 202/404/808 grouped queries do
+            # not add authority: if they close, the maximum window closes with
+            # the same Top-100; if they do not, only the maximum window can
+            # authorize bounded degradation.  Jump directly to that window to
+            # avoid repeatedly transferring the same exact-search groups.
+            requested_window = SEARCH_WINDOW_MAX
             expansion_windows.append(requested_window)
         else:  # pragma: no cover - the loop exits through a boundary decision
             raise _fail("DENSE_BOUNDARY_TIE_UNRESOLVED", "dense Top-100 경계 동률을 결정할 수 없습니다.")

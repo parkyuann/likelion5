@@ -116,12 +116,14 @@ def test_resume_uses_checkpoint_without_repeating_l1_l2(monkeypatch, tmp_path):
     monkeypatch.setenv("PIPELINE_LIVE_STAGE_ENABLED", "true")
     monkeypatch.setenv("PIPELINE_CHECKPOINT_ROOT", str(tmp_path / "checkpoints"))
     calls: list[str] = []
+    call_kwargs: list[dict] = []
 
     class FakeTraceError(RuntimeError):
         pass
 
     def fake_run_trace(*, output_root, stage, **_kwargs):
         calls.append(stage)
+        call_kwargs.append(dict(_kwargs))
         output = Path(output_root)
         if stage == "live":
             _write_fake_outputs(output, final=len(calls) > 4)
@@ -152,6 +154,9 @@ def test_resume_uses_checkpoint_without_repeating_l1_l2(monkeypatch, tmp_path):
     )
     assert second["type"] == "article"
     assert calls == ["l1", "l2", "layers", "live", "layers", "live"]
+    assert "clarification_context_path" in call_kwargs[4]
+    assert "clarification_context_path" in call_kwargs[5]
+    assert call_kwargs[4]["clarification_context_path"] == call_kwargs[5]["clarification_context_path"]
 
 
 def test_article_date_hold_projects_to_user_question(tmp_path):

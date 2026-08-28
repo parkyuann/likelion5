@@ -1216,6 +1216,13 @@ def verify_article_develop(
                 "stage": stage,
                 "config_path": _pipeline_config_path() if stage in ("all", "live") else None,
             }
+            # A layers resume must project the new semantic constraints and
+            # seal the updated clarification-context SHA into 03_manifest.
+            # Passing the context only to live leaves the predecessor bound to
+            # the pre-answer bytes and correctly trips the live fail-closed
+            # fingerprint check.
+            if resume_token and stage in {"layers", "live"}:
+                trace_kwargs["clarification_context_path"] = checkpoint.context_path
             if stage == "live":
                 trace_kwargs["failure_recovery_shadow"] = True
                 trace_kwargs.update(live_kwargs)

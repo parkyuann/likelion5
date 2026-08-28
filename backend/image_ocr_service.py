@@ -78,18 +78,32 @@ def _decode_image(data: bytes) -> tuple[Image.Image, tuple[int, int], str]:
 
 
 def _default_ocr(image: Image.Image) -> dict[str, Any]:
-    from backend import clova_ocr_client
+    from backend import hcx_ocr_client
 
+    # HCX-005 is a CLOVA Studio Vision call. Keep its credential on the
+    # server only; no browser request ever sees this value.
+    if not (os.getenv("NCP_CLOVASTUDIO_API_KEY", "").strip() or os.getenv("HCX_API_KEY", "").strip()):
+        raise BackendError(
+            "OCR_NOT_CONFIGURED",
+            "HCX-005 OCR API 키가 설정되지 않았습니다.",
+            status_code=503,
+        )
     try:
-        result = clova_ocr_client.run_ocr(
+        result = hcx_ocr_client.run_ocr(
             image,
             json_mode=False,
-            tiles=1,
+            tiles=hcx_ocr_client.auto_tiles(image),
         )
     except BackendError:
         raise
-    result["model"] = clova_ocr_client.MODEL
-    result["prompt_version"] = clova_ocr_client.PROMPT_VERSION
+    except RuntimeError as exc:
+        raise BackendError(
+            "OCR_PROCESSING_FAILED",
+            "HCX-005 OCR 서비스 호출 중 오류가 발생했습니다.",
+            status_code=502,
+        ) from exc
+    result["model"] = hcx_ocr_client.MODEL
+    result["prompt_version"] = hcx_ocr_client.PROMPT_VERSION
     return result
 
 

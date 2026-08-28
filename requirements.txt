@@ -8,6 +8,7 @@
 #   python -m pip install -r requirements.txt
 
 pandas>=3.0,<4
+numpy>=2.2,<3
 requests>=2.34,<3
 python-dotenv>=1.2,<2
 qdrant-client>=1.14,<2

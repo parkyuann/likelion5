@@ -1,14 +1,22 @@
-pandas
-requests
-python-dotenv
+# Project runtime dependencies only.
+# Do not paste the full output of `pip freeze` here.
+# Add a package only when project code or shared notebooks import it directly.
+#
+# Setup:
+#   python -m venv venv
+#   .\venv\Scripts\activate
+#   python -m pip install -r requirements.txt
+
+pandas>=3.0,<4
+requests>=2.34,<3
+python-dotenv>=1.2,<2
 qdrant-client>=1.14,<2
-kiwipiepy>=0.23,<0.24
-fastapi>=0.110
-uvicorn>=0.29
-httpx>=0.28
-trafilatura>=2.2
-beautifulsoup4>=4.13
-lxml>=5.0
-python-multipart>=0.0.9
-Pillow>=10.0
-numpy>=1.24
+kss>=6.0,<7
+fastapi>=0.116,<1
+uvicorn[standard]>=0.35,<1
+psycopg[binary]>=3.2,<4
+redis>=6,<7
+argon2-cffi>=25,<26
+python-multipart>=0.0.20,<1
+httpx>=0.28,<1
+Pillow>=11,<12

@@ -1,5 +1,4 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-const TOKEN_KEY = "kosis-token";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
 
 export class ApiError extends Error {
   constructor(message, { status, code, detail } = {}) {
@@ -11,72 +10,69 @@ export class ApiError extends Error {
   }
 }
 
-function authToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY) || "";
-  } catch {
-    return "";
-  }
+function apiUrl(path) {
+  return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-// 로그인 상태면 Authorization 헤더를 붙인다.
-function authHeaders(extra = {}) {
-  const token = authToken();
-  return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
+async function apiFetch(path, init = {}) {
+  const headers = new Headers(init.headers || {});
+  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return fetch(apiUrl(path), { ...init, headers, credentials: "include" });
 }
 
 async function parseResponse(response) {
+  if (response.status === 204) return null;
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json")
     ? await response.json()
     : { message: await response.text() };
-
   if (!response.ok) {
-    throw new ApiError(
-      payload.message || `백엔드 요청에 실패했습니다. (HTTP ${response.status})`,
-      {
-        status: response.status,
-        code: payload.error_code,
-        detail: payload.detail,
-      },
-    );
+    const message = payload?.message || `요청을 처리할 수 없습니다. (HTTP ${response.status})`;
+    throw new ApiError(message, {
+      status: response.status,
+      code: payload?.code,
+      detail: payload?.detail,
+    });
   }
   return payload;
 }
 
-// ── 검증 (로그인 시 계정에 저장, conversationId로 대화 이어가기) ──────────
-export async function analyzeInput(
-  text,
-  { conversationId, inputType = "auto", focusQuestion = "" } = {},
-) {
-  const response = await fetch(`${API_BASE_URL}/v1/analyze`, {
+export async function analyzeInput(text, {
+  conversationId,
+  inputType = "auto",
+  focusQuestion = "",
+  date = "",
+  dateSource = null,
+} = {}) {
+  const response = await apiFetch("/v1/analyze", {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
-      text,
-      input_type: inputType,
+      text, input_type: inputType,
+      date,
+      date_source: dateSource,
       ...(focusQuestion ? { focus_question: focusQuestion } : {}),
-      max_claims: 10,
-      explain: false,
+      max_claims: 10, explain: false,
       ...(conversationId ? { conversation_id: conversationId } : {}),
     }),
   });
   return parseResponse(response);
 }
 
-// 기사 본문을 develop 배포 파이프라인(run_trace)으로 검증한다.
-// 반환: { type:"article", status, live, summary, results:[segments], conversation_id? }
-export async function verifyArticleDevelop(
-  text,
-  { conversationId, title = "", date = "" } = {},
-) {
-  const response = await fetch(`${API_BASE_URL}/v1/verify/develop`, {
+export async function verifyArticleDevelop(text, {
+  conversationId,
+  title = "",
+  date = "",
+  dateSource = null,
+} = {}) {
+  const response = await apiFetch("/v1/verify/develop", {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       text,
       title,
       date,
+      date_source: dateSource,
       ...(conversationId ? { conversation_id: conversationId } : {}),
     }),
   });
@@ -88,122 +84,72 @@ export async function analyzeImage(file, { conversationId, focusQuestion = "" } 
   form.append("file", file);
   if (conversationId) form.append("conversation_id", conversationId);
   if (focusQuestion) form.append("focus_question", focusQuestion);
-  const response = await fetch(`${API_BASE_URL}/v1/analyze/image`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: form,
-  });
+  const response = await apiFetch("/v1/analyze/image", { method: "POST", body: form });
   return parseResponse(response);
 }
 
 export async function checkHealth() {
-  const response = await fetch(`${API_BASE_URL}/health`);
-  return parseResponse(response);
+  return parseResponse(await fetch("/health", { credentials: "include" }));
 }
 
-// ── 이메일 인증 (백엔드 실연동) ──────────────────────────
 export async function registerApi(email, password, displayName) {
-  const response = await fetch(`${API_BASE_URL}/v1/auth/register`, {
+  return parseResponse(await apiFetch("/auth/signup", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, display_name: displayName }),
-  });
-  return parseResponse(response); // { user, access_token, ... }
+  }));
 }
 
 export async function loginApi(email, password) {
-  const response = await fetch(`${API_BASE_URL}/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  return parseResponse(response); // { user, access_token, ... }
+  return parseResponse(await apiFetch("/auth/login", {
+    method: "POST", body: JSON.stringify({ email, password }),
+  }));
 }
 
-// ── 소셜 로그인 (백엔드 OAuth) ───────────────────────────
-export function startKakaoLogin() {
-  window.location.href = `${API_BASE_URL}/v1/auth/kakao/login`;
+export async function authMe() {
+  return parseResponse(await apiFetch("/auth/me"));
 }
 
-export function startNaverLogin() {
-  window.location.href = `${API_BASE_URL}/v1/auth/naver/login`;
+export async function authLogout() {
+  return parseResponse(await apiFetch("/auth/logout", { method: "POST" }));
 }
 
-export function startGoogleLogin() {
-  window.location.href = `${API_BASE_URL}/v1/auth/google/login`;
+export async function authLogoutAll() {
+  return parseResponse(await apiFetch("/auth/logout-all", { method: "POST" }));
 }
 
-export async function authMe(token) {
-  const response = await fetch(`${API_BASE_URL}/v1/auth/me`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return parseResponse(response); // { user: {...} }
-}
-
-export async function authLogout(token) {
-  await fetch(`${API_BASE_URL}/v1/auth/logout`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-}
-
-// ── 검증 기록 (대화) ─────────────────────────────────────
 export async function listConversations({ limit = 30, offset = 0 } = {}) {
-  const response = await fetch(
-    `${API_BASE_URL}/v1/conversations?limit=${limit}&offset=${offset}`,
-    { headers: authHeaders() },
-  );
-  return parseResponse(response); // { items|conversations, ... }
+  const params = new URLSearchParams({ limit, offset });
+  return parseResponse(await apiFetch(`/v1/conversations?${params}`));
 }
 
 export async function getConversation(id) {
-  const response = await fetch(`${API_BASE_URL}/v1/conversations/${id}`, {
-    headers: authHeaders(),
-  });
-  return parseResponse(response); // { conversation, messages }
+  return parseResponse(await apiFetch(`/v1/conversations/${encodeURIComponent(id)}`));
 }
 
 export async function deleteConversation(id) {
-  const response = await fetch(`${API_BASE_URL}/v1/conversations/${id}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
+  const response = await apiFetch(`/v1/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!response.ok && response.status !== 204) return parseResponse(response);
+  return null;
 }
 
-// ── 통계표 탐색 · 즐겨찾기 ────────────────────────────────
-export async function searchTables(
-  q = "",
-  { limit = 30, offset = 0, organization = "" } = {},
-) {
+export async function searchTables(q = "", { limit = 30, offset = 0, organization = "" } = {}) {
   const params = new URLSearchParams({ q, limit, offset });
   if (organization) params.set("org", organization);
-  const response = await fetch(`${API_BASE_URL}/v1/tables?${params}`, {
-    headers: authHeaders(), // 로그인 시 favorited 표시
-  });
-  return parseResponse(response); // { items, total, ... }
+  return parseResponse(await apiFetch(`/v1/tables?${params}`));
 }
 
 export async function listFavorites() {
-  const response = await fetch(`${API_BASE_URL}/v1/favorites`, {
-    headers: authHeaders(),
-  });
-  return parseResponse(response); // { items, total }
+  return parseResponse(await apiFetch("/v1/favorites"));
 }
 
 export async function addFavorite(tableKey) {
-  const response = await fetch(`${API_BASE_URL}/v1/favorites`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ table_key: tableKey }),
-  });
-  return parseResponse(response);
+  return parseResponse(await apiFetch("/v1/favorites", {
+    method: "POST", body: JSON.stringify({ table_key: tableKey }),
+  }));
 }
 
 export async function removeFavorite(tableKey) {
-  const response = await fetch(
-    `${API_BASE_URL}/v1/favorites/${encodeURIComponent(tableKey)}`,
-    { method: "DELETE", headers: authHeaders() },
-  );
+  const response = await apiFetch(`/v1/favorites/${encodeURIComponent(tableKey)}`, { method: "DELETE" });
   if (!response.ok && response.status !== 204) return parseResponse(response);
+  return null;
 }

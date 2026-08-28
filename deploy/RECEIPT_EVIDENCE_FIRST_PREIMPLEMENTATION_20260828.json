@@ -1,0 +1,58 @@
+{
+  "contract": "evidence-first-statistics-preimplementation-receipt-v1",
+  "date": "2026-08-28",
+  "git_head": "598b8125f79224dd90e10d7d32b7b8733f555397",
+  "origin_develop": "598b8125f79224dd90e10d7d32b7b8733f555397",
+  "tracked_dirty_diff_sha256": "5CECBAAC751FD1EE1101E3247C3D66DADE400B13890912AC10A0ED83A34FBF12",
+  "protected_tracked_files_sha256": {
+    "backend/app.py": "B178C9A0FD78E12AE721E442E818CFA1428A2D0D47E14A286FE0F206DBADC532",
+    "backend/develop_verify_service.py": "1D6A821D742C6151E6FB2BBB02F6976C988ED49F7D13045A5AA11D0A38ECC4D6",
+    "deploy/pipeline_runtime/manifest.json": "0BD991FFCD0F26B0B6CC94DAE0F7E42290FA353B2CF328DFC05A126ED5CC63C0",
+    "deploy/pipeline_runtime/src/news_verification/runtime/r4c1_claim_core_v2.py": "5ECCCF63974780FA3EE4BEC25CA2DB2BD0DE417B1D3F95E7698976C38D6FE499",
+    "deploy/pipeline_runtime/src/news_verification/runtime/run_pipeline_operational_v2.py": "23A81E739A3C39BC2B284C46C78EB9833665B3ACB55BF4CC276423238C169244",
+    "deploy/pipeline_runtime/src/news_verification/runtime/run_pipeline_terminal_v1.py": "BF43B87CB1F068CF56A320032E15781312D8CFA8DF62EDCA7F0EEDF154C2211F",
+    "frontend/src/ChatApp.jsx": "A383B3131673D805FBC295A4A8239AAC1A6D26F3AD6CD8E507F65E9DAF3BAFD6",
+    "frontend/src/api.js": "FDAADC3D4C411FC83BAAF9B732CBAD290091F7C86A5BB3B7015DA2284563404E",
+    "tests_backend/test_auth_api_contract.py": "E96560A2289468F1847E683B93CCB204FC17D189D295EA3A9FC869526925281D",
+    "tests_backend/test_ec2_integration_backend_v1.py": "B576144333F6467DB19742EF0449D8061B4EF0D6940C7B74B69FEC3BB9062463",
+    "tests_backend/test_overlay_contract_static.py": "779A221A2B17562A80C3B1740E3D67C6F2578F31BA21116ED516FDC103D81613",
+    "tests_backend/test_overlay_runtime.py": "3909DDB07C86B7618A2DD38BF12D8D090551D5D18AFFA49913CF313F8DD6D9BA"
+  },
+  "untracked_files": {
+    "ARCHITECTURE_DRAFT.md": "excluded_unrelated",
+    "architecture_overview.png": "excluded_unrelated",
+    "architecture_overview.svg": "excluded_unrelated",
+    "deploy/DESIGN_ARTICLE_DATE_CLARIFICATION_V1_20260827.md": "protected_existing_date_design",
+    "deploy/DESIGN_EVIDENCE_FIRST_STATISTICS_V2_20260828.md": "review_artifact_current",
+    "deploy/RECEIPT_EVIDENCE_FIRST_PREIMPLEMENTATION_20260828.json": "review_artifact_current",
+    "deploy/evidence_first_date_preimpl_20260828.xml": "review_artifact_date_junit"
+  },
+  "protected_existing_date_design_sha256": "07D9E07BDFDE0CD027E6E45EE6959C1E15B57C63809E80B43A30F7035F38EB82",
+  "preimplementation_full": {
+    "command": "E:/news_verification_1/.venv_audit_31314/Scripts/python.exe -m pytest tests/ -q --basetemp=.pytest_tmp_evidence_first_preimpl_20260828 --junitxml=data/develop/evidence_first_statistics_preimpl_20260828.xml",
+    "observed": {"passed": 1915, "failed": 12, "skipped": 1, "seconds": 1144.76},
+    "junit_sha256": "64c2ba2755b537c13703cccbf73086e6017177af66121abc8515b4c0d737937e",
+    "timing_node_reruns": "3/3 passed",
+    "sealed_differential": {"passed": 1916, "failed": 11, "skipped": 1},
+    "passed_ids_sha256": "aff8f51f27eb96536586d792c8e333b7ad47f13c9399727fa9eb03876a88d4db",
+    "failed_ids_sha256": "a6340ebb0a81c7bd498e649cc23774f37d955ad68d0b4f0d738533be06bc3a4b",
+    "skipped_ids_sha256": "bd104666e08b992cb129be0e8276aaf8ccd8adc59d9024573e40d1473d73a48f"
+  },
+  "preimplementation_focused": {
+    "canonical_date": {
+      "command": "E:/news_verification_1/.venv_audit_31314/Scripts/python.exe -m pytest tests/test_r4c1_claim_core_v2.py tests/test_run_pipeline_operational_v2.py tests/test_run_pipeline_terminal_v1.py -q --basetemp=.pytest_tmp_evidence_first_date_preimpl --junitxml=data/develop/evidence_first_date_preimpl_20260828.xml",
+      "result": "65 passed / 65 total",
+      "junit_sha256": "83071B07CF4EC0686D904D779431915C3C9AF0D6B0AD809395B7D10301FD3382"
+    },
+    "handoff_date_backend": {
+      "command": "E:/news_verification_1/.venv_audit_31314/Scripts/python.exe -m pytest tests_backend/test_auth_api_contract.py tests_backend/test_ec2_integration_backend_v1.py tests_backend/test_overlay_contract_static.py tests_backend/test_overlay_runtime.py -q --basetemp=.pytest_tmp_evidence_first_date_preimpl --junitxml=deploy/evidence_first_date_preimpl_20260828.xml",
+      "result": "41 passed / 41 total",
+      "junit_sha256": "DF681157D1CD2B73E9A8F1B8FF0981EF3BA043F535A953AEC80F26AE27F54E3A"
+    },
+    "frontend_build": {
+      "command": "cmd /c npm run build",
+      "result": "passed; 32 modules transformed"
+    },
+    "postimplementation_condition": "the same two exact pytest commands and cmd /c npm run build must pass without losing any case"
+  }
+}

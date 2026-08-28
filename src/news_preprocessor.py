@@ -49,7 +49,7 @@ import unicodedata
 
 import pandas as pd
 
-RAW_PATH = "data/AI_기반_뉴스_사실검증_시스템_프로젝트_데이터.csv"
+RAW_PATH = "data/raw/AI_기반_뉴스_사실검증_시스템_프로젝트_데이터.csv"
 OUT_PATH = "data/news_preprocessed.csv"
 
 # --- 헤더 앵커 ---
@@ -91,7 +91,7 @@ def find_title_end(text: str, title) -> int:
 TAIL_MARKERS = re.compile(
     r"#[가-힣A-Za-z0-9]"
     r"|100자평|도움말\s*삭제기준|By\s*Taboola|많이\s*본\s*뉴스|AI\s*추천"
-    r"|무단\s*전재|저작권자\s*ⓒ|Copyright\s*조선일보|English\s*기사보기|기사\s*전체보기"
+    r"|무단\s*전재|저작권자\s*ⓒ|Copyright[\sc©ⓒ&]*조선일보|English\s*기사보기|기사\s*전체보기"
     r"|구독수\s*\d|당신이\s*좋아할\s*만한\s*콘텐츠|오늘의\s*멤버십|지금\s*뜨는\s*콘텐츠"
     r"|관련\s?기사|추천\s?기사|더보기"
 )
@@ -138,15 +138,40 @@ def strip_head(text: str, title) -> tuple[str, str | None, bool, bool]:
     return body.strip(), author, True, False
 
 
+# 꼬리 바이라인: 마커(TAIL_MARKERS)나 저자명 앵커로 못 잡은, 본문 맨 끝의 기자 서명 블록.
+# 단일("조재희 기자")·다중("변희원 팀장, 윤진호·오로라·이영관·박지민 기자") 모두 커버.
+TRAILING_BYLINE_RE = re.compile(
+    r"\s*(?:[가-힣]{2,4}\s*팀장[\s,，]*)?"           # 선택: '이름 팀장,'
+    r"[가-힣]{2,4}(?:\s*[·,、]\s*[가-힣]{2,4})*"       # 이름(·이름·이름)
+    r"\s*(?:기자|특파원)\s*$"
+)
+# 바이라인 블록 바로 앞이 이 문자들(문장 종결)일 때만 절삭 — 정상 문장 오절삭 방지.
+_SENTENCE_END = set("다.!?\"'”’」』.")
+
+
+def _strip_trailing_byline(body: str) -> tuple[str, bool]:
+    m = TRAILING_BYLINE_RE.search(body)
+    if not m:
+        return body, False
+    before = body[: m.start()].rstrip()
+    if before and before[-1] in _SENTENCE_END:
+        return before, True
+    return body, False
+
+
 def strip_tail(body: str, author: str | None) -> tuple[str, bool]:
     marks = TAIL_MARKERS.pattern
     if author and "기자" in author:
         # 본문 뒤에 재등장하는 '기자명 + 프로필' 블록을 종료 앵커로 추가
         marks += rf"|{re.escape(author.split()[0])}\s*기자"
     m = re.search(marks, body)
-    if not m:
-        return body.strip(), False
-    return body[: m.start()].strip(), True
+    trimmed = False
+    if m:
+        body = body[: m.start()].strip()
+        trimmed = True
+    # 마커로 못 잡은 꼬리 바이라인(저자 추출 실패 케이스 등)을 최종 절삭
+    body, by_trimmed = _strip_trailing_byline(body)
+    return body.strip(), (trimmed or by_trimmed)
 
 
 def extract_section(url) -> str | None:

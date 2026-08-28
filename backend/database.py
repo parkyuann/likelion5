@@ -1,100 +1,140 @@
-"""사용자 인증과 대화 기록을 위한 경량 SQLite 저장소."""
+"""Application PostgreSQL repository boundary.
+
+The application database is owned by the EC2 data tier.  This module deliberately
+does not create tables, run migrations, or open a local file database.  Until the
+canonical application migration has been reconciled with the runtime SQL contract,
+all repository access is fail-closed with ``APPLICATION_SCHEMA_PENDING``.
+"""
 
 from __future__ import annotations
 
 import os
-import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB_PATH = ROOT / "backend_data" / "likelion5.db"
+from backend.errors import BackendError
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT NOT NULL UNIQUE,
-    display_name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS auth_sessions (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    revoked_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
-    ON auth_sessions(token_hash, expires_at);
-
-CREATE TABLE IF NOT EXISTS conversations (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
-    ON conversations(user_id, updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
-    kind TEXT NOT NULL,
-    content TEXT NOT NULL,
-    payload_json TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
-    ON messages(conversation_id, created_at ASC);
-
-CREATE TABLE IF NOT EXISTS favorites (
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    table_key TEXT NOT NULL,
-    org_id TEXT,
-    org_name TEXT,
-    tbl_id TEXT,
-    tbl_name TEXT,
-    category_path TEXT,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, table_key)
-);
-CREATE INDEX IF NOT EXISTS idx_favorites_user_created
-    ON favorites(user_id, created_at DESC);
-"""
+try:  # The CPU API image supplies psycopg; local static checks may not.
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb
+except ImportError:  # pragma: no cover - exercised by a dependency preflight
+    psycopg = None  # type: ignore[assignment]
+    dict_row = None  # type: ignore[assignment]
+    Jsonb = None  # type: ignore[assignment,misc]
 
 
-def database_path() -> Path:
-    configured = os.getenv("BACKEND_DB_PATH", "").strip()
-    return Path(configured).expanduser().resolve() if configured else DEFAULT_DB_PATH
+APPLICATION_SCHEMA_STATUS_ENV = "APPLICATION_SCHEMA_STATUS"
+APPLICATION_SCHEMA_REVISION_ENV = "APPLICATION_SCHEMA_REVISION"
+APPLICATION_DATABASE_URL_ENV = "APPLICATION_DATABASE_URL"
+SCHEMA_STATUS_PENDING = "PENDING_APPLICATION_SCHEMA_RECONCILIATION"
+APPLICATION_SCHEMA_REVISION = "001_application_auth"
 
 
-def connect() -> sqlite3.Connection:
-    path = database_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=5.0)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 5000")
-    connection.execute("PRAGMA journal_mode = WAL")
-    connection.executescript(SCHEMA)
-    connection.commit()
-    return connection
+class RepositoryError(RuntimeError):
+    """A PostgreSQL operation failed after the application boundary was opened."""
+
+    def __init__(self, message: str, *, sqlstate: str | None = None) -> None:
+        super().__init__(message)
+        self.sqlstate = sqlstate
+
+
+def schema_ready() -> bool:
+    """Return whether the exact, approved auth migration is attested."""
+
+    return (
+        os.getenv(APPLICATION_SCHEMA_STATUS_ENV, SCHEMA_STATUS_PENDING).strip().upper()
+        == "VERIFIED"
+        and os.getenv(APPLICATION_SCHEMA_REVISION_ENV, "").strip()
+        == APPLICATION_SCHEMA_REVISION
+    )
+
+
+def _require_runtime_configuration() -> str:
+    if not schema_ready():
+        raise BackendError(
+            "APPLICATION_SCHEMA_PENDING",
+            "application DB 스키마 대조가 완료되지 않았습니다.",
+            status_code=503,
+        )
+    dsn = os.getenv(APPLICATION_DATABASE_URL_ENV, "").strip()
+    if not dsn:
+        raise BackendError(
+            "DATABASE_CONFIGURATION_PENDING",
+            "application PostgreSQL 연결 설정이 없습니다.",
+            status_code=503,
+        )
+    return dsn
+
+
+def connect() -> Any:
+    """Open one PostgreSQL connection without any schema side effect."""
+
+    dsn = _require_runtime_configuration()
+    if psycopg is None or dict_row is None:
+        raise BackendError(
+            "DATABASE_DRIVER_UNAVAILABLE",
+            "PostgreSQL 드라이버를 사용할 수 없습니다.",
+            status_code=503,
+        )
+    try:
+        return psycopg.connect(dsn, row_factory=dict_row, connect_timeout=5)
+    except Exception as exc:  # psycopg has several connection-error subclasses.
+        raise BackendError(
+            "DATABASE_UNAVAILABLE",
+            "application PostgreSQL에 연결할 수 없습니다.",
+            status_code=503,
+        ) from exc
+
+
+def _sqlstate(exc: BaseException) -> str | None:
+    value = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+    return str(value) if value else None
+
+
+def as_jsonb(value: Any) -> Any:
+    """Adapt a Python value to PostgreSQL JSONB when psycopg is present."""
+
+    return Jsonb(value) if Jsonb is not None else value
 
 
 @contextmanager
-def session() -> Iterator[sqlite3.Connection]:
+def session() -> Iterator[Any]:
+    """Yield a transactional PostgreSQL connection and close it afterwards.
+
+    DDL, migration execution, and implicit table creation are intentionally absent.
+    SQLSTATE-bearing driver errors are wrapped so API callers can return a safe 503
+    while preserving the state for conflict handling in the auth repository.
+    """
+
     connection = connect()
     try:
         yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
+    except Exception as exc:
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+        if isinstance(exc, (BackendError, RepositoryError)):
+            raise
+        state = _sqlstate(exc)
+        if state:
+            raise RepositoryError("PostgreSQL operation failed.", sqlstate=state) from exc
         raise
+    else:
+        try:
+            connection.commit()
+        except Exception as exc:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            state = _sqlstate(exc)
+            if state:
+                raise RepositoryError("PostgreSQL commit failed.", sqlstate=state) from exc
+            raise
     finally:
-        connection.close()
+        try:
+            connection.close()
+        except Exception:
+            pass

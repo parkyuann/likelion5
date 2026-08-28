@@ -11,10 +11,10 @@ function kosisTableUrl(orgId, tblId) {
 }
 
 const VERDICTS = {
-  match: { label: "일치", className: "match" },
-  mismatch: { label: "불일치", className: "mismatch" },
-  notfound: { label: "검증 불가능 · 매칭 실패", className: "unverifiable" },
-  outofscope: { label: "검증 불가능 · 대상 밖", className: "unverifiable" },
+  match: { label: "근거 확인", className: "match" },
+  mismatch: { label: "비교 결과 확인", className: "mismatch" },
+  notfound: { label: "추가 확인 필요 · 매칭 실패", className: "unverifiable" },
+  outofscope: { label: "추가 확인 필요 · 대상 밖", className: "unverifiable" },
 };
 
 // 검증 진행 단계(문장별 진행 로그에 표시)
@@ -68,10 +68,12 @@ function Candidates({ candidates }) {
 // ── 문장 판정 상세 (클릭 시 문장 아래 인라인) ──────────
 function ClaimDetail({ seg }) {
   const meta = VERDICTS[seg.verdict] || VERDICTS.outofscope;
+  const evidence = seg.evidence_answer || seg.evidenceAnswer;
+  const answerText = evidence?.text || seg.answer;
   return (
     <span className={`c-detail ${meta.className}`}>
-      <span className="c-detail-verdict">{meta.label}</span>
-      {seg.answer && <span className="c-detail-answer">{seg.answer}</span>}
+      <span className="c-detail-verdict">{evidence ? "현재 통계 근거" : meta.label}</span>
+      {answerText && <span className="c-detail-answer">{answerText}</span>}
       {seg.calc && <span className="c-calc">{seg.calc}</span>}
       {seg.table && (
         <span className="c-table-block">
@@ -95,25 +97,29 @@ function ClaimDetail({ seg }) {
 function ArticleResult({ segments }) {
   const [openId, setOpenId] = useState(null);
 
-  const counts = { match: 0, mismatch: 0, unverifiable: 0 };
+  const counts = { evidence: 0, needsReview: 0 };
   segments.forEach((s) => {
     if (!s.verifiable) return;
-    if (s.verdict === "match") counts.match += 1;
-    else if (s.verdict === "mismatch") counts.mismatch += 1;
-    else counts.unverifiable += 1;
+    if (s.evidence_answer || s.evidenceAnswer) counts.evidence += 1;
+    else counts.needsReview += 1;
   });
+  const evidence = segments.find((s) => s.evidence_answer || s.evidenceAnswer);
+  const evidenceText = evidence?.evidence_answer?.text || evidence?.evidenceAnswer?.text;
 
   return (
     <div className="c-article-card">
+      {evidenceText && (
+        <div className="c-evidence-answer">
+          <div className="c-evidence-label">현재 통계 근거</div>
+          <p>{evidenceText}</p>
+        </div>
+      )}
       <div className="c-summary">
         <span className="c-summary-item match">
-          <strong>{counts.match}</strong> 일치
+          <strong>{counts.evidence}</strong> 근거 확인
         </span>
         <span className="c-summary-item mismatch">
-          <strong>{counts.mismatch}</strong> 불일치
-        </span>
-        <span className="c-summary-item unverifiable">
-          <strong>{counts.unverifiable}</strong> 검증 불가능
+          <strong>{counts.needsReview}</strong> 추가 확인 필요
         </span>
         <span className="c-summary-hint">밑줄 친 문장을 클릭하세요</span>
       </div>
@@ -311,7 +317,7 @@ const SOURCE_LOADING_STEPS = {
 // 개발용 로딩 시간 설정. 화면에는 노출하지 않습니다.
 // 예: http://localhost:5173/?mockDelay=15 (1~60초)
 function mockDelayOverrideMs() {
-  if (typeof window === "undefined") return null;
+  if (!import.meta.env.DEV || typeof window === "undefined") return null;
   const seconds = Number(new URLSearchParams(window.location.search).get("mockDelay"));
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   return Math.min(60, Math.max(1, seconds)) * 1000;
@@ -320,12 +326,22 @@ function mockDelayOverrideMs() {
 // 오프라인 데모용 고정 목업 사용 여부. 기본은 실제 파이프라인.
 // 예: http://localhost:5173/?mock=1
 function mockEnabled() {
-  if (typeof window === "undefined") return false;
+  if (!import.meta.env.DEV || typeof window === "undefined") return false;
   const value = new URLSearchParams(window.location.search).get("mock");
   return value === "1" || value === "true";
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function isValidArticleDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+}
 
 // ── 진행 말풍선: 원형 링(%) + 문장별 진행 로그 ─────────
 // 완료 후에도 대화에 그대로 남으며, 완료 시 문장별 내역은 토글로 접는다.
@@ -403,6 +419,7 @@ function ChatApp({
   const [input, setInput] = useState("");
   const [sourceQuestion, setSourceQuestion] = useState("");
   const [pendingImage, setPendingImage] = useState(null); // { file, url }
+  const [pendingArticleDate, setPendingArticleDate] = useState(null);
   const [loading, setLoading] = useState(false);
   const chatBodyRef = useRef(null);
   const fileRef = useRef(null);
@@ -513,6 +530,18 @@ function ChatApp({
     setMessages((prev) => [
       ...prev,
       { role: "assistant", kind, text: message },
+    ]);
+  }
+
+  function requestArticleDate(article, result) {
+    setPendingArticleDate(article);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        kind: "date_request",
+        text: result.question?.prompt || "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+      },
     ]);
   }
 
@@ -692,11 +721,17 @@ function ChatApp({
   async function runText(text, {
     inputType = "auto",
     focusQuestion = "",
+    title = "",
+    date = "",
+    dateSource = null,
+    requestConversationId = conversationId,
   } = {}) {
     // UI 확인용 목업은 ?mock=1 일 때만 사용합니다(기본은 실제 파이프라인).
     // 새 UX(진행 링·결과 카드·인라인 상세)를 색상/수식/후보까지 그대로 렌더한다.
     if (mockEnabled()) {
-      lastRequestRef.current = { kind: "text", text, inputType, focusQuestion };
+      lastRequestRef.current = {
+        kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+      };
       const startTs = startNetworkProgress();
       setLoading(true);
       try {
@@ -710,7 +745,9 @@ function ChatApp({
       }
       return;
     }
-    lastRequestRef.current = { kind: "text", text, inputType, focusQuestion };
+    lastRequestRef.current = {
+      kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+    };
     const isUrl = inputType === "url" || /^https?:\/\/\S+$/i.test(text.trim());
     const startTs = startNetworkProgress();
     setLoading(true);
@@ -718,18 +755,27 @@ function ChatApp({
       if (isUrl) {
         // URL은 먼저 본문을 확보한 뒤 develop 파이프라인으로 검증한다.
         const prepared = await analyzeInput(text, {
-          conversationId,
+          conversationId: requestConversationId,
           inputType: "url",
           focusQuestion,
         });
         const doc = prepared?.article_document;
         if (prepared?.type === "article_document" && doc?.text) {
           const verified = await verifyArticleDevelop(doc.text, {
-            conversationId: prepared.conversation_id || conversationId,
+            conversationId: prepared.conversation_id || requestConversationId,
             title: doc.title || "",
             date: doc.published_date || "",
+            dateSource: doc.published_date ? "url_metadata" : null,
           });
-          if (verified?.type === "article") await showArticleResult(verified, startTs);
+          if (verified?.type === "needs_user_input") {
+            requestArticleDate({
+              text: doc.text,
+              title: doc.title || "",
+              inputType: "article",
+              focusQuestion,
+              conversationId: prepared.conversation_id || requestConversationId,
+            }, verified);
+          } else if (verified?.type === "article") await showArticleResult(verified, startTs);
           else handleResult(verified, focusQuestion);
         } else {
           handleResult(prepared, focusQuestion);
@@ -737,10 +783,23 @@ function ChatApp({
       } else {
         // 기사 본문/텍스트는 develop 파이프라인으로 검증한다. 단 수치 주장이 없어
         // 기사가 아니면(질문·잡담) 기존 라우터로 넘긴다(질문→KOSIS, 잡담→안내).
-        const verified = await verifyArticleDevelop(text, { conversationId });
-        if (verified?.type === "not_article") {
+        const verified = await verifyArticleDevelop(text, {
+          conversationId: requestConversationId,
+          title,
+          date,
+          dateSource,
+        });
+        if (verified?.type === "needs_user_input") {
+          requestArticleDate({
+            text,
+            title,
+            inputType,
+            focusQuestion,
+            conversationId: requestConversationId,
+          }, verified);
+        } else if (verified?.type === "not_article") {
           const routed = await analyzeInput(text, {
-            conversationId,
+            conversationId: requestConversationId,
             inputType,
             focusQuestion,
           });
@@ -810,6 +869,43 @@ function ChatApp({
   // ── 입력 전송 ──
   function handleSend() {
     if (loading) return;
+    if (pendingArticleDate) {
+      const answer = input.trim();
+      if (!answer) return;
+      setInput("");
+      if (answer === "취소") {
+        setPendingArticleDate(null);
+        lastRequestRef.current = null;
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", kind: "text", text: "기사 발행일 입력을 취소했습니다." },
+        ]);
+        return;
+      }
+      if (!isValidArticleDate(answer)) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            kind: "date_request",
+            text: "실제 달력에 존재하는 YYYY-MM-DD 형식으로 다시 알려주세요. 취소하려면 '취소'를 입력하세요.",
+          },
+        ]);
+        return;
+      }
+      const article = pendingArticleDate;
+      setPendingArticleDate(null);
+      setMessages((prev) => [...prev, { role: "user", kind: "text", text: answer }]);
+      runText(article.text, {
+        inputType: article.inputType,
+        focusQuestion: article.focusQuestion,
+        title: article.title,
+        date: answer,
+        dateSource: "user_feedback",
+        requestConversationId: article.conversationId,
+      });
+      return;
+    }
     if (pendingImage) {
       const file = pendingImage.file;
       const focusQuestion = sourceQuestion.trim();
@@ -843,7 +939,14 @@ function ChatApp({
     const last = lastRequestRef.current;
     if (!last || loading) return;
     if (last.kind === "image") runImage(last.file, last.focusQuestion);
-    else runText(last.text, { inputType: last.inputType, focusQuestion: last.focusQuestion });
+    else runText(last.text, {
+      inputType: last.inputType,
+      focusQuestion: last.focusQuestion,
+      title: last.title,
+      date: last.date,
+      dateSource: last.dateSource,
+      requestConversationId: last.requestConversationId,
+    });
   }
   // 범위 밖 안내에서 예시 칩을 누르면 그 질문을 새로 전송한다.
   function handleRecoveryPick(example) {
@@ -907,6 +1010,13 @@ function ChatApp({
                     focusQuestion={msg.focusQuestion}
                   />
                 </div>
+              </div>
+            );
+          }
+          if (msg.kind === "date_request") {
+            return (
+              <div key={i} className="c-row assistant">
+                <div className="c-bubble assistant">{msg.text}</div>
               </div>
             );
           }
@@ -1043,7 +1153,9 @@ function ChatApp({
           <textarea
             className="c-textarea"
             placeholder={
-              pendingImage
+              pendingArticleDate
+                ? "기사 발행일 YYYY-MM-DD 입력 또는 '취소'"
+                : pendingImage
                 ? "이미지가 첨부되었습니다"
                 : "통계 질문, 기사 URL 또는 본문 입력 후 Enter"
             }

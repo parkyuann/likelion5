@@ -1,25 +1,41 @@
+# 비밀·환경
 .env
-.env.*
 !.env.example
-.venv/
-backend_data/
-.ipynb_checkpoints/
+
+# 파이썬
+venv/
 __pycache__/
-*.py[cod]
+*.pyc
+.pytest_cache/
+.pytest_tmp*/
 
-# 원본 데이터와 생성 결과
-data/
-output/
+# 대용량/데이터 → 구글 드라이브로 공유
 *.csv
-*.jsonl
-*.parquet
 *.xlsx
+*.pdf
+data/**/*.json
+!data/kosis_org_names.json
+data/*.bak
+data/**/*.jsonl
+data/*.json
+data/*.jsonl
 
-# 학습 모델 및 대용량 바이너리
-*.pkl
-*.pickle
-*.joblib
-*.pt
-*.pth
-*.onnx
+# 로컬 전용 문서·도구 설정
+docs/
+archive/
+output/
+data/develop/
+*.sqlite3
+*.npy
+*.zip
+*.log
+AGENTS.md
+CLAUDE.md
+claude.md
+.claude/
+.codex/
+.agents/
 
+# 의미 없는/빈 노트북 (공유 제외)
+workroom.ipynb
+scholar.ipynb

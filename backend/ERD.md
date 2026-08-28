@@ -1,3 +1,8 @@
+> **LEGACY_DO_NOT_IMPLEMENT**
+>
+> 이 문서는 SQLite/Bearer 기반의 과거 제안이며, 현재 PostgreSQL/Redis application DB
+> 또는 적용 migration 정본이 아닙니다. 구현·migration·운영 판단의 근거로 사용하지 마세요.
+
 # KOSIS 팩트체크 — 데이터베이스 ERD
 
 프론트엔드 기능(로그인·검증·검증 기록·즐겨찾기·통계표 탐색·이미지 OCR)을 기준으로

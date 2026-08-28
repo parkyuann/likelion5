@@ -6,8 +6,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/v1': 'http://127.0.0.1:8000',
-      '/health': 'http://127.0.0.1:8000',
+      '/api': {
+        target: process.env.VITE_DEV_API_TARGET || 'http://127.0.0.1:8000',
+        changeOrigin: false,
+      },
     },
   },
 })

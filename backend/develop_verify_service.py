@@ -1,13 +1,12 @@
-"""develop_verify_service.py — develop 배포 파이프라인(run_trace)을 웹에서 부르는 얇은 층.
+"""Backend entry point for the selectively packaged develop pipeline.
 
-옛 ``pipeline_service.py``와 같은 역할이지만 대상이 ``src/develop`` 배포 파이프라인
-(``run_article_body_pipeline_trace_v1.run_trace``)이다.
+The only supported article path is the packaged ``src.develop`` trace runner.
+Legacy ``src.run_pipeline`` and URL/image acquisition paths are never imported here.
 
 하는 일:
   1) 요청마다 격리된 임시 입출력 디렉터리를 만들고 입력 계약(JSONL)을 기록한다.
-  2) 인프라(Qdrant/인코더/리랭커 URL) 감지:
-       - 셋 다 있으면 stage="all"        → 라이브 검색·판정까지(04)
-       - 없으면 l1→l2→layers 순차 실행    → 구조화·라우팅까지(01~03)
+  2) ``PIPELINE_LIVE_STAGE_ENABLED=true``일 때만 live stage를 추가한다.
+     URL이 존재해도 false이면 항상 l1→l2→layers만 실행한다.
   3) 출력을 프론트 표시 계약(segments)으로 투영한다.
 
 인계서 요구: 내부 API 키·로컬 절대경로·원본 예외 문자열은 클라이언트 응답에 노출하지 않는다.
@@ -16,39 +15,21 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import re
 import shutil
-import sys
 import tempfile
 import uuid
+from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
 
 from backend.errors import BackendError
+from backend.runtime_gate import pipeline_live_stage_enabled
 
-# --- 파이프라인 import 경로 --------------------------------------------------
-# 이 파일: <root>/backend/develop_verify_service.py → parents[1] == <root>
-# develop 진입점은 `from ..hcx_claim_experiment` 상대 import(=`src` 네임스페이스
-# 패키지)와 일부 모듈의 bare import(`from claim_context_resolver ...`)를 함께 쓴다.
-# 따라서 repo 루트(→ `src.develop`)와 `src`(→ bare import) 둘 다 sys.path에 둔다.
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-for _path in (str(ROOT), str(SRC)):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-
-# .env(API 키·서비스 URL) 로드 — 파이프라인이 환경변수로 읽는다.
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(ROOT / ".env")
-except ImportError:
-    pass
-
 CONFIG_PATH = ROOT / "configs" / "pipeline_operational_v2.json"
-
-# 라이브(stage 04)에 필요한 외부 서비스 엔드포인트. 셋 다 있어야 판정까지 수행.
-_LIVE_ENV = ("QDRANT_URL", "BGE_QUERY_ENCODER_URL", "BGE_RERANKER_URL")
 
 # 라이브 판정 verdict → 프론트 verdict 코드(VERDICTS 키)
 _VERDICT_MAP = {"VERIFIED": "match", "REFUTED": "mismatch", "UNVERIFIABLE": "notfound"}
@@ -58,9 +39,116 @@ _PENDING_ANSWER = (
     "현재는 검증 대상 문장과 검색 질의까지 준비했습니다."
 )
 
+# 짧은 단문 '질문'을 기사 검증 이전에 걸러낸다. 질문에 든 나이·연도 숫자
+# (예: "19세 이상 34세 이하")를 수치 주장으로 오인해 기사 검증으로 보내는 것을 막고,
+# 질의는 상위 라우터(→ KOSIS MCP)로 넘긴다.
+_QUESTION_MARKERS = (
+    "얼마", "몇", "인가요", "인가", "일까", "될까", "할까", "한가요",
+    "했나요", "되나요", "알려", "조회", "찾아", "어때", "어떤가",
+    "무엇", "뭐야", "뭔가요", "있나요", "없나요",
+)
 
-def _live_ready() -> bool:
-    return all((os.environ.get(name) or "").strip() for name in _LIVE_ENV)
+_ARTICLE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_SOURCES = {"user_feedback", "url_metadata", "api_request"}
+ARTICLE_DATE_PROMPT = "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요."
+
+
+def _evidence_first_statistics_enabled_monthly_v2h() -> bool:
+    return os.getenv("EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def build_article_date_provenance_monthly_v2h(
+    canonical_article_text: str,
+) -> dict[str, str]:
+    return {
+        "date_source": "client_asserted",
+        "source_path": "backend_request",
+        "date_field": "date",
+        "article_text_sha256": hashlib.sha256(
+            canonical_article_text.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def normalize_article_date(date: str | None, date_source: str | None) -> tuple[str, str] | None:
+    """Validate the explicit article date and apply the compatibility source default."""
+
+    value = "" if date is None else date
+    if not isinstance(value, str):
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일은 YYYY-MM-DD 형식이어야 합니다.", status_code=422)
+    if not value.strip():
+        return None
+    if not _ARTICLE_DATE_PATTERN.fullmatch(value):
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일은 YYYY-MM-DD 형식이어야 합니다.", status_code=422)
+    try:
+        calendar_date.fromisoformat(value)
+    except ValueError:
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일은 실제 달력 날짜여야 합니다.", status_code=422) from None
+
+    source = date_source or "api_request"
+    if source not in _DATE_SOURCES:
+        raise BackendError("ARTICLE_DATE_INVALID", "기사 발행일 출처가 올바르지 않습니다.", status_code=422)
+    return value, source
+
+
+def article_date_required_response() -> dict[str, Any]:
+    return {
+        "type": "needs_user_input",
+        "status": "awaiting_article_date",
+        "reason": "ARTICLE_DATE_REQUIRED",
+        "question": {
+            "id": "article_published_date",
+            "prompt": ARTICLE_DATE_PROMPT,
+            "input_mode": "DATE",
+            "required": True,
+        },
+    }
+
+
+def _looks_like_question(text: str) -> bool:
+    """전체 입력이 짧은 통계 '질문'인지 보수적으로 판별한다(기사 오인 방지)."""
+    if "\n" in text:
+        return False  # 여러 줄이면 기사로 본다
+    normalized = " ".join(text.split())
+    if not normalized or len(normalized) > 200:
+        return False  # 길면 기사로 본다
+    if normalized.endswith("?"):
+        return True
+    return any(marker in normalized for marker in _QUESTION_MARKERS)
+
+
+def _pipeline_runtime_root() -> Path:
+    configured = os.getenv("PIPELINE_RUNTIME_ROOT", "").strip()
+    return Path(configured) if configured else ROOT / "pipeline_runtime"
+
+
+def _load_trace_runner() -> tuple[Any, type[Exception]]:
+    """Load only the packaged closure, never the repository's legacy root modules."""
+
+    runtime_root = _pipeline_runtime_root()
+    if not (runtime_root / "src" / "develop" / "run_article_body_pipeline_trace_v1.py").is_file():
+        raise BackendError(
+            "PIPELINE_RUNTIME_SOURCE_PENDING",
+            "배포 이미지에 승인된 pipeline runtime closure가 없습니다.",
+            status_code=503,
+        )
+    import importlib
+    import sys
+
+    root_text = str(runtime_root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+    try:
+        module = importlib.import_module("src.develop.run_article_body_pipeline_trace_v1")
+        return module.run_trace, module.TraceStageError
+    except Exception as exc:
+        raise BackendError(
+            "PIPELINE_RUNTIME_SOURCE_PENDING",
+            "승인된 pipeline runtime closure를 불러올 수 없습니다.",
+            status_code=503,
+        ) from exc
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -136,6 +224,10 @@ def _sentence_segment(
         "verdict": verdict,
         "answer": str(answer.get("explanation") or answer.get("headline") or ""),
     }
+    evidence_answer = answer.get("evidence_answer")
+    if isinstance(evidence_answer, dict) and str(evidence_answer.get("text") or "").strip():
+        segment["evidence_answer"] = evidence_answer
+        segment["answer"] = str(evidence_answer["text"])
     table = _live_table(ledger_for_sentence.get(sid) or {})
     if table:
         segment["table"] = table
@@ -201,7 +293,12 @@ def _project_segments(out_root: Path, body: str, *, live: bool) -> list[dict[str
     return segments
 
 
-def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[str, Any]:
+def verify_article_develop(
+    text: str,
+    title: str = "",
+    date: str | None = "",
+    date_source: str | None = None,
+) -> dict[str, Any]:
     """기사 본문을 develop 파이프라인으로 검증하고 프론트 표시 계약으로 반환한다.
 
     반환: type/status/live/summary + results(segments 배열). 각 segment는
@@ -211,17 +308,44 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
     if not body:
         raise BackendError("ARTICLE_EMPTY", "검증할 기사 본문이 없습니다.", status_code=422)
 
-    # 파이프라인 import는 무겁고 외부 의존(requests 등)을 끌어오므로 지연 로드한다.
-    from src.develop.run_article_body_pipeline_trace_v1 import TraceStageError, run_trace
+    # 짧은 통계 질문이면 기사 검증 대상이 아니다. 나이·연도 숫자를 수치 주장으로
+    # 오인하지 않도록 파이프라인 이전에 걸러 상위 라우터(→ KOSIS MCP)로 넘긴다.
+    if _looks_like_question(body):
+        return {"type": "not_article", "reason": "question"}
 
-    live = _live_ready()
+    evidence_first_statistics = _evidence_first_statistics_enabled_monthly_v2h()
+    normalized_date = normalize_article_date(
+        date, None if evidence_first_statistics else date_source
+    )
+    if normalized_date is None:
+        return article_date_required_response()
+    article_date, article_date_source = normalized_date
+
+    # PENDING 경로가 먼저 닫힌 뒤, explicit article만 승인된 closure를 지연 로드한다.
+    run_trace, trace_stage_error = _load_trace_runner()
+    live = pipeline_live_stage_enabled()
     article_id = uuid.uuid4().hex
+    article_body_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
     workdir = Path(tempfile.mkdtemp(prefix="verify_develop_"))
     articles_path = workdir / "articles.jsonl"
     out_root = workdir / "out"
     articles_path.write_text(
         json.dumps(
-            {"article_idx": article_id, "title": title, "date": date, "article_text": body},
+            {
+                "article_idx": article_id,
+                "title": title,
+                "date": article_date,
+                "article_text": body,
+                "article_date_provenance": (
+                    build_article_date_provenance_monthly_v2h(body)
+                    if evidence_first_statistics else
+                    {
+                        "date_source": article_date_source,
+                        "date_field": "date",
+                        "article_text_sha256": article_body_sha256,
+                    }
+                ),
+            },
             ensure_ascii=False,
         )
         + "\n",
@@ -248,7 +372,7 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
                 config_path=CONFIG_PATH if stage in ("all", "live") else None,
             )
         segments = _project_segments(out_root, body, live=live)
-    except TraceStageError as exc:
+    except trace_stage_error as exc:
         code = str(exc.args[0]) if exc.args else "PIPELINE_FAILED"
         raise BackendError(
             "VERIFY_PIPELINE_FAILED",
@@ -283,7 +407,8 @@ def verify_article_develop(text: str, title: str = "", date: str = "") -> dict[s
         "status": "completed" if live else "structured_only",
         "live": live,
         "title": title,
-        "date": date,
+        "date": article_date,
+        "date_source": article_date_source,
         "summary": counts,
         "results": segments,
     }

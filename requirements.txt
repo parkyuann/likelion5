@@ -10,9 +10,13 @@
 pandas>=3.0,<4
 requests>=2.34,<3
 python-dotenv>=1.2,<2
+qdrant-client>=1.14,<2
 kss>=6.0,<7
-openpyxl>=3.1,<4
-ipykernel>=7.3,<8
-
-# 실전2 검색 DB(담당 C, T2-2): KOSIS 표를 Qdrant 벡터DB에 색인/검색하기 위한 클라이언트
-qdrant-client>=1.7,<2
+fastapi>=0.116,<1
+uvicorn[standard]>=0.35,<1
+psycopg[binary]>=3.2,<4
+redis>=6,<7
+argon2-cffi>=25,<26
+python-multipart>=0.0.20,<1
+httpx>=0.28,<1
+Pillow>=11,<12

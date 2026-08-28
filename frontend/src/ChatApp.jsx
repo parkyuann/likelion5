@@ -2,100 +2,126 @@ import { useState, useRef, useEffect } from "react";
 import "./ChatApp.css";
 import { analyzeInput, analyzeImage, verifyArticleDevelop, ApiError } from "./api.js";
 import { ImageIcon, AlertIcon, DocIcon, LinkIcon, CheckIcon, RefreshIcon, QuestionIcon } from "./icons.jsx";
-import { findVerificationMock, mockToDisplayMessages } from "./mockVerificationData.js";
+import { mockToDisplayMessages } from "./mockVerificationData.js";
+import { mockVerifyArticle } from "./uiMockData.js";
 
 // ── KOSIS 통계표 주소 ──────────────────────────────────
 function kosisTableUrl(orgId, tblId) {
   return `https://kosis.kr/statHtml/statHtml.do?orgId=${orgId}&tblId=${tblId}`;
 }
 
-// KOSIS 원문을 열기 전에 근거의 핵심 메타데이터를 빠르게 확인합니다.
-function EvidenceLink({ table }) {
-  const href = table.href || kosisTableUrl(table.orgId, table.tblId);
-  const tooltipId = table.orgId && table.tblId
-    ? `evidence-${table.orgId}-${table.tblId}`
-    : undefined;
-  return (
-    <span className="c-evidence-link-wrap">
-      <a
-        className="c-table"
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        aria-describedby={tooltipId}
-      >
-        <span className="c-table-link-icon" aria-hidden="true">🔗</span>
-        <span>{table.name}</span>
-      </a>
-      <span
-        className="c-link-preview"
-        id={tooltipId}
-        role="tooltip"
-      >
-        <span className="c-link-preview-label">KOSIS 공식 근거</span>
-        <strong>{table.name}</strong>
-        {table.path && <span>{table.path}</span>}
-        {table.orgId && table.tblId && (
-          <span className="c-link-preview-meta">
-            기관 {table.orgId} · 통계표 {table.tblId}
-          </span>
-        )}
-      </span>
-    </span>
-  );
-}
-
 const VERDICTS = {
-  match: { label: "일치", className: "match" },
-  mismatch: { label: "불일치", className: "mismatch" },
-  notfound: { label: "검증 불가능 · 매칭 실패", className: "unverifiable" },
-  outofscope: { label: "검증 불가능 · 대상 밖", className: "unverifiable" },
+  match: { label: "근거 확인", className: "match" },
+  mismatch: { label: "비교 결과 확인", className: "mismatch" },
+  notfound: { label: "추가 확인 필요 · 매칭 실패", className: "unverifiable" },
+  outofscope: { label: "추가 확인 필요 · 대상 밖", className: "unverifiable" },
 };
 
-// ── 문장 판정 상세 ──────────────────────────────────────
-function ClaimDetail({ seg }) {
-  if (!seg.table) return null;
+// 검증 진행 단계(문장별 진행 로그에 표시)
+const STAGES = [
+  "문장을 분석하는 중이에요",
+  "관련 통계표를 찾는 중이에요",
+  "가장 알맞은 표를 고르는 중이에요",
+  "통계표와 대조해 확인하는 중이에요",
+  "수치를 계산하는 중이에요",
+];
+
+// ── 고려한 통계표 후보 목록 (접기/펼치기) ──────────────
+function Candidates({ candidates }) {
+  const [open, setOpen] = useState(false);
+  if (!candidates || candidates.length === 0) return null;
   return (
-    <div className="c-detail-evidence">
-      <EvidenceLink table={seg.table} />
+    <div className="c-cand-block">
+      <button className="c-cand-toggle" onClick={() => setOpen((v) => !v)}>
+        {open ? "▾" : "▸"} 고려한 통계표 후보 {candidates.length}개
+      </button>
+      {open && (
+        <div className="c-cand-list">
+          {candidates.map((cd) => {
+            const [orgId, tblId] = String(cd.key || ":").split(":");
+            const selected = cd.status === "선택";
+            return (
+              <a
+                key={cd.key}
+                className={`c-cand-row ${selected ? "selected" : ""}`}
+                href={kosisTableUrl(orgId, tblId)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span className="c-cand-rank">{cd.rank}</span>
+                <span className="c-cand-name">{cd.name}</span>
+                {typeof cd.score === "number" && (
+                  <span className="c-cand-score">score {cd.score.toFixed(1)}</span>
+                )}
+                <span className={`c-cand-status ${selected ? "ok" : "no"}`}>
+                  {cd.status}
+                </span>
+              </a>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-// ── 결과: 기사 전체 + 클릭 판정 ──────────────────────────
+// ── 문장 판정 상세 (클릭 시 문장 아래 인라인) ──────────
+function ClaimDetail({ seg }) {
+  const meta = VERDICTS[seg.verdict] || VERDICTS.outofscope;
+  const evidence = seg.evidence_answer || seg.evidenceAnswer;
+  const answerText = evidence?.text || seg.answer;
+  return (
+    <span className={`c-detail ${meta.className}`}>
+      <span className="c-detail-verdict">{evidence ? "현재 통계 근거" : meta.label}</span>
+      {answerText && <span className="c-detail-answer">{answerText}</span>}
+      {seg.calc && <span className="c-calc">{seg.calc}</span>}
+      {seg.table && (
+        <span className="c-table-block">
+          <a
+            className="c-table"
+            href={seg.table.href || kosisTableUrl(seg.table.orgId, seg.table.tblId)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            📊 {seg.table.name} 표 열기
+          </a>
+          {seg.table.path && <span className="c-path">📍 {seg.table.path}</span>}
+        </span>
+      )}
+      <Candidates candidates={seg.candidates} />
+    </span>
+  );
+}
+
+// ── 결과: 기사 전체 + 클릭 시 인라인 판정 ──────────────
 function ArticleResult({ segments }) {
   const [openId, setOpenId] = useState(null);
 
-  const counts = { match: 0, mismatch: 0, unverifiable: 0 };
+  const counts = { evidence: 0, needsReview: 0 };
   segments.forEach((s) => {
     if (!s.verifiable) return;
-    if (s.verdict === "match") counts.match += 1;
-    else if (s.verdict === "mismatch") counts.mismatch += 1;
-    else counts.unverifiable += 1;
+    if (s.evidence_answer || s.evidenceAnswer) counts.evidence += 1;
+    else counts.needsReview += 1;
   });
-  const selectedSegment = segments.find((segment) => segment.id === openId);
+  const evidence = segments.find((s) => s.evidence_answer || s.evidenceAnswer);
+  const evidenceText = evidence?.evidence_answer?.text || evidence?.evidenceAnswer?.text;
 
   return (
     <div className="c-article-card">
+      {evidenceText && (
+        <div className="c-evidence-answer">
+          <div className="c-evidence-label">현재 통계 근거</div>
+          <p>{evidenceText}</p>
+        </div>
+      )}
       <div className="c-summary">
-        <div className="c-summary-heading">
-          <strong>문장 검증 결과</strong>
-          <span>검증된 문장을 선택하면 판정 근거를 확인할 수 있습니다.</span>
-        </div>
-        <div className="c-summary-metrics">
-          <span className="c-summary-item match">
-            <span>일치</span>
-            <strong className="c-summary-number">{counts.match}</strong>
-          </span>
-          <span className="c-summary-item mismatch">
-            <span>불일치</span>
-            <strong className="c-summary-number">{counts.mismatch}</strong>
-          </span>
-          <span className="c-summary-item unverifiable">
-            <span>검증 불가능</span>
-            <strong className="c-summary-number">{counts.unverifiable}</strong>
-          </span>
-        </div>
+        <span className="c-summary-item match">
+          <strong>{counts.evidence}</strong> 근거 확인
+        </span>
+        <span className="c-summary-item mismatch">
+          <strong>{counts.needsReview}</strong> 추가 확인 필요
+        </span>
+        <span className="c-summary-hint">밑줄 친 문장을 클릭하세요</span>
       </div>
 
       <div className="c-article-text">
@@ -107,32 +133,29 @@ function ArticleResult({ segments }) {
             }
             return <span key={seg.id}>{seg.text}</span>;
           }
-          const meta = VERDICTS[seg.verdict];
+          const meta = VERDICTS[seg.verdict] || VERDICTS.outofscope;
           const open = openId === seg.id;
           return (
-            <span
-              key={seg.id}
-              className={`c-claim ${meta.className} ${open ? "active" : ""}`}
-              onClick={() => setOpenId(open ? null : seg.id)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setOpenId(open ? null : seg.id);
-                }
-              }}
-              role="button"
-              tabIndex={0}
-            >
-              {seg.text}
+            <span key={seg.id} className={`c-claim-wrap ${open ? "open" : ""}`}>
+              <span
+                className={`c-claim ${meta.className} ${open ? "active" : ""}`}
+                onClick={() => setOpenId(open ? null : seg.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setOpenId(open ? null : seg.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                {seg.text}
+              </span>
+              {open && <ClaimDetail seg={seg} />}
             </span>
           );
         })}
       </div>
-      {selectedSegment?.verifiable && selectedSegment.table && (
-        <div className="c-selected-detail" aria-live="polite">
-          <ClaimDetail seg={selectedSegment} />
-        </div>
-      )}
     </div>
   );
 }
@@ -294,7 +317,7 @@ const SOURCE_LOADING_STEPS = {
 // 개발용 로딩 시간 설정. 화면에는 노출하지 않습니다.
 // 예: http://localhost:5173/?mockDelay=15 (1~60초)
 function mockDelayOverrideMs() {
-  if (typeof window === "undefined") return null;
+  if (!import.meta.env.DEV || typeof window === "undefined") return null;
   const seconds = Number(new URLSearchParams(window.location.search).get("mockDelay"));
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   return Math.min(60, Math.max(1, seconds)) * 1000;
@@ -303,72 +326,72 @@ function mockDelayOverrideMs() {
 // 오프라인 데모용 고정 목업 사용 여부. 기본은 실제 파이프라인.
 // 예: http://localhost:5173/?mock=1
 function mockEnabled() {
-  if (typeof window === "undefined") return false;
+  if (!import.meta.env.DEV || typeof window === "undefined") return false;
   const value = new URLSearchParams(window.location.search).get("mock");
   return value === "1" || value === "true";
 }
 
-// 실제 검증 호출은 단계별 진행 신호를 주지 않으므로, 응답을 기다리는 동안
-// 단계를 타이머로 전진시키고(마지막 단계 직전까지) 응답이 오면 100%로 마무리한다.
-function startProgressAnimation(sourceType, setter, { stepMs = 1200 } = {}) {
-  const steps = SOURCE_LOADING_STEPS[sourceType] || SOURCE_LOADING_STEPS.auto;
-  const total = steps.length;
-  const completed = [];
-  const timers = [];
-  setter({ sourceType, completed: [], active: 0 });
-  // 마지막 단계는 응답 도착 시 완료 처리(그 전까진 active 상태로 대기).
-  for (let index = 1; index < total; index += 1) {
-    timers.push(
-      setTimeout(() => {
-        completed.push(index - 1);
-        setter({ sourceType, completed: [...completed], active: Math.min(index, total - 1) });
-      }, stepMs * index),
-    );
-  }
-  const clear = () => timers.forEach(clearTimeout);
-  return {
-    finish() {
-      clear();
-      setter({
-        sourceType,
-        completed: Array.from({ length: total }, (_, i) => i),
-        active: total - 1,
-      });
-    },
-    cancel: clear,
-  };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function isValidArticleDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
 }
 
-function VerificationProgress({ progress }) {
-  const sourceType = progress.sourceType || "auto";
-  const steps = SOURCE_LOADING_STEPS[sourceType] || SOURCE_LOADING_STEPS.auto;
-  const completed = new Set(progress.completed || []);
-  const completedCount = completed.size;
-  const percent = Math.round((completedCount / steps.length) * 100);
-  const activeIndex = Math.min(progress.active ?? 0, steps.length - 1);
+// ── 진행 말풍선: 원형 링(%) + 문장별 진행 로그 ─────────
+// 완료 후에도 대화에 그대로 남으며, 완료 시 문장별 내역은 토글로 접는다.
+function ProgressBubble({ progress }) {
+  const { done = false, pct = 0, elapsedS = 0, logs = [] } = progress || {};
+  const [openLog, setOpenLog] = useState(false);
+  const percent = done ? 100 : Math.round(pct);
+  // 진행 중엔 항상 보이고, 완료 후엔 토글로 열 때만 보인다.
+  const showLog = logs.length > 0 && (!done || openLog);
   return (
-    <div className="c-verification-progress">
-      <div className="c-progress-head">
-        <span className="c-progress-orbit" aria-hidden="true" />
-        <div>
-          <small className="c-progress-kicker">검증 중</small>
-          <strong>{steps[activeIndex]}</strong>
-          <span>{completedCount} / {steps.length}단계 완료 · {percent}%</span>
+    <div className="c-progress">
+      <div className="c-progress-top">
+        <div className={`c-ring ${done ? "done" : "loading"}`} style={{ "--pct": percent }}>
+          <span className="c-ring-num">{done ? "✓" : `${percent}%`}</span>
         </div>
-      </div>
-      <div className="c-progress-rail" aria-hidden="true">
-        <span style={{ width: `${percent}%` }} />
-      </div>
-      <div className="c-progress-steps">
-        {steps.map((label, index) => (
-          <span
-            key={label}
-            className={completed.has(index) ? "done" : index === activeIndex ? "active" : ""}
+        <div className="c-progress-meta">
+          <strong>{done ? "검증 완료" : "검증 중…"}</strong>
+          <span className="c-elapsed">전체 {elapsedS.toFixed(1)}s</span>
+        </div>
+        {done && logs.length > 0 && (
+          <button
+            type="button"
+            className="c-progress-toggle"
+            onClick={() => setOpenLog((v) => !v)}
           >
-            <i>{completed.has(index) ? "✓" : index + 1}</i>{label}
-          </span>
-        ))}
+            {openLog ? "접기 ▴" : "문장별 내역 ▾"}
+          </button>
+        )}
       </div>
+      {showLog && (
+        <div className="c-sent-log">
+          {logs.map((l) => {
+            const icon = l.status === "done" ? "✓" : l.status === "running" ? "▸" : "·";
+            const label =
+              l.status === "done"
+                ? `문장 ${l.n}/${l.total} · ${l.verdict}`
+                : l.status === "running"
+                  ? `문장 ${l.n}/${l.total} · ${l.stage}`
+                  : `문장 ${l.n}/${l.total}`;
+            const time = l.status === "pending" ? "대기 중" : `${(l.sec || 0).toFixed(1)}s`;
+            return (
+              <div key={l.n} className={`c-sent-line ${l.status}`}>
+                <span className="c-sent-icon">{icon}</span>
+                <span className="c-sent-label">{label}</span>
+                <span className="c-sent-time">{time}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -396,16 +419,19 @@ function ChatApp({
   const [input, setInput] = useState("");
   const [sourceQuestion, setSourceQuestion] = useState("");
   const [pendingImage, setPendingImage] = useState(null); // { file, url }
+  const [pendingArticleDate, setPendingArticleDate] = useState(null);
   const [loading, setLoading] = useState(false);
   const chatBodyRef = useRef(null);
   const fileRef = useRef(null);
   const startedRef = useRef(false);
   const lastRequestRef = useRef(null); // 오류 시 '다시 시도'로 재실행할 마지막 요청
   const [verificationProgress, setVerificationProgress] = useState({
-    sourceType: "auto",
-    completed: [],
-    active: 0,
+    done: false,
+    pct: 0,
+    elapsedS: 0,
+    logs: [],
   });
+  const progressTimersRef = useRef([]); // 진행 애니메이션 타이머 정리용
   const onMessagesChangeRef = useRef(onMessagesChange);
 
   useEffect(() => {
@@ -507,6 +533,18 @@ function ChatApp({
     ]);
   }
 
+  function requestArticleDate(article, result) {
+    setPendingArticleDate(article);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        kind: "date_request",
+        text: result.question?.prompt || "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+      },
+    ]);
+  }
+
   // ── 텍스트 검증 ──
   function verifyText(rawText, {
     inputType = "auto",
@@ -599,67 +637,183 @@ function ChatApp({
     setLoading(false);
   }
 
+  function stopProgressTimers() {
+    progressTimersRef.current.forEach((t) => clearInterval(t));
+    progressTimersRef.current = [];
+  }
+
+  // 네트워크 대기 동안: 경과 시간 + 버퍼링 느낌의 완만한 % 상승(문장 로그 없음)
+  function startNetworkProgress() {
+    const start = performance.now();
+    setVerificationProgress({ done: false, pct: 0, elapsedS: 0, logs: [] });
+    const elapsed = setInterval(() => {
+      setVerificationProgress((p) => ({ ...p, elapsedS: (performance.now() - start) / 1000 }));
+    }, 100);
+    const climb = setInterval(() => {
+      setVerificationProgress((p) => (p.pct < 85 ? { ...p, pct: p.pct + 1 } : p));
+    }, 260);
+    progressTimersRef.current = [elapsed, climb];
+    return start;
+  }
+
+  // 응답 도착 후: 문장별로 판정을 하나씩 채워 넣는 리플레이(실제 판정 + 시뮬레이션 시간)
+  async function runVerificationReplay(verifiable, startTs) {
+    // 버퍼 % 상승만 멈추고 경과 타이머는 유지
+    const [elapsed, climb] = progressTimersRef.current;
+    if (climb) clearInterval(climb);
+    progressTimersRef.current = elapsed ? [elapsed] : [];
+
+    const total = verifiable.length;
+    const run = verifiable.map((_, i) => ({
+      n: i + 1, total, status: "pending", verdict: null, stage: null, sec: 0,
+    }));
+    const bump = () =>
+      setVerificationProgress((p) => ({ ...p, logs: run.map((r) => ({ ...r })) }));
+    bump();
+
+    for (let i = 0; i < total; i += 1) {
+      const st = performance.now();
+      run[i].status = "running";
+      for (let s = 0; s < STAGES.length; s += 1) {
+        run[i].stage = STAGES[s];
+        run[i].sec = (performance.now() - st) / 1000;
+        const units = i + (s + 1) / STAGES.length;
+        const target = Math.min(99, Math.round((units / total) * 100));
+        setVerificationProgress((p) => ({
+          ...p, pct: Math.max(p.pct, target), logs: run.map((r) => ({ ...r })),
+        }));
+        await sleep(280 + Math.random() * 320);
+      }
+      run[i].status = "done";
+      run[i].verdict = (VERDICTS[verifiable[i].verdict] || VERDICTS.outofscope).label;
+      run[i].sec = (performance.now() - st) / 1000;
+      run[i].stage = null;
+      bump();
+    }
+    stopProgressTimers();
+    const elapsedS = (performance.now() - startTs) / 1000;
+    const logs = run.map((r) => ({ ...r }));
+    setVerificationProgress((p) => ({ ...p, done: true, pct: 100, elapsedS, logs }));
+    return { elapsedS, logs };
+  }
+
+  // 기사 검증 결과: 진행 말풍선(리플레이) + 결과 카드를 대화에 남긴다
+  async function showArticleResult(verified, startTs) {
+    if (verified.conversation_id) {
+      setConversationId(verified.conversation_id);
+      onSaved?.(verified.conversation_id);
+    }
+    const segments = (verified.results || []).map((s, i) => ({ id: i, ...s }));
+    const verifiable = segments.filter((s) => s.verifiable);
+    let info = { elapsedS: (performance.now() - startTs) / 1000, logs: [] };
+    if (verifiable.length > 0) info = await runVerificationReplay(verifiable, startTs);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        kind: "progress",
+        progress: { done: true, pct: 100, elapsedS: info.elapsedS, logs: info.logs },
+      },
+      { role: "assistant", kind: "article", segments },
+    ]);
+  }
+
   async function runText(text, {
     inputType = "auto",
     focusQuestion = "",
+    title = "",
+    date = "",
+    dateSource = null,
+    requestConversationId = conversationId,
   } = {}) {
-    // 오프라인 데모용 목업은 ?mock=1 일 때만 사용합니다(기본은 실제 파이프라인).
+    // UI 확인용 목업은 ?mock=1 일 때만 사용합니다(기본은 실제 파이프라인).
+    // 새 UX(진행 링·결과 카드·인라인 상세)를 색상/수식/후보까지 그대로 렌더한다.
     if (mockEnabled()) {
-      const matchedMock = findVerificationMock(text);
-      if (matchedMock) {
-        await runMockVerification(matchedMock, { focusQuestion });
-        return;
+      lastRequestRef.current = {
+        kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+      };
+      const startTs = startNetworkProgress();
+      setLoading(true);
+      try {
+        await sleep(600); // 짧은 네트워크 대기 연출
+        await showArticleResult(mockVerifyArticle(text), startTs);
+      } catch (err) {
+        handleError(err);
+      } finally {
+        stopProgressTimers();
+        setLoading(false);
       }
+      return;
     }
-    lastRequestRef.current = { kind: "text", text, inputType, focusQuestion };
+    lastRequestRef.current = {
+      kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+    };
     const isUrl = inputType === "url" || /^https?:\/\/\S+$/i.test(text.trim());
-    const progress = startProgressAnimation(
-      isUrl ? "url" : "article",
-      setVerificationProgress,
-    );
+    const startTs = startNetworkProgress();
     setLoading(true);
     try {
       if (isUrl) {
         // URL은 먼저 본문을 확보한 뒤 develop 파이프라인으로 검증한다.
         const prepared = await analyzeInput(text, {
-          conversationId,
+          conversationId: requestConversationId,
           inputType: "url",
           focusQuestion,
         });
-        const document = prepared?.article_document;
-        if (prepared?.type === "article_document" && document?.text) {
-          const verified = await verifyArticleDevelop(document.text, {
-            conversationId: prepared.conversation_id || conversationId,
-            title: document.title || "",
-            date: document.published_date || "",
+        const doc = prepared?.article_document;
+        if (prepared?.type === "article_document" && doc?.text) {
+          const verified = await verifyArticleDevelop(doc.text, {
+            conversationId: prepared.conversation_id || requestConversationId,
+            title: doc.title || "",
+            date: doc.published_date || "",
+            dateSource: doc.published_date ? "url_metadata" : null,
           });
-          progress.finish();
-          handleResult(verified, focusQuestion);
+          if (verified?.type === "needs_user_input") {
+            requestArticleDate({
+              text: doc.text,
+              title: doc.title || "",
+              inputType: "article",
+              focusQuestion,
+              conversationId: prepared.conversation_id || requestConversationId,
+            }, verified);
+          } else if (verified?.type === "article") await showArticleResult(verified, startTs);
+          else handleResult(verified, focusQuestion);
         } else {
-          progress.finish();
           handleResult(prepared, focusQuestion);
         }
       } else {
         // 기사 본문/텍스트는 develop 파이프라인으로 검증한다. 단 수치 주장이 없어
         // 기사가 아니면(질문·잡담) 기존 라우터로 넘긴다(질문→KOSIS, 잡담→안내).
-        const verified = await verifyArticleDevelop(text, { conversationId });
-        if (verified?.type === "not_article") {
+        const verified = await verifyArticleDevelop(text, {
+          conversationId: requestConversationId,
+          title,
+          date,
+          dateSource,
+        });
+        if (verified?.type === "needs_user_input") {
+          requestArticleDate({
+            text,
+            title,
+            inputType,
+            focusQuestion,
+            conversationId: requestConversationId,
+          }, verified);
+        } else if (verified?.type === "not_article") {
           const routed = await analyzeInput(text, {
-            conversationId,
+            conversationId: requestConversationId,
             inputType,
             focusQuestion,
           });
-          progress.finish();
           handleResult(routed, focusQuestion);
+        } else if (verified?.type === "article") {
+          await showArticleResult(verified, startTs);
         } else {
-          progress.finish();
           handleResult(verified, focusQuestion);
         }
       }
     } catch (err) {
-      progress.cancel();
       handleError(err);
     } finally {
+      stopProgressTimers();
       setLoading(false);
     }
   }
@@ -693,14 +847,14 @@ function ChatApp({
   }
   async function runImage(file, focusQuestion = "") {
     lastRequestRef.current = { kind: "image", file, focusQuestion };
-    setVerificationProgress({ sourceType: "image", completed: [], active: 0 });
+    setVerificationProgress({ done: false, pct: 10, elapsedS: 0, logs: [] });
     setLoading(true);
     try {
       await inspectImageFile(file);
-      setVerificationProgress({ sourceType: "image", completed: [0], active: 1 });
+      setVerificationProgress({ done: false, pct: 45, elapsedS: 0, logs: [] });
 
       const result = await analyzeImage(file, { conversationId, focusQuestion });
-      setVerificationProgress({ sourceType: "image", completed: [0, 1], active: 2 });
+      setVerificationProgress({ done: false, pct: 85, elapsedS: 0, logs: [] });
 
       // 실제 OCR 완료 체크를 인지할 수 있도록 짧게 유지한 뒤 결과를 표시한다.
       await new Promise((resolve) => setTimeout(resolve, 550));
@@ -715,6 +869,43 @@ function ChatApp({
   // ── 입력 전송 ──
   function handleSend() {
     if (loading) return;
+    if (pendingArticleDate) {
+      const answer = input.trim();
+      if (!answer) return;
+      setInput("");
+      if (answer === "취소") {
+        setPendingArticleDate(null);
+        lastRequestRef.current = null;
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", kind: "text", text: "기사 발행일 입력을 취소했습니다." },
+        ]);
+        return;
+      }
+      if (!isValidArticleDate(answer)) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            kind: "date_request",
+            text: "실제 달력에 존재하는 YYYY-MM-DD 형식으로 다시 알려주세요. 취소하려면 '취소'를 입력하세요.",
+          },
+        ]);
+        return;
+      }
+      const article = pendingArticleDate;
+      setPendingArticleDate(null);
+      setMessages((prev) => [...prev, { role: "user", kind: "text", text: answer }]);
+      runText(article.text, {
+        inputType: article.inputType,
+        focusQuestion: article.focusQuestion,
+        title: article.title,
+        date: answer,
+        dateSource: "user_feedback",
+        requestConversationId: article.conversationId,
+      });
+      return;
+    }
     if (pendingImage) {
       const file = pendingImage.file;
       const focusQuestion = sourceQuestion.trim();
@@ -748,7 +939,14 @@ function ChatApp({
     const last = lastRequestRef.current;
     if (!last || loading) return;
     if (last.kind === "image") runImage(last.file, last.focusQuestion);
-    else runText(last.text, { inputType: last.inputType, focusQuestion: last.focusQuestion });
+    else runText(last.text, {
+      inputType: last.inputType,
+      focusQuestion: last.focusQuestion,
+      title: last.title,
+      date: last.date,
+      dateSource: last.dateSource,
+      requestConversationId: last.requestConversationId,
+    });
   }
   // 범위 밖 안내에서 예시 칩을 누르면 그 질문을 새로 전송한다.
   function handleRecoveryPick(example) {
@@ -784,6 +982,15 @@ function ChatApp({
         onScroll={(e) => onScroll?.(e.currentTarget.scrollTop > 24)}
       >
         {messages.map((msg, i) => {
+          if (msg.kind === "progress") {
+            return (
+              <div key={i} className="c-row assistant">
+                <div className="c-bubble assistant">
+                  <ProgressBubble progress={msg.progress} />
+                </div>
+              </div>
+            );
+          }
           if (msg.kind === "article") {
             return (
               <div key={i} className="c-row assistant">
@@ -803,6 +1010,13 @@ function ChatApp({
                     focusQuestion={msg.focusQuestion}
                   />
                 </div>
+              </div>
+            );
+          }
+          if (msg.kind === "date_request") {
+            return (
+              <div key={i} className="c-row assistant">
+                <div className="c-bubble assistant">{msg.text}</div>
               </div>
             );
           }
@@ -886,7 +1100,7 @@ function ChatApp({
 
         {loading && (
           <div className="c-row assistant">
-            <div className="c-bubble assistant c-loading"><VerificationProgress progress={verificationProgress} /></div>
+            <div className="c-bubble assistant c-loading"><ProgressBubble progress={verificationProgress} /></div>
           </div>
         )}
       </div>
@@ -939,7 +1153,9 @@ function ChatApp({
           <textarea
             className="c-textarea"
             placeholder={
-              pendingImage
+              pendingArticleDate
+                ? "기사 발행일 YYYY-MM-DD 입력 또는 '취소'"
+                : pendingImage
                 ? "이미지가 첨부되었습니다"
                 : "통계 질문, 기사 URL 또는 본문 입력 후 Enter"
             }

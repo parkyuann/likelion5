@@ -112,7 +112,8 @@ def factcheck_claim(claim: str, pub_date: str | None, contract: list | None = No
 
 def answer_natural_query(query: str, pub_date: str | None = None) -> dict:
     """자연어 질의: 분류 → MCP 사다리(3차 폴백 = factcheck_claim)."""
-    load_catalog()
+    # MCP 자율 질의에는 로컬 검색 카탈로그가 필요 없다. 자체 검증 폴백이
+    # 선택될 때 factcheck_claim()이 필요한 카탈로그를 지연 로딩한다.
     from query_router import classify
     if classify(query) == "route_out_of_scope":
         return {"stage": "out_of_scope", "answer": "공식 통계로 답하기 어려운 질의입니다(전망·추천 등)."}

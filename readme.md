@@ -1,5 +1,7 @@
 # 연구계획서
 
+> 최신 기사 사실검증 파이프라인 실행 코드와 프론트엔드/FastAPI 연동 계약은 [`PIPELINE_HANDOFF.md`](PIPELINE_HANDOFF.md)를 먼저 확인하세요. 이 내용은 `develop` 브랜치에 있습니다.
+
 * Background & Baseline  
   * 기존에 연구들은 이 문제, 혹은 유사 문제에 대하여 어떻게 접근하였는가?(논문 리서치. 단, 논문 리뷰는 생략합니다)  
     * 정치적 담화에서 검증 가치가 있는 사실적 주장을 자동으로 식별하는 인공지능 플랫폼인 클레임버스터([https://ranger.uta.edu/\~cli/pubs/2017/claimbuster-kdd17-hassan.pdf?utm\_source=chatgpt.com](https://ranger.uta.edu/~cli/pubs/2017/claimbuster-kdd17-hassan.pdf?utm_source=chatgpt.com)) → 사실 검증이 필요한 문장을 선별하며, 검증 가치가 높은 주장 먼저 탐지  

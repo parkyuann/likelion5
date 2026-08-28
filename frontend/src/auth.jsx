@@ -1,91 +1,56 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { authMe, authLogout, loginApi, registerApi } from "./api.js";
 
-/*
- * 인증 컨텍스트.
- * - 이메일·카카오·네이버·구글: 모두 백엔드 세션(Bearer 토큰, TOKEN_KEY) 기반의 실제 로그인.
- *   소셜은 OAuth 콜백이 ?access_token=&provider= 를 붙여 프론트로 복귀 → 아래 마운트 효과가 처리.
- */
-
-const SESSION_KEY = "kosis-session"; // UI 복원용 사용자 스냅샷(빠른 표시)
-const TOKEN_KEY = "kosis-token"; // 백엔드 Bearer 토큰
-
+/* Cookie-only authentication; no browser user snapshot or client credential. */
 const AuthContext = createContext(null);
 
-function readSession() {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function backendUser(user, provider) {
+function backendUser(user) {
   return {
+    id: user.id,
     name: user.display_name,
-    email: user.email,
-    provider,
+    email: user.primary_email || "",
+    provider: "email",
+    status: user.status,
+    createdAt: user.created_at,
+    lastLoginAt: user.last_login_at,
     backend: true,
   };
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => readSession());
+  const [user, setUser] = useState(null);
 
   useEffect(() => {
-    if (user) localStorage.setItem(SESSION_KEY, JSON.stringify(user));
-    else localStorage.removeItem(SESSION_KEY);
-  }, [user]);
-
-  // 카카오 콜백 복귀 + 저장된 토큰으로 세션 복원
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const incoming = url.searchParams.get("access_token");
-    const provider = url.searchParams.get("provider") || "kakao";
-    if (incoming) {
-      localStorage.setItem(TOKEN_KEY, incoming);
-      url.searchParams.delete("access_token");
-      url.searchParams.delete("provider");
-      window.history.replaceState({}, "", url.pathname + url.search + url.hash);
-    }
-    const token = localStorage.getItem(TOKEN_KEY);
-    if (token) {
-      authMe(token)
-        .then((r) => setUser(backendUser(r.user, provider)))
-        .catch(() => localStorage.removeItem(TOKEN_KEY));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let alive = true;
+    authMe()
+      .then((response) => {
+        if (alive && response?.user) setUser(backendUser(response.user));
+      })
+      .catch(() => alive && setUser(null));
+    return () => { alive = false; };
   }, []);
 
-  // 이메일 로그인 (백엔드)
   async function login(email, password) {
-    const res = await loginApi(email, password);
-    localStorage.setItem(TOKEN_KEY, res.access_token);
-    setUser(backendUser(res.user, "email"));
+    const response = await loginApi(email, password);
+    setUser(backendUser(response.user));
   }
 
-  // 이메일 회원가입 (백엔드). 이름·이메일·비밀번호만 필요(전화번호 인증 없음).
   async function register(name, email, password) {
-    const res = await registerApi(email, password, name);
-    localStorage.setItem(TOKEN_KEY, res.access_token);
-    setUser(backendUser(res.user, "email"));
+    // Signup creates an account only; a separate login issues the session.
+    return registerApi(email, password, name);
   }
 
-  function logout() {
-    const token = localStorage.getItem(TOKEN_KEY);
-    if (token) {
-      authLogout(token).catch(() => {});
-      localStorage.removeItem(TOKEN_KEY);
+  async function logout() {
+    try {
+      await authLogout();
+    } finally {
+      setUser(null);
     }
-    setUser(null);
   }
 
-  return (
-    <AuthContext.Provider value={{ user, login, register, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={{ user, login, register, logout }}>
+    {children}
+  </AuthContext.Provider>;
 }
 
 export function useAuth() {

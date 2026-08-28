@@ -1,0 +1,129 @@
+%% KOSIS 팩트체크 — 프론트엔드 요구 데이터 ERD
+%% 기준일: 2026-08-25
+%% Mermaid erDiagram 형식
+%% [현재]는 backend/database.py에 실제 생성되는 구조다.
+%% [권장]은 운영 조회·용량 관리를 위해 서버 팀과 합의 후 추가할 구조다.
+
+erDiagram
+    users ||--o{ auth_sessions : "로그인 세션"
+    users ||--o{ conversations : "검증 기록"
+    users ||--o{ favorites : "즐겨찾기"
+    conversations ||--o{ messages : "메시지"
+
+    %% 운영 정규화 권장안
+    conversations ||--o{ verification_runs : "검증 실행"
+    messages ||--o| verification_runs : "요청 메시지"
+    messages ||--o| verification_runs : "응답 메시지"
+    verification_runs ||--o{ verification_claims : "문장별 판정"
+    verification_claims ||--o{ claim_candidates : "통계표 후보"
+
+    %% 저장소 경계를 넘는 논리 관계: 물리 FK가 아님
+    favorites }o--|| stat_tables : "table_key 논리 참조"
+    messages }o--o{ stat_tables : "payload_json 현재 논리 참조"
+    verification_claims }o--o| stat_tables : "evidence_table_key 논리 참조"
+    claim_candidates }o--|| stat_tables : "table_key 논리 참조"
+    stat_tables ||--|| qdrant_kosis_tables_v5 : "table_key 논리 연결"
+
+    users {
+        text id PK
+        text email UK
+        text display_name
+        text password_hash
+        text created_at
+    }
+
+    auth_sessions {
+        text id PK
+        text user_id FK
+        text token_hash UK
+        text created_at
+        text expires_at
+        text revoked_at
+    }
+
+    conversations {
+        text id PK
+        text user_id FK
+        text title
+        text created_at
+        text updated_at
+    }
+
+    messages {
+        text id PK
+        text conversation_id FK
+        text role "user|assistant|system"
+        text kind
+        text content
+        text payload_json "현재 결과 원본 저장"
+        text created_at
+    }
+
+    favorites {
+        text user_id PK,FK
+        text table_key PK
+        text org_id
+        text org_name
+        text tbl_id
+        text tbl_name
+        text category_path
+        text created_at
+    }
+
+    verification_runs {
+        text id PK "권장"
+        text conversation_id FK
+        text request_message_id FK
+        text response_message_id FK
+        text input_type
+        text source_type
+        text status
+        integer match_count
+        integer mismatch_count
+        integer unverifiable_count
+        integer result_bytes
+        text result_json
+        text created_at
+        text completed_at
+    }
+
+    verification_claims {
+        text id PK "권장"
+        text verification_id FK
+        integer seq
+        text claim_text
+        integer verifiable
+        text verdict
+        text answer
+        text calculation
+        text evidence_table_key
+    }
+
+    claim_candidates {
+        text claim_id PK,FK "권장"
+        integer rank PK
+        text table_key
+        real score
+        text status
+    }
+
+    stat_tables {
+        text table_key PK "읽기 전용 카탈로그"
+        text org_id
+        text org_name
+        text tbl_id
+        text tbl_name
+        text category_path
+        text units
+        text period_types
+        integer latest_period
+        text haystack
+    }
+
+    qdrant_kosis_tables_v5 {
+        uuid point_id PK "벡터 저장소"
+        text table_key
+        vector doc_meta_vector
+        vector tbl_name_vector
+        json payload
+    }

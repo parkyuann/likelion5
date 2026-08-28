@@ -1111,3 +1111,218 @@
   }
   .c-detail { padding: 15px 14px; }
 }
+
+/* ══════════════════════════════════════════════════════════
+   hyeonseo 스타일 검증 UX (진행 링 + 요약칩 + 인라인 상세)
+   — 뒤 규칙이 위의 기존 .c-claim/.c-summary/.c-detail 등을 오버라이드
+   ══════════════════════════════════════════════════════════ */
+.c-article-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 26px 28px;
+  box-shadow: var(--shadow-md);
+}
+.c-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.c-summary-item {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: none;
+}
+.c-summary-item strong {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.c-summary-item.match { background: var(--green-tint); color: var(--green); }
+.c-summary-item.mismatch { background: var(--red-tint); color: var(--red); }
+.c-summary-item.unverifiable { background: var(--slate-tint); color: var(--slate); }
+.c-summary-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--faint);
+}
+.c-article-text {
+  font-size: 15px;
+  line-height: 2.1;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.c-claim-wrap { display: inline; }
+.c-claim-wrap.open { display: block; margin: 16px 0; }
+.c-claim-wrap.open .c-claim {
+  display: inline-block;
+  font-size: 1.03em;
+  font-weight: 600;
+  padding: 3px 8px;
+}
+.c-claim {
+  cursor: pointer;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+  border-radius: 5px;
+  padding: 2px 4px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  transition: filter 0.12s, box-shadow 0.12s;
+}
+.c-claim.match { background: var(--green-tint); text-decoration-color: var(--green-line); text-decoration-style: solid; }
+.c-claim.mismatch { background: var(--red-tint); text-decoration-color: var(--red-line); text-decoration-style: solid; }
+.c-claim.unverifiable { background: var(--slate-tint); text-decoration-color: var(--faint); text-decoration-style: dashed; }
+.c-claim:hover { filter: brightness(0.97); }
+.c-claim.active { filter: brightness(0.95); box-shadow: inset 0 0 0 1.5px rgba(20, 24, 31, 0.14); }
+
+/* 문장 클릭 상세 (인라인) */
+.c-detail {
+  display: block;
+  margin: 14px 0 18px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid;
+  white-space: normal;
+  box-shadow: var(--shadow-sm);
+}
+.c-detail.match { background: var(--green-tint); border-left-color: var(--green); }
+.c-detail.mismatch { background: var(--red-tint); border-left-color: var(--red); }
+.c-detail.unverifiable { background: var(--bg-2); border-left-color: var(--slate); }
+.c-detail-verdict { display: block; font-weight: 800; font-size: 15px; margin-bottom: 6px; }
+.c-detail.match .c-detail-verdict { color: var(--green); }
+.c-detail.mismatch .c-detail-verdict { color: var(--red); }
+.c-detail.unverifiable .c-detail-verdict { color: var(--muted); }
+.c-detail-answer { display: block; font-size: 13.5px; line-height: 1.7; color: var(--ink-soft); }
+.c-calc {
+  display: block;
+  margin-top: 12px;
+  padding: 10px 13px;
+  background: var(--code-bg);
+  border-radius: 9px;
+  font-family: "SF Mono", "Consolas", "Menlo", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.c-table-block { display: block; margin-top: 14px; }
+.c-detail .c-table {
+  display: inline-block;
+  background: var(--brand);
+  color: var(--on-accent, #fff);
+  border-radius: 9px;
+  padding: 7px 14px;
+  font-weight: 600;
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+.c-detail .c-table:hover { background: var(--brand-strong); }
+.c-path { display: block; margin-top: 10px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+
+/* 고려한 통계표 후보 */
+.c-cand-block { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.c-cand-toggle {
+  background: none; border: none; padding: 2px 0;
+  font-size: 13px; font-weight: 700; color: var(--muted);
+  cursor: pointer; font-family: inherit;
+}
+.c-cand-toggle:hover { color: var(--ink); }
+.c-cand-list { margin-top: 8px; border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
+.c-cand-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 13px; border-bottom: 1px solid var(--line);
+  text-decoration: none; color: var(--ink); font-size: 13px;
+}
+.c-cand-row:last-child { border-bottom: none; }
+.c-cand-row:hover { background: var(--bg-2); }
+.c-cand-row.selected { background: var(--green-tint); }
+.c-cand-rank {
+  flex: none; width: 21px; height: 21px; border-radius: 50%;
+  background: var(--line-strong); color: var(--muted);
+  font-size: 12px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.c-cand-row.selected .c-cand-rank { background: var(--green); color: #fff; }
+.c-cand-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--ink-soft);
+}
+.c-cand-score { flex: none; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.c-cand-status { flex: none; font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
+.c-cand-status.ok { background: var(--green-tint); color: var(--green); }
+.c-cand-status.no { background: var(--slate-tint); color: var(--faint); }
+
+/* 진행 표시(링 + 문장별 로그) — 진행 중 너비가 변하지 않게 고정 */
+.c-progress { width: 340px; max-width: 100%; }
+.c-progress-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.c-progress-toggle {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.c-progress-toggle:hover { color: var(--ink); }
+.c-elapsed { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--brand); font-variant-numeric: tabular-nums; }
+.c-ring {
+  flex: none; width: 46px; height: 46px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; position: relative;
+  background: conic-gradient(var(--brand) calc(var(--pct) * 1%), var(--line-strong) 0);
+  transition: background 0.35s ease;
+}
+.c-ring::before { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--surface); }
+.c-ring.done { background: var(--green); }
+.c-ring-num { position: relative; font-size: 12px; font-weight: 800; color: var(--brand); font-variant-numeric: tabular-nums; }
+.c-ring.done .c-ring-num { color: var(--green); }
+.c-progress-meta { display: flex; flex-direction: column; gap: 2px; }
+.c-progress-meta strong { font-size: 14px; color: var(--ink); }
+.c-sent-log { display: flex; flex-direction: column; gap: 2px; }
+.c-sent-line { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13.5px; }
+.c-sent-line.running { background: var(--brand-tint); }
+.c-sent-line.pending { opacity: 0.55; }
+.c-sent-line.pending .c-sent-icon { color: var(--faint); }
+.c-sent-icon { flex: none; width: 14px; text-align: center; font-weight: 800; }
+.c-sent-line.done .c-sent-icon { color: var(--green); }
+.c-sent-line.running .c-sent-icon { color: var(--brand); }
+.c-sent-label { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.c-sent-line.running .c-sent-label { color: var(--ink); font-weight: 600; }
+.c-sent-time { flex: none; color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
+.c-evidence-answer {
+  margin: 0 0 16px;
+  padding: 16px 18px;
+  border: 1px solid #b8e2d8;
+  border-radius: 12px;
+  background: #f2fbf8;
+  color: #173d35;
+}
+
+.c-evidence-label {
+  margin-bottom: 6px;
+  color: #168b7d;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.c-evidence-answer p {
+  margin: 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}

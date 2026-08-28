@@ -54,10 +54,33 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from news_preprocessor import split_sentences_fast  # noqa: E402
+from claim_normalizer import (  # noqa: E402
+    normalize_time_ref,
+    parse_korean_number,
+    time_span_type,
+)
 
 RAW_INPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "news_preprocessed.csv"
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "claim_listform.csv"
+
+
+def iter_sentence_spans(text: str):
+    """Yield zero-based sentence order and half-open offsets in cleaned text."""
+    boundary_re = re.compile(r"(?<=[.!?])(?<!\d\.)\s+")
+    segment_start = 0
+    sentence_index = 0
+    for boundary in list(boundary_re.finditer(text)) + [None]:
+        segment_end = boundary.start() if boundary else len(text)
+        raw = text[segment_start:segment_end]
+        sentence = raw.strip()
+        if sentence:
+            char_start = segment_start + (len(raw) - len(raw.lstrip()))
+            char_end = char_start + len(sentence)
+            yield sentence_index, char_start, char_end, sentence
+            sentence_index += 1
+        if boundary is None:
+            break
+        segment_start = boundary.end()
 
 # ---------------------------------------------------------------------------
 # ① 추출 (문장에서 값·단위 쌍 찾기)
@@ -71,13 +94,33 @@ COMPARISON_RE = re.compile(
 # 기존 목록에 없는 흔한 단위(대/개/회/곳/시간/분 등)를 추가했다. "대"는 "1012대"(기기 세는
 # 단위) 같은 진짜 값도 잡지만 "30대"(연령대) 같은 문장에서도 걸릴 수 있음 — 이런 다의성은
 # 이 정규식 단계에서 해소하지 않고, 뒷단(claim_class 필터링)에서 걸러지도록 남겨둔다.
+# 다의어 교정(실측 스캔 근거):
+#  - 멀티글자 단위(위안·배럴)를 단일글자(위·배)보다 alternation 앞에 둬서 잘림 방지
+#    ('92억위안'이 값 92억+단위 '위'로, '6배럴'이 '배'로 잘리던 것 교정).
+#  - '세대'(가구/세대)는 수치 주장 단위가 아니라 '세(?!대)'로 연령 '세'만 남기고 제외.
+#  - '분기'는 시점 개념이라 값-단위에서 제거(시점은 TIME_RE가 담당) — '1분기'가 값 '1'로
+#    잡히던 오탐 제거. '분(?!의)'로 분수('3분의 1'), '초(?!반)'로 범위 표현('90 초반') 제외.
+# '%포인트'(증감폭)는 '%'(증감률)보다 앞에 둬서 '0.4%포인트'가 '0.4%'+버려진 '포인트'로
+# 잘리지 않게 한다(실측 603건). '분위'(소득 5분위 등 구간 라벨)는 분(minute) 오탐이라 제외.
 _UNIT_ALT = (
-    r"%p|%|원|달러|천\s?명|만\s?명|명|건|가구|톤|ha|kg|g|포인트|세|개월|년|분기|위"
-    r"|대|개|채|척|마리|그루|병|잔|회|차례|편|곳|층|배|시간|분|초|도|점"
+    r"%\s?포인트|%p|%|원|위안|달러|배럴|천\s?명|만\s?명|명|건|가구|톤|t|ha|kg|g|포인트"
+    r"|GW|MW|mm|GB|단계|분기|일|주(?!년)|선|비율"
+    r"|세(?!대)|개월|년|위|대|개|채|척|마리|그루|병|잔|회|차례|편|곳|층|배"
+    r"|시간|분(?!의|기|위)|초(?!반)|도|점"
 )
+from claim_context_resolver import augment_article_claim_rows  # noqa: E402
 
+# 표현 정규화: 잡힌 단위 표기를 기준 단위로 통일한다('%포인트'/'% 포인트' -> '%p').
+_UNIT_CANON = {"%포인트": "%p", "%p": "%p"}
+
+
+def canon_unit(u: str) -> str:
+    return _UNIT_CANON.get(u.replace(" ", ""), u)
+
+# 값 앞의 음수 부호(-/−)를 값에 포함한다 — '자동차부품(-7.6%)'처럼 감소를 나타내는 부호가
+# 유실되면 증감 방향이 사라지므로(값이 전부 양수화됨) 부호까지 캡처한다.
 VALUE_UNIT_RE = re.compile(
-    rf"(?P<value>\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?(?:\s?\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)*)"
+    rf"(?P<value>[-−]?\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?(?:\s?\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)*)"
     rf"\s*(?P<unit>{_UNIT_ALT})"
 )
 
@@ -89,6 +132,37 @@ RANGE_RE = re.compile(
     rf"(?P<end>\d[\d,]*(?:\.\d+)?(?:조|억|만|천)?)\s*(?P<unit>{_UNIT_ALT})"
 )
 
+FRACTION_RE = re.compile(r"(?P<numerator>\d+)\s*분의\s*(?P<denominator>\d+)")
+INDEX_LINE_RE = re.compile(
+    r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?:선|을\s*(?:상회|하회)|보다\s*(?:높|낮))"
+)
+
+
+def _is_calendar_day_noise(sentence: str, match: re.Match[str]) -> bool:
+    """Drop calendar dates while retaining duration/count expressions such as 10일에서 20일."""
+    value = match.group("value").replace(",", "")
+    if not value.isdigit() or not 1 <= int(value) <= 31:
+        return False
+    before = sentence[max(0, match.start() - 16):match.start()]
+    after = sentence[match.end():match.end() + 8]
+    if re.search(r"\d{1,2}월\s*$", before):
+        return True
+    if re.search(r"(지난|오는|이날|당일|다음)\s*$", before):
+        return True
+    if re.match(r"\s*(오전|오후|저녁|밤)", after):
+        return True
+    duration_before = re.search(r"(기간|휴가|소요|걸쳐|동안|간)\s*$", before)
+    duration_after = re.match(r"\s*(에서|으로|로|동안|간|소요|걸린)", after)
+    return not (duration_before or duration_after)
+
+
+def _is_scaffolding_stage_noise(sentence: str, match: re.Match[str]) -> bool:
+    """Drop construction/project phase labels such as '1단계로 41MW'."""
+    if match.group("unit") != "단계":
+        return False
+    after = sentence[match.end():match.end() + 18]
+    return bool(re.match(r"\s*(으로|로)\s*\d", after))
+
 
 def extract_value_unit_pairs(sentence: str) -> list[tuple[str, str]]:
     """VALUE_UNIT_RE 단독으로는 "A~B단위" 범위의 앞쪽 값(A)을 놓치므로, RANGE_RE로 먼저
@@ -97,14 +171,31 @@ def extract_value_unit_pairs(sentence: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     consumed_spans: list[tuple[int, int]] = []
     for m in RANGE_RE.finditer(sentence):
-        pairs.append((m.group("start"), m.group("unit")))
-        pairs.append((m.group("end"), m.group("unit")))
+        u = canon_unit(m.group("unit"))
+        pairs.append((m.group("start"), u))
+        pairs.append((m.group("end"), u))
         consumed_spans.append(m.span())
 
     for m in VALUE_UNIT_RE.finditer(sentence):
         if any(start <= m.start() and m.end() <= end for start, end in consumed_spans):
             continue
-        pairs.append((m.group("value"), m.group("unit")))
+        # Age ranges such as 15~29세 are dimensions, not observations.
+        age_range = re.search(r"\d{1,3}\s*[~\-]\s*\d{1,3}\s*.?", sentence)
+        if age_range and age_range.start() <= m.start() < age_range.end():
+            continue
+        v, u = m.group("value"), canon_unit(m.group("unit"))
+        # 달력 연도('2023년')는 시점이지 값이 아님 — 값-단위 추출 단계에서 바로 제외해
+        # value_count/change_type가 처음부터 노이즈 없이 계산되게 한다.
+        if _is_year_noise(v, u):
+            continue
+        pairs.append((v, u))
+
+    # Unitless ratio/index forms are legitimate numeric claims but cannot be
+    # represented by the ordinary number+unit gate.
+    for m in FRACTION_RE.finditer(sentence):
+        pairs.append((f"{m.group('numerator')}/{m.group('denominator')}", "비율"))
+    for m in INDEX_LINE_RE.finditer(sentence):
+        pairs.append((m.group("value"), "지수"))
     return pairs
 
 
@@ -118,6 +209,49 @@ SOURCE_ORG_RE = re.compile(
 )
 
 INDEX_RE = re.compile(r"지수|=\s?100|=100")
+
+_DIMENSION_PATTERNS = {
+    "지역": re.compile(r"(?P<raw>(?:전국|수도권|서울|부산|대구|인천|광주|대전|울산|세종|제주|[가-힣]{1,8}(?:특별시|광역시|도|시|군|구|읍|면|동)))"),
+    "성별": re.compile(r"(?P<raw>(?:남성|여성|남자|여자|전체))"),
+    "연령": re.compile(r"(?P<raw>(?:\d{1,3}\s*[~\-]\s*\d{1,3}\s*세|\d{1,3}\s*세\s*이상|\d{1,3}\s*대|청년층|고령층|노년층))"),
+    "산업": re.compile(r"(?P<raw>[가-힣A-Za-z0-9·/ ]{1,20}(?:산업|업종))"),
+}
+_POPULATION_RE = re.compile(r"(?P<raw>(?:전체|총|국내|가구|가구원|취업자|실업자|근로자|청년층|고령층|노년층)[가-힣A-Za-z0-9· ]{0,12}?)(?=(?:의|은|는|이|가|별|중|에서|\d|%|명|원|$))")
+_INDICATOR_RE = re.compile(r"(?P<raw>[가-힣A-Za-z0-9·()/ ]{1,30}?(?:고용률|실업률|취업률|증가율|감소율|성장률|비율|률|비중|수|액|가격|지수|생산량|매출액|소득))")
+
+
+def _span_candidates(sentence: str, pattern: re.Pattern) -> list[dict]:
+    out, seen = [], set()
+    for match in pattern.finditer(sentence):
+        raw = match.group("raw").strip()
+        key = (raw, match.start("raw"), match.end("raw"))
+        if raw and key not in seen:
+            out.append({"raw": raw, "normalized": raw, "source_span": raw,
+                        "start": match.start("raw"), "end": match.end("raw")})
+            seen.add(key)
+    return out
+
+
+def extract_structured_context(sentence: str) -> dict:
+    """Extract retrieval hints while keeping dimensions out of value parsing."""
+    dimensions = {key: _span_candidates(sentence, pattern)
+                  for key, pattern in _DIMENSION_PATTERNS.items()}
+    dimensions = {key: values for key, values in dimensions.items() if values}
+    population = _span_candidates(sentence, _POPULATION_RE)
+    indicator = _span_candidates(sentence, _INDICATOR_RE)
+    excluded = [(x["start"], x["end"]) for values in dimensions.values() for x in values]
+    excluded += [(x["start"], x["end"]) for x in population]
+    indicator = [x for x in indicator if not any(a <= x["start"] < b for a, b in excluded)]
+    if indicator:
+        indicator = [min(indicator, key=lambda x: (len(x["raw"]), x["start"]))]
+    return {
+        "indicator_raw": indicator[0]["raw"] if indicator else None,
+        "indicator_candidates": indicator,
+        "population_raw": population[0]["raw"] if population else None,
+        "population_candidates": population,
+        "dimension_json": dimensions,
+    }
+
 
 RANK_KEYWORDS = ("최고", "최다", "최대", "최소", "최저", "1위", "2위", "3위", "꼴찌")
 COMPARE_KEYWORDS = ("보다", "대비", "반면")
@@ -137,8 +271,43 @@ def classify_change_type(sentence: str, units: list[str]) -> str:
     return "단순수치"
 
 
+def extract_structured_context(sentence: str) -> dict:
+    """Unicode-safe Task 1-1 structured hints."""
+    dims = {}
+    patterns = {
+        "\uC9C0\uC5ED": r"(?:\uC804\uAD6D|\uC11C\uC6B8|[\uAC00-\uD7A3]{1,8}(?:\uC2DC|\uAD70|\uAD6C|\uC74D|\uBA74|\uB3D9))",
+        "\uC131\uBCC4": r"(?:\uB0A8\uC131|\uC5EC\uC131|\uB0A8\uC790|\uC5EC\uC790)",
+        "\uC5F0\uB839": r"(?:\d{1,3}\s*[~\-]\s*\d{1,3}\s*\uC138|\d{1,3}\s*\uB300|\uCCAD\uB144\uCE35|\uACE0\uB839\uCE35)",
+    }
+    for key, pat in patterns.items():
+        vals = []
+        for m in re.finditer(pat, sentence):
+            vals.append({"raw": m.group(), "normalized": m.group(), "source_span": m.group(), "start": m.start(), "end": m.end()})
+        if vals:
+            dims[key] = vals
+    ind = list(re.finditer(r"[\uAC00-\uD7A3A-Za-z ]{1,30}?(?:\uACE0\uC6A9\uB960|\uCDE8\uC5C5\uC790\s*\uC218|\uC2E4\uC5C5\uB960|\uC99D\uAC00\uC728|\uAC10\uC18C\uC728|\uBE44\uC728|\uBE44\uC911|\uC218|\uC561|\uAC00\uACA9|\uC9C0\uC218|\uBCF4\uD5D8\uB8CC|\uBCF4\uD5D8\uAE08|\uAE08\uB9AC|\uBCF4\uC0C1\uAE08|\uACC4\uC57D\uAC74\uC218|\uACC4\uC57D\uC790\s*\uC218|\uAC00\uC785\uC790\s*\uC218)", sentence))
+    indicator = min(ind, key=lambda m: len(m.group().strip())).group().strip() if ind else None
+    for term in ("\uCDE8\uC5C5\uC790 \uC218", "\uACE0\uC6A9\uB960", "\uC2E4\uC5C5\uB960", "\uBCF4\uD5D8\uB8CC", "\uBCF4\uD5D8\uAE08", "\uAE08\uB9AC", "\uBCF4\uC0C1\uAE08", "\uACC4\uC57D\uAC74\uC218", "\uACC4\uC57D\uC790 \uC218", "\uAC00\uC785\uC790 \uC218"):
+        if term in sentence:
+            indicator = term
+            break
+    # 일반 "보험료"보다 기사에 실제 나타난 subtype 결합 지표를 우선 보존한다.
+    insurance_indicators = re.findall(r"(?<![\uAC00-\uD7A3])([\uAC00-\uD7A3]{1,12}\uBCF4\uD5D8\uB8CC)", sentence)
+    if insurance_indicators:
+        indicator = max(insurance_indicators, key=len)
+    # "이 수치"/"그 수"의 일부를 지표 "이 수"로 보는 것은 문맥 보강을 우회하는 오탐이다.
+    if indicator in {"\uC774 \uC218", "\uADF8 \uC218", "\uD574\uB2F9 \uC218"}:
+        indicator = None
+    pop = re.search(r"(?:\uCDE8\uC5C5\uC790|\uC2E4\uC5C5\uC790|\uADFC\uB85C\uC790|\uAC00\uAD6C|\uCCAD\uB144\uCE35)", sentence)
+    return {"indicator_raw": indicator, "indicator_candidates": [], "population_raw": pop.group() if pop else None, "population_candidates": [], "dimension_json": dims}
+
+
 def extract_from_sentence(sentence: str) -> dict | None:
     value_unit_pairs = extract_value_unit_pairs(sentence)
+    age_prefix = re.match(r"\s*\d{1,3}\s*[~\-]\s*\d{1,3}\s*.", sentence)
+    if age_prefix:
+        value_unit_pairs = [(v, u) for v, u in value_unit_pairs
+                            if not sentence[age_prefix.start():age_prefix.end()].find(v) >= 0]
     if not value_unit_pairs:
         return None  # 완화 기준: 숫자+비교어가 아니라 값·단위 쌍이 1개 이상
     values = [v.strip() for v, u in value_unit_pairs]
@@ -162,18 +331,55 @@ def extract_from_sentence(sentence: str) -> dict | None:
         "is_index": bool(INDEX_RE.search(sentence)),
         "source_mentioned": source_org_raw is not None,
         "source_org_raw": source_org_raw,
+        **extract_structured_context(sentence),
     }
+
+
+def _fmt_num(x) -> str:
+    """정규화 수치를 문자열로. 정수면 소수점 없이(9200000000), 아니면 그대로(100.4)."""
+    if x is None:
+        return ""
+    return str(int(x)) if float(x).is_integer() else str(x)
+
+
+def enrich_normalization(row: dict, published_at) -> dict:
+    """추출된 행에 정규화 필드를 추가한다(원본 필드는 보존).
+
+    - value_norm_list: value_list의 각 값을 조/억/만/천 전개한 실수(기준단위 기준)
+    - time_ref_abs / time_compare_abs: 발행일 기준 절대 시점
+    - time_span_type: 월/분기/연/부분기간/특정일/불명확
+    """
+    values = [v for v in str(row.get("value_list") or "").split(";") if v]
+    norm = []
+    for v in values:
+        n = parse_korean_number(v)
+        norm.append(_fmt_num(n) if n is not None else v)
+    row["value_norm_list"] = ";".join(norm)
+    row["time_ref_abs"] = normalize_time_ref(row.get("time_ref"), published_at)
+    row["time_compare_abs"] = normalize_time_ref(row.get("time_compare"), published_at)
+    row["time_span_type"] = time_span_type(row.get("time_ref"))
+    return row
 
 
 def extract_from_article(idx: int, title: str, date: str, label, text: str) -> list[dict]:
     rows = []
-    for sent in split_sentences_fast(text):
+    sentence_records = list(iter_sentence_spans(text))
+    for sentence_index, char_start, char_end, sent in sentence_records:
         extracted = extract_from_sentence(sent)
         if extracted is None:
             continue
-        extracted.update({"article_idx": idx, "기사제목": title, "작성일": date, "검색_구분_레이블": label})
+        extracted.update({
+            "article_idx": idx,
+            "기사제목": title,
+            "작성일": date,
+            "검색_구분_레이블": label,
+            "sentence_index": sentence_index,
+            "sentence_char_start": char_start,
+            "sentence_char_end": char_end,
+        })
+        enrich_normalization(extracted, date)
         rows.append(extracted)
-    return rows
+    return augment_article_claim_rows(rows, article_title=title, article_sentences=[record[3] for record in sentence_records])
 
 
 def extract_all_rows(raw_path: Path) -> list[dict]:
@@ -377,6 +583,9 @@ def postprocess_rows(rows: list[dict]) -> list[dict]:
     out = []
     for row in rows:
         out.extend(resolve_row(row))
+    # 나열형 분리로 value_list/time_ref가 바뀐 행은 정규화를 다시 계산한다.
+    for r in out:
+        enrich_normalization(r, r.get("작성일"))
     return out
 
 

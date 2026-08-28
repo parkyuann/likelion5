@@ -21,8 +21,8 @@
 | `Landing.jsx` / `.css` | 첫 입력 화면(히어로 + 입력 카드 + 예시 칩 + 이미지 첨부/드롭/붙여넣기) |
 | `ChatApp.jsx` / `.css` | 검증 대화 화면: 말풍선, 결과 렌더, 로딩 인디케이터, 입력창 |
 | `Intro.jsx` / `.css` | 첫 로드 로고 인트로 애니메이션 |
-| `Login.jsx` / `.css` | 로그인/회원가입 모달(이메일 + 카카오/네이버 + 휴대폰 본인인증 목업) |
-| `auth.jsx` | 인증 Context(백엔드 세션·토큰 관리) |
+| `Login.jsx` / `.css` | 로그인/회원가입 모달(이메일; OAuth는 계약 확정 전 비활성) |
+| `auth.jsx` | 인증 Context(HttpOnly server session 상태 관리) |
 | `api.js` | 백엔드 호출 계층(모든 fetch는 여기서) |
 | `icons.jsx` | 라인 SVG 아이콘 + `LogoMark` |
 
@@ -30,7 +30,7 @@
 ```
 Landing(입력) ─▶ Root.startVerify ─▶ ChatApp(세션)
                                      │
-                    api.js ─▶ 백엔드 /v1/analyze(+토큰) ─▶ 결과 렌더
+                    api.js ─▶ 백엔드 /api/v1/analyze(cookie) ─▶ 결과 렌더
                                      │
              로그인 시 대화 저장 ─▶ Root 검증 기록 목록 갱신(onSaved)
 ```
@@ -100,18 +100,19 @@ Landing(입력) ─▶ Root.startVerify ─▶ ChatApp(세션)
 
 ## 5. 인증 모델 (`auth.jsx` + `api.js`)
 
-- **이메일·카카오**: 백엔드 실제 세션. Bearer 토큰을 localStorage(`kosis-token`)에 저장.
-- **네이버·휴대폰 본인인증**: 아직 **목업**(백엔드 토큰 없음 → 검증 저장 불가). 실연동 시 카카오처럼 OAuth 콜백으로 교체.
+- **이메일 인증**: `/api/auth/*`의 HttpOnly cookie server session을 사용합니다. 브라우저 저장소나 Bearer token을 사용하지 않습니다.
+- **소셜 로그인**: `PENDING_OAUTH_CALLBACK_CONTRACT`이며 현재 UI에서 비활성입니다.
 - 로그인 사용자만 `user.backend === true` → **검증 기록/즐겨찾기** 기능 노출.
-- 토큰은 `api.js`의 `authHeaders()`가 모든 요청에 자동 첨부.
+- `api.js`는 모든 API fetch에 `credentials: "include"`를 적용합니다.
 
-### localStorage 키
+### 브라우저 저장소
+
+인증 정보와 사용자 snapshot은 저장하지 않습니다. UI 전용 theme/sidebar/guest-history 값만 localStorage를 사용할 수 있습니다.
 | 키 | 용도 |
 |---|---|
-| `kosis-token` | 백엔드 Bearer 토큰 |
-| `kosis-session` | UI 복원용 사용자 스냅샷 |
 | `kosis-theme` | `light`/`dark`(미설정 시 시스템) |
 | `kosis-sidebar` | `open`/`closed` |
+| guest history key | 비로그인 UI 기록(인증 정보 아님) |
 
 ---
 
@@ -121,17 +122,16 @@ Landing(입력) ─▶ Root.startVerify ─▶ ChatApp(세션)
 
 | 함수 | 엔드포인트 | 비고 |
 |---|---|---|
-| `analyzeInput(text,{conversationId})` | `POST /v1/analyze` | 텍스트 검증. `input_type:"auto"` |
-| `analyzeImage(file,{conversationId})` | `POST /v1/analyze/image` | 이미지 OCR → 검증 |
-| `registerApi` / `loginApi` | `POST /v1/auth/register` / `login` | `{user, access_token}` 반환 |
-| `startKakaoLogin()` | `GET /v1/auth/kakao/login` | 리다이렉트, 콜백은 `?access_token=` |
-| `authMe` / `authLogout` | `GET /v1/auth/me` / `POST logout` | 토큰 검증/폐기 |
-| `listConversations` / `getConversation` / `deleteConversation` | `/v1/conversations…` | 검증 기록 |
+| `analyzeInput(text,{conversationId})` | `POST /api/v1/analyze` | `SEARCH_ADAPTER_PENDING` 동안 503 fail-closed |
+| `analyzeImage(file,{conversationId})` | `POST /api/v1/analyze/image` | `SEARCH_ADAPTER_PENDING` 동안 503 fail-closed |
+| `registerApi` / `loginApi` | `POST /api/auth/signup` / `login` | signup은 user만, login은 HttpOnly cookie와 `{user, expires_at}` 반환 |
+| 소셜 로그인 | PENDING | callback·domain 확정 전 비활성 |
+| `authMe` / `authLogout` | `GET /api/auth/me` / `POST /api/auth/logout` | cookie session 조회/폐기 |
+| `listConversations` / `getConversation` / `deleteConversation` | `/api/v1/conversations…` | 검증 기록 |
 | `checkHealth` | `GET /health` | 서버 연결 상태 배지 |
 
 - 오류는 `ApiError(message, {status, code, detail})`로 던짐 → UI는 `message`만 표시(§4 참고).
-- `analyze` 결과의 `type`(`simple_query`/`article_document`/…)에 따라 `ChatApp.pushResult`가 렌더 분기.
-- **라우팅은 백엔드에서 LLM(HCX-005 function calling)이 판정**한다. 프론트는 항상 `input_type:"auto"`로 보내고 분류에 관여하지 않는다.
+- 검색 adapter와 전체 pipeline source가 연결된 뒤 `analyze` 결과 type에 따라 렌더한다. 현재는 `SEARCH_ADAPTER_PENDING` 503이 정상이다.
 
 ---
 
@@ -147,7 +147,7 @@ Landing(입력) ─▶ Root.startVerify ─▶ ChatApp(세션)
 
 ## 8. 성능 · 주의점
 
-- **LLM 라우팅 비용**: 텍스트 1건당 백엔드가 HCX 호출 1회(~2.5~3초). 명백한 잡담은 백엔드 사전필터로 0ms 처리되지만, 정상 질의는 지연이 있다 → 로딩 인디케이터(§4-4)가 중요.
+- **Pipeline latency**: 전체 pipeline 연결 후 실제 측정값으로 예산을 확정한다. 현재 frontend 문서에서 HCX 호출 횟수·지연을 보장하지 않는다.
 - 이미지 미리보기 `URL.createObjectURL`은 **반드시 `revokeObjectURL`로 해제**(`clearPendingImage`).
 - 대화 목록은 `historyTick`으로 갱신, 화면 전환 시 `session.key`로 `ChatApp` 리마운트.
 
@@ -160,7 +160,7 @@ Landing(입력) ─▶ Root.startVerify ─▶ ChatApp(세션)
 - [ ] 문구가 사용자를 탓하거나 내부 용어(백엔드/에러코드)를 노출하지 않는가?
 - [ ] 오류와 안내를 시각적으로 올바르게 구분했는가?
 - [ ] 로딩/비활성/호버 등 상태가 부드럽고 자연스러운가?
-- [ ] 새 fetch는 `api.js`에 두었는가? 토큰이 자동 첨부되는가?
+- [ ] 새 fetch는 `api.js`에 두었는가? `credentials: "include"`가 적용되는가?
 - [ ] `aria-label`/키보드 조작/`prefers-reduced-motion`을 챙겼는가?
 - [ ] `npm run check`가 통과하는가?(린트·빌드 오류와 미사용 import 제거)
 
@@ -172,6 +172,6 @@ Landing(입력) ─▶ Root.startVerify ─▶ ChatApp(세션)
 # 프론트(최초 설치는 frontend 디렉터리에서 npm ci)
 cd frontend && npm run dev        # http://127.0.0.1:5173
 
-# 백엔드(검증까지 하려면 로컬 Qdrant + .env 키 필요)
+# 백엔드(인증 DB schema/search adapter는 PENDING이며 분석 route는 503 fail-closed)
 ./.venv/Scripts/python.exe -m uvicorn backend.app:app --reload --port 8000
 ```

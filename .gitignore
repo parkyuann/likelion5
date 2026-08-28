@@ -1,0 +1,9 @@
+# Server-only inputs and generated evidence must never be committed.
+runtime.env
+.env
+secrets/
+models/
+receipts/
+*.pem
+__pycache__/
+*.py[cod]

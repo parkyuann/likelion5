@@ -1,0 +1,10 @@
+# The CUDA-enabled PyTorch runtime is supplied by the pinned Docker base image.
+# These versions are intentionally pinned so the model receipt can name a
+# reproducible Python stack.
+accelerate==1.7.0
+fastapi==0.115.12
+huggingface_hub[hf_xet]==0.31.2
+peft==0.15.2
+safetensors==0.5.3
+transformers==4.52.3
+uvicorn==0.34.3

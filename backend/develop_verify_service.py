@@ -49,8 +49,15 @@ _QUESTION_MARKERS = (
 )
 
 _ARTICLE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PERIOD_ANSWER_PATTERN = re.compile(r"^(?:\d{4}|\d{4}-\d{2}|\d{4}년\s*[1-4]분기|\d{4}년\s*(?:0?[1-9]|1[0-2])월)$")
 _DATE_SOURCES = {"user_feedback", "url_metadata", "api_request"}
-ARTICLE_DATE_PROMPT = "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요."
+_CLARIFICATION_ROLES = ("article_date", "period", "region", "population", "indicator", "unit")
+_CLARIFICATION_ROLE_PRIORITY = {role: index for index, role in enumerate(_CLARIFICATION_ROLES)}
+_RELATIVE_PERIOD_PATTERN = re.compile(
+    r"(?:지난해|작년|올해)(?:\s*\d{1,2}\s*(?:월|달|분기|반기))?"
+    r"|(?:지난|이번|다음)\s*(?:\d{1,2}\s*)?(?:년|월|달|분기|반기)"
+    r"|전년\s*(?:동월|동분기|월|분기)"
+)
 
 
 def _evidence_first_statistics_enabled_monthly_v2h() -> bool:
@@ -93,18 +100,117 @@ def normalize_article_date(date: str | None, date_source: str | None) -> tuple[s
     return value, source
 
 
-def article_date_required_response() -> dict[str, Any]:
+def _validate_clarification_answers(value: Any) -> list[dict[str, str]]:
+    if value in (None, []):
+        return []
+    if not isinstance(value, list) or len(value) > 3:
+        raise BackendError("CLARIFICATION_INVALID", "추가 입력은 최대 3회까지 허용됩니다.", status_code=422)
+    result: list[dict[str, str]] = []
+    for answer in value:
+        if not isinstance(answer, dict):
+            raise BackendError("CLARIFICATION_INVALID", "추가 입력 형식이 올바르지 않습니다.", status_code=422)
+        question_id = str(answer.get("question_id") or "").strip()
+        role = str(answer.get("role") or "").strip()
+        raw = answer.get("value")
+        text = raw.strip() if isinstance(raw, str) else ""
+        if role not in _CLARIFICATION_ROLES or question_id != f"clarify-{role}" or not text:
+            raise BackendError("CLARIFICATION_INVALID", "추가 입력의 역할 또는 값이 올바르지 않습니다.", status_code=422)
+        if role == "article_date":
+            normalized = normalize_article_date(text, "user_feedback")
+            assert normalized is not None
+            text = normalized[0]
+        elif role == "period":
+            if not _PERIOD_ANSWER_PATTERN.fullmatch(text):
+                raise BackendError("CLARIFICATION_INVALID", "시점은 YYYY, YYYY-MM, YYYY년 N월 또는 YYYY-QN 형식이어야 합니다.", status_code=422)
+        elif not 1 <= len(text) <= 120:
+            raise BackendError("CLARIFICATION_INVALID", "추가 입력은 1~120자의 자연어로 입력해 주세요.", status_code=422)
+        result.append({"question_id": question_id, "role": role, "value": text})
+    return result
+
+
+def _clarification_response(question: dict[str, Any], reason: str) -> dict[str, Any]:
+    role = str(question.get("role") or "")
+    if role not in _CLARIFICATION_ROLES:
+        return {}
     return {
         "type": "needs_user_input",
-        "status": "awaiting_article_date",
-        "reason": "ARTICLE_DATE_REQUIRED",
+        "status": "awaiting_clarification",
+        "reason": reason,
         "question": {
-            "id": "article_published_date",
-            "prompt": ARTICLE_DATE_PROMPT,
-            "input_mode": "DATE",
-            "required": True,
+            "id": f"clarify-{role}",
+            "role": role,
+            "prompt": str(question.get("prompt") or "확인을 위해 통계 조건을 조금 더 알려주세요."),
+            "input_mode": str(question.get("input_mode") or "FREE_TEXT"),
+            "options": list(question.get("options") or []),
         },
     }
+
+
+def _pending_clarification(out_root: Path) -> dict[str, Any] | None:
+    candidates: list[tuple[int, dict[str, Any], str]] = []
+    for row in _read_jsonl(out_root / "04_stage_ledger.jsonl"):
+        recovery = row.get("failure_recovery_shadow")
+        if not isinstance(recovery, dict):
+            continue
+        question = recovery.get("question")
+        if not isinstance(question, dict):
+            post_retry = recovery.get("post_retry")
+            question = post_retry.get("question") if isinstance(post_retry, dict) else None
+        if not isinstance(question, dict):
+            continue
+        role = str(question.get("role") or "")
+        if role not in _CLARIFICATION_ROLES:
+            continue
+        post_retry = recovery.get("post_retry")
+        retry_reason = post_retry.get("reason") if isinstance(post_retry, dict) else ""
+        reason = str(recovery.get("reason") or retry_reason or row.get("resolution") or "CLARIFICATION_REQUIRED")
+        candidates.append((_CLARIFICATION_ROLE_PRIORITY[role], question, reason))
+    if not candidates:
+        return None
+    _, question, reason = sorted(candidates, key=lambda item: item[0])[0]
+    return _clarification_response(question, reason)
+
+
+def _iter_period_field_texts(value: Any):
+    """Yield only text nested under a routed period field."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from _iter_period_field_texts(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _iter_period_field_texts(nested)
+
+
+def _routed_relative_period_requires_article_date(out_root: Path) -> bool:
+    """Detect a relative routed period when the live ledger emitted no ASK_USER."""
+    for row in _read_jsonl(out_root / "03_routed.jsonl"):
+        containers = [row]
+        for key in ("retrieval_fields", "routed_fields", "fields"):
+            value = row.get(key)
+            if isinstance(value, dict):
+                containers.append(value)
+        for container in containers:
+            for key in ("period", "period_raw", "period_context"):
+                for text in _iter_period_field_texts(container.get(key)):
+                    if _RELATIVE_PERIOD_PATTERN.search(text):
+                        return True
+    return False
+
+
+def _pending_article_date_from_routed(out_root: Path) -> dict[str, Any] | None:
+    if not _routed_relative_period_requires_article_date(out_root):
+        return None
+    return _clarification_response(
+        {
+            "role": "article_date",
+            "prompt": "기사의 '지난 4월'과 같은 상대 시점을 정확한 통계 시점으로 바꾸려면 기사 발행일이 필요합니다. 기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+            "input_mode": "DATE",
+            "options": [],
+        },
+        "ARTICLE_DATE_REQUIRED_FOR_RELATIVE_PERIOD",
+    )
 
 
 def _looks_like_question(text: str) -> bool:
@@ -122,6 +228,11 @@ def _looks_like_question(text: str) -> bool:
 def _pipeline_runtime_root() -> Path:
     configured = os.getenv("PIPELINE_RUNTIME_ROOT", "").strip()
     return Path(configured) if configured else ROOT / "pipeline_runtime"
+
+
+def _pipeline_config_path() -> Path:
+    configured = os.getenv("PIPELINE_CONFIG_PATH", "").strip()
+    return Path(configured).resolve() if configured else CONFIG_PATH
 
 
 def _load_trace_runner() -> tuple[Any, type[Exception]]:
@@ -164,6 +275,26 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
             if isinstance(row, dict):
                 rows.append(row)
     return rows
+
+
+def _deterministic_claim_query_from_routed(out_root: Path) -> str | None:
+    """Build the live selector query from the first routed LEVEL claim only."""
+    for row in _read_jsonl(out_root / "03_routed.jsonl"):
+        fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), dict) else {}
+        measurement_type = str(
+            fields.get("measurement_type") or row.get("measurement_type") or ""
+        ).strip().upper()
+        if measurement_type != "LEVEL":
+            continue
+        indicator = str(fields.get("indicator") or row.get("indicator") or "").strip()
+        period = fields.get("period_absolute") or fields.get("period_raw") or row.get("period_raw") or ""
+        if isinstance(period, dict):
+            period = period.get("absolute") or period.get("raw") or ""
+        period_text = str(period).strip()
+        query = " ".join(part for part in (indicator, period_text) if part)
+        if query:
+            return query
+    return None
 
 
 def _query_preview(targets: list[dict[str, Any]]) -> str:
@@ -252,9 +383,13 @@ def _project_segments(out_root: Path, body: str, *, live: bool) -> list[dict[str
         # 문장 기준으로 되접는다. 필드명은 인프라 연결 후 최종 검증.
         target_to_sentence: dict[str, Any] = {}
         for row in routed:
-            key = str(row.get("value_span_id") or row.get("target_id") or "")
-            if key:
-                target_to_sentence[key] = row.get("article_sentence_id")
+            value_span_id = str(row.get("value_span_id") or "")
+            if value_span_id:
+                sentence_id = row.get("article_sentence_id")
+                target_to_sentence[value_span_id] = sentence_id
+                article_idx = str(row.get("article_idx") or "")
+                if article_idx:
+                    target_to_sentence[f"{article_idx}:{value_span_id}"] = sentence_id
         for row in _read_jsonl(out_root / "04_answers.jsonl"):
             key = str(row.get("target_id") or row.get("value_span_id") or "")
             sid = target_to_sentence.get(key, row.get("article_sentence_id"))
@@ -298,6 +433,7 @@ def verify_article_develop(
     title: str = "",
     date: str | None = "",
     date_source: str | None = None,
+    clarification_answers: Any = None,
 ) -> dict[str, Any]:
     """기사 본문을 develop 파이프라인으로 검증하고 프론트 표시 계약으로 반환한다.
 
@@ -313,13 +449,19 @@ def verify_article_develop(
     if _looks_like_question(body):
         return {"type": "not_article", "reason": "question"}
 
+    clarification_history = _validate_clarification_answers(clarification_answers)
     evidence_first_statistics = _evidence_first_statistics_enabled_monthly_v2h()
     normalized_date = normalize_article_date(
         date, None if evidence_first_statistics else date_source
     )
-    if normalized_date is None:
-        return article_date_required_response()
-    article_date, article_date_source = normalized_date
+    article_date = normalized_date[0] if normalized_date is not None else ""
+    article_date_source = normalized_date[1] if normalized_date is not None else None
+    date_answers = [answer for answer in clarification_history if answer["role"] == "article_date"]
+    if date_answers:
+        if article_date and article_date != date_answers[-1]["value"]:
+            raise BackendError("CLARIFICATION_CONFLICT", "기존 기사 발행일과 추가 입력이 서로 다릅니다.", status_code=422)
+        article_date = date_answers[-1]["value"]
+        article_date_source = "user_feedback"
 
     # PENDING 경로가 먼저 닫힌 뒤, explicit article만 승인된 closure를 지연 로드한다.
     run_trace, trace_stage_error = _load_trace_runner()
@@ -333,9 +475,10 @@ def verify_article_develop(
         json.dumps(
             {
                 "article_idx": article_id,
-                "title": title,
+                "title": title.strip() or "제목 미상 기사",
                 "date": article_date,
                 "article_text": body,
+                "clarification_answers": clarification_history,
                 "article_date_provenance": (
                     build_article_date_provenance_monthly_v2h(body)
                     if evidence_first_statistics else
@@ -365,13 +508,33 @@ def verify_article_develop(
         # 수치 주장이 있으면 나머지 단계를 진행한다(인프라 있으면 live까지).
         remaining = ["l2", "layers"] + (["live"] if live else [])
         for stage in remaining:
+            live_kwargs: dict[str, Any] = {}
+            if stage == "live":
+                live_kwargs = {
+                    "claim_query": _deterministic_claim_query_from_routed(out_root),
+                    "role_aware_dimension_shadow": True,
+                }
             run_trace(
                 articles_path=articles_path,
                 output_root=out_root,
                 stage=stage,
-                config_path=CONFIG_PATH if stage in ("all", "live") else None,
+                config_path=_pipeline_config_path() if stage in ("all", "live") else None,
+                failure_recovery_shadow=(stage == "live"),
+                **live_kwargs,
             )
         segments = _project_segments(out_root, body, live=live)
+        if live and len(clarification_history) < 3:
+            pending = _pending_clarification(out_root)
+            if pending is None and not article_date:
+                pending = _pending_article_date_from_routed(out_root)
+            if pending:
+                return {
+                    **pending,
+                    "title": title,
+                    "date": article_date,
+                    "date_source": article_date_source,
+                    "clarification_history": clarification_history,
+                }
     except trace_stage_error as exc:
         code = str(exc.args[0]) if exc.args else "PIPELINE_FAILED"
         raise BackendError(
@@ -409,6 +572,7 @@ def verify_article_develop(
         "title": title,
         "date": article_date,
         "date_source": article_date_source,
+        "clarification_history": clarification_history,
         "summary": counts,
         "results": segments,
     }

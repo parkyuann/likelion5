@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date as calendar_date, datetime, timezone
 import hashlib
 import json
 import os
@@ -497,6 +497,107 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OperationalPipelineError(f"JSON_OBJECT_REQUIRED:{path}")
     return value
+
+
+_CLARIFICATION_ROLES = ("article_date", "period", "region", "population", "indicator", "unit")
+_CLARIFICATION_PERIOD_RE = re.compile(
+    r"^(?:\d{4}|\d{4}-\d{2}|\d{4}년\s*[1-4]분기|\d{4}년\s*(?:0?[1-9]|1[0-2])월)$"
+)
+
+
+def _load_articles_for_clarification(path: str | Path) -> list[dict[str, Any]]:
+    """Live input loader that defers a missing date to the binding stage."""
+    source = Path(path)
+    try:
+        text = source.read_text(encoding="utf-8")
+        if source.suffix.lower() == ".jsonl":
+            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        else:
+            value = json.loads(text)
+            rows = value if isinstance(value, list) else [value]
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LiveAdapterError("ARTICLE_INPUT_INVALID") from exc
+    if not rows or any(not isinstance(row, dict) for row in rows):
+        raise LiveAdapterError("ARTICLE_INPUT_OBJECTS_REQUIRED")
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        article_id = str(row.get("article_idx") or "").strip()
+        title = str(row.get("title") or "").strip()
+        body = str(row.get("article_text") or "").strip()
+        published = str(row.get("date") or "").strip()
+        if not article_id or article_id in seen or not title or not body:
+            raise LiveAdapterError("ARTICLE_REQUIRED_FIELD_MISSING")
+        if published:
+            try:
+                calendar_date.fromisoformat(published[:10])
+            except ValueError as exc:
+                raise LiveAdapterError("ARTICLE_DATE_INVALID") from exc
+        seen.add(article_id)
+        result.append({**row, "article_idx": article_id, "title": title, "article_text": body, "date": published})
+    return result
+
+
+def _clarification_answer_sha(answer: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(dict(answer), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(row)
+    raw_answers = article.get("clarification_answers")
+    if raw_answers in (None, []):
+        return merged
+    if not isinstance(raw_answers, list) or len(raw_answers) > 3:
+        raise OperationalPipelineError("CLARIFICATION_INVALID")
+    fields = dict(merged.get("retrieval_fields") if isinstance(merged.get("retrieval_fields"), Mapping) else {})
+    clarifications: dict[str, dict[str, Any]] = dict(
+        merged.get("user_clarifications") if isinstance(merged.get("user_clarifications"), Mapping) else {}
+    )
+    for answer in raw_answers:
+        if not isinstance(answer, Mapping):
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        role = str(answer.get("role") or "").strip()
+        question_id = str(answer.get("question_id") or "").strip()
+        value = str(answer.get("value") or "").strip()
+        if role not in _CLARIFICATION_ROLES or question_id != f"clarify-{role}" or not value:
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        if role == "article_date":
+            try:
+                calendar_date.fromisoformat(value)
+            except ValueError as exc:
+                raise OperationalPipelineError("CLARIFICATION_INVALID") from exc
+        elif role == "period" and not _CLARIFICATION_PERIOD_RE.fullmatch(value):
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        elif role != "period" and not 1 <= len(value) <= 120:
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        prior = clarifications.get(role)
+        if prior and str(prior.get("value") or "") != value:
+            raise OperationalPipelineError("CLARIFICATION_CONFLICT")
+        record = {
+            "question_id": question_id, "role": role, "value": value,
+            "source": "USER_CLARIFICATION",
+            "answer_sha256": _clarification_answer_sha({"question_id": question_id, "role": role, "value": value}),
+        }
+        clarifications[role] = record
+        if role == "article_date":
+            merged["article_date"] = value
+            merged["article_date_provenance"] = {
+                "source": "USER_CLARIFICATION", "question_id": question_id, "role": role,
+                "answer_sha256": record["answer_sha256"],
+            }
+        elif role == "period":
+            normalized = value.replace("-", ".")
+            if "년" in value:
+                normalized = re.sub(r"년\s*", ".", value).replace("월", "").replace("분기", " Q")
+            fields["period_absolute"] = normalized
+            fields["period_raw"] = value
+        else:
+            fields[role] = value
+    merged["retrieval_fields"] = fields
+    merged["user_clarifications"] = clarifications
+    return merged
 
 
 def _service_urls(
@@ -1642,16 +1743,35 @@ def run_new_articles_v2(
         if intent_clarification:
             query_selection = {**claim_query_selection, **primary_audit}
         elif primary_info is None:
-            routed = []
-            query_selection = {
-                **claim_query_selection,
-                **primary_audit,
-                "status": "PRIMARY_TARGET_NOT_EVALUATED",
-                "reason": primary_selection_error or "PRIMARY_TARGET_AMBIGUOUS",
-                "target_id": None,
-                "value_span_id": None,
-                "primary_target_id": None,
-            }
+            query_fallback_selected = (
+                claim_query is not None
+                and len(routed) == 1
+                and claim_query_selection.get("status") == "SELECTED"
+            )
+            if query_fallback_selected:
+                selected = dict(routed[0])
+                selected_value_span_id = str(selected.get("value_span_id") or "")
+                query_selection = {
+                    **claim_query_selection,
+                    **primary_audit,
+                    "status": "PRIMARY_SELECTED_BY_QUERY_FALLBACK",
+                    "value_used": False,
+                    "target_id": selected_value_span_id or claim_query_selection.get("target_id"),
+                    "value_span_id": selected_value_span_id or claim_query_selection.get("value_span_id"),
+                    "primary_target_id": _target_id(selected),
+                    "primary_error": primary_selection_error or "PRIMARY_TARGET_AMBIGUOUS",
+                }
+            else:
+                routed = []
+                query_selection = {
+                    **claim_query_selection,
+                    **primary_audit,
+                    "status": "PRIMARY_TARGET_NOT_EVALUATED",
+                    "reason": primary_selection_error or "PRIMARY_TARGET_AMBIGUOUS",
+                    "target_id": None,
+                    "value_span_id": None,
+                    "primary_target_id": None,
+                }
         else:
             primary = primary_info["primary"]
             primary_value_span_id = str(primary.get("value_span_id") or "")
@@ -1720,9 +1840,10 @@ def run_new_articles_v2(
         sentence = str(row.get("sentence_text") or "")
         article_text = str(article.get("article_text") or "")
         date = str(article.get("date") or article.get("article_date") or "")
-        row = dict(row)
-        if sentence and sentence in article_text and date:
-            row["article_date"] = date
+        row = _merge_user_clarifications(row, article)
+        effective_date = str(row.get("article_date") or date)
+        if sentence and sentence in article_text and effective_date:
+            row["article_date"] = effective_date
             if evidence_first_statistics_shadow:
                 row["article_text"] = article_text
                 input_date_receipt = article.get("article_date_provenance")
@@ -2422,7 +2543,7 @@ def run_live_from_files(
     # Article and predecessor validation is deliberately before dotenv/service
     # preflight or adapter construction: malformed trace inputs must be zero-call.
     precomputed_l2 = precomputed_routed = None
-    local_articles = load_live_articles(article_path)
+    local_articles = _load_articles_for_clarification(article_path)
     expected_article_ids = [str(row.get("article_idx") or "") for row in local_articles]
     if precomputed_l2_manifest_path is not None:
         precomputed_l2 = _discover_precomputed_manifest(Path(precomputed_l2_manifest_path).resolve(), stage="02", article_path=article_path, expected_article_ids=expected_article_ids)

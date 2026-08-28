@@ -34,6 +34,7 @@ _CLARIFY_REASONS = frozenset({
     "MULTIPLE_COMPATIBLE_SERIES", "REGION_UNBOUND", "POPULATION_UNBOUND",
     "PERIOD_UNKNOWN", "PERIOD_INVALID",
 })
+_CLARIFICATION_PRIORITY = ("article_date", "period", "region", "population", "indicator", "unit")
 
 
 def _sha(value: Any) -> str:
@@ -54,7 +55,20 @@ def _retrieval_safe_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _question_for_missing(reason: str) -> dict[str, Any]:
+def _relative_period_without_article_date(row: Mapping[str, Any]) -> bool:
+    fields = _fields(row)
+    raw = " ".join(str(fields.get(key) or row.get(key) or "") for key in ("period_raw", "period"))
+    return bool(re.search(r"(?:지난|작년|지난해|올해|이번|다음)\s*(?:\d{1,2}\s*)?(?:월|분기)|\b\d{1,2}월\b", raw)) and not str(row.get("article_date") or "").strip()
+
+
+def _question_for_missing(reason: str, row: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    if reason in {"PERIOD_UNKNOWN", "PERIOD_INVALID"} and row is not None and _relative_period_without_article_date(row):
+        return {
+            "question_id": "clarify-article_date", "role": "article_date",
+            "prompt": "기사에서 말한 상대 시점의 연도를 정하려면 기사 발행일을 알려주세요.",
+            "input_mode": "DATE", "options": [], "answer": None,
+            "internal_ids_exposed": False, "model_prefill": False,
+        }
     prompts = {
         "REGION_UNBOUND": ("region", "어느 지역 기준인지 알려주세요."),
         "POPULATION_UNBOUND": ("population", "어떤 대상 집단 기준인지 알려주세요."),
@@ -82,7 +96,7 @@ def _question_for_multiple(projections: Sequence[Any]) -> dict[str, Any]:
     differing = [(role, sorted(labels)) for role, labels in sorted(labels_by_role.items()) if len(labels) > 1]
     if not differing:
         return {
-            "question_id": "clarify-series", "role": "series", "prompt": "어떤 통계 기준을 의미하는지 조금 더 구체적으로 알려주세요.",
+            "question_id": "clarify-indicator", "role": "indicator", "prompt": "어떤 통계 지표를 확인할까요?",
             "input_mode": "FREE_TEXT", "options": [], "answer": None,
             "internal_ids_exposed": False, "model_prefill": False,
         }
@@ -140,7 +154,7 @@ def plan_failure_recovery(row: Mapping[str, Any], top50: Any | None) -> dict[str
     if getattr(resolution, "outcome", None) == "QUERY_READY":
         result = {"action": "SKIP", "reason": "QUERY_READY", "retry_budget": {"used": 0, "limit": 1}}
     elif reason in _CLARIFY_REASONS:
-        question = _question_for_multiple(projections) if reason == "MULTIPLE_COMPATIBLE_SERIES" else _question_for_missing(reason)
+        question = _question_for_multiple(projections) if reason == "MULTIPLE_COMPATIBLE_SERIES" else _question_for_missing(reason, row)
         result = {"action": "ASK_USER", "reason": reason, "question": question, "retry_budget": {"used": 0, "limit": 1}}
     else:
         candidate_missing = not candidate_membership or (

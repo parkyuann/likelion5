@@ -419,7 +419,7 @@ function ChatApp({
   const [input, setInput] = useState("");
   const [sourceQuestion, setSourceQuestion] = useState("");
   const [pendingImage, setPendingImage] = useState(null); // { file, url }
-  const [pendingArticleDate, setPendingArticleDate] = useState(null);
+  const [pendingClarification, setPendingClarification] = useState(null);
   const [loading, setLoading] = useState(false);
   const chatBodyRef = useRef(null);
   const fileRef = useRef(null);
@@ -533,14 +533,18 @@ function ChatApp({
     ]);
   }
 
-  function requestArticleDate(article, result) {
-    setPendingArticleDate(article);
+  function requestClarification(article, result) {
+    setPendingClarification({
+      ...article,
+      question: result.question,
+      clarificationAnswers: article.clarificationAnswers || [],
+    });
     setMessages((prev) => [
       ...prev,
       {
         role: "assistant",
-        kind: "date_request",
-        text: result.question?.prompt || "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+        kind: "clarification_request",
+        text: result.question?.prompt || "확인을 위해 통계 조건을 조금 더 알려주세요.",
       },
     ]);
   }
@@ -724,13 +728,14 @@ function ChatApp({
     title = "",
     date = "",
     dateSource = null,
+    clarificationAnswers = [],
     requestConversationId = conversationId,
   } = {}) {
     // UI 확인용 목업은 ?mock=1 일 때만 사용합니다(기본은 실제 파이프라인).
     // 새 UX(진행 링·결과 카드·인라인 상세)를 색상/수식/후보까지 그대로 렌더한다.
     if (mockEnabled()) {
       lastRequestRef.current = {
-        kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+        kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, requestConversationId,
       };
       const startTs = startNetworkProgress();
       setLoading(true);
@@ -746,7 +751,7 @@ function ChatApp({
       return;
     }
     lastRequestRef.current = {
-      kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+      kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, requestConversationId,
     };
     const isUrl = inputType === "url" || /^https?:\/\/\S+$/i.test(text.trim());
     const startTs = startNetworkProgress();
@@ -766,14 +771,18 @@ function ChatApp({
             title: doc.title || "",
             date: doc.published_date || "",
             dateSource: doc.published_date ? "url_metadata" : null,
+            clarificationAnswers,
           });
           if (verified?.type === "needs_user_input") {
-            requestArticleDate({
+            requestClarification({
               text: doc.text,
               title: doc.title || "",
               inputType: "article",
               focusQuestion,
+              date: doc.published_date || "",
+              dateSource: doc.published_date ? "url_metadata" : null,
               conversationId: prepared.conversation_id || requestConversationId,
+              clarificationAnswers: [],
             }, verified);
           } else if (verified?.type === "article") await showArticleResult(verified, startTs);
           else handleResult(verified, focusQuestion);
@@ -788,14 +797,16 @@ function ChatApp({
           title,
           date,
           dateSource,
+          clarificationAnswers,
         });
         if (verified?.type === "needs_user_input") {
-          requestArticleDate({
+          requestClarification({
             text,
             title,
             inputType,
             focusQuestion,
             conversationId: requestConversationId,
+            clarificationAnswers: [],
           }, verified);
         } else if (verified?.type === "not_article") {
           const routed = await analyzeInput(text, {
@@ -869,39 +880,50 @@ function ChatApp({
   // ── 입력 전송 ──
   function handleSend() {
     if (loading) return;
-    if (pendingArticleDate) {
+    if (pendingClarification) {
       const answer = input.trim();
       if (!answer) return;
       setInput("");
       if (answer === "취소") {
-        setPendingArticleDate(null);
+        setPendingClarification(null);
         lastRequestRef.current = null;
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", kind: "text", text: "기사 발행일 입력을 취소했습니다." },
+          { role: "assistant", kind: "text", text: "추가 정보 입력을 취소했습니다." },
         ]);
         return;
       }
-      if (!isValidArticleDate(answer)) {
+      const question = pendingClarification.question || {};
+      if (question.input_mode === "DATE" && !isValidArticleDate(answer)) {
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            kind: "date_request",
+            kind: "clarification_request",
             text: "실제 달력에 존재하는 YYYY-MM-DD 형식으로 다시 알려주세요. 취소하려면 '취소'를 입력하세요.",
           },
         ]);
         return;
       }
-      const article = pendingArticleDate;
-      setPendingArticleDate(null);
+      const article = pendingClarification;
+      const clarificationAnswer = {
+        question_id: question.id,
+        role: question.role,
+        value: answer,
+      };
+      const clarificationAnswers = [
+        ...(article.clarificationAnswers || []),
+        clarificationAnswer,
+      ];
+      setPendingClarification(null);
       setMessages((prev) => [...prev, { role: "user", kind: "text", text: answer }]);
       runText(article.text, {
         inputType: article.inputType,
         focusQuestion: article.focusQuestion,
         title: article.title,
-        date: answer,
-        dateSource: "user_feedback",
+        date: article.date || "",
+        dateSource: article.dateSource || null,
+        clarificationAnswers,
         requestConversationId: article.conversationId,
       });
       return;
@@ -945,6 +967,7 @@ function ChatApp({
       title: last.title,
       date: last.date,
       dateSource: last.dateSource,
+      clarificationAnswers: last.clarificationAnswers || [],
       requestConversationId: last.requestConversationId,
     });
   }
@@ -1013,7 +1036,7 @@ function ChatApp({
               </div>
             );
           }
-          if (msg.kind === "date_request") {
+          if (msg.kind === "clarification_request" || msg.kind === "date_request") {
             return (
               <div key={i} className="c-row assistant">
                 <div className="c-bubble assistant">{msg.text}</div>
@@ -1153,8 +1176,10 @@ function ChatApp({
           <textarea
             className="c-textarea"
             placeholder={
-              pendingArticleDate
-                ? "기사 발행일 YYYY-MM-DD 입력 또는 '취소'"
+              pendingClarification
+                ? pendingClarification.question?.input_mode === "DATE"
+                  ? "기사 발행일 YYYY-MM-DD 입력 또는 '취소'"
+                  : "추가 통계 조건을 입력하거나 '취소'"
                 : pendingImage
                 ? "이미지가 첨부되었습니다"
                 : "통계 질문, 기사 URL 또는 본문 입력 후 Enter"

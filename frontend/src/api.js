@@ -45,6 +45,7 @@ export async function analyzeInput(text, {
   focusQuestion = "",
   date = "",
   dateSource = null,
+  clarificationAnswers = [],
 } = {}) {
   const response = await apiFetch("/v1/analyze", {
     method: "POST",
@@ -52,6 +53,7 @@ export async function analyzeInput(text, {
       text, input_type: inputType,
       date,
       date_source: dateSource,
+      clarification_answers: clarificationAnswers,
       ...(focusQuestion ? { focus_question: focusQuestion } : {}),
       max_claims: 10, explain: false,
       ...(conversationId ? { conversation_id: conversationId } : {}),
@@ -65,6 +67,7 @@ export async function verifyArticleDevelop(text, {
   title = "",
   date = "",
   dateSource = null,
+  clarificationAnswers = [],
 } = {}) {
   const response = await apiFetch("/v1/verify/develop", {
     method: "POST",
@@ -73,6 +76,7 @@ export async function verifyArticleDevelop(text, {
       title,
       date,
       date_source: dateSource,
+      clarification_answers: clarificationAnswers,
       ...(conversationId ? { conversation_id: conversationId } : {}),
     }),
   });

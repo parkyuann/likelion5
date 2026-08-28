@@ -121,6 +121,7 @@ class AnalyzeRequest(StrictModel):
     explain: bool = False
     focus_question: str = Field("", max_length=1000)
     conversation_id: str | None = None
+    clarification_answers: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
 
 
 class DevelopVerifyRequest(StrictModel):
@@ -129,6 +130,7 @@ class DevelopVerifyRequest(StrictModel):
     date: str | None = Field("", max_length=40)
     date_source: Literal["user_feedback", "url_metadata", "api_request"] | None = None
     conversation_id: str | None = None
+    clarification_answers: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
 
 
 app = FastAPI(title="뉴스 사실검증 API", version="0.2.0")
@@ -263,19 +265,19 @@ def verify_develop(req: DevelopVerifyRequest, user: dict | None = Depends(option
     del user
     from backend.develop_verify_service import (
         _looks_like_question,
-        article_date_required_response,
-        normalize_article_date,
         verify_article_develop,
     )
 
     if _looks_like_question(req.text.strip()):
         return {"type": "not_article", "reason": "question"}
-    normalized_date = normalize_article_date(req.date, req.date_source)
-    if normalized_date is None:
-        return article_date_required_response()
-    date, date_source = normalized_date
     require_pipeline_runtime()
-    return verify_article_develop(req.text, title=req.title, date=date, date_source=date_source)
+    return verify_article_develop(
+        req.text,
+        title=req.title,
+        date=req.date,
+        date_source=req.date_source,
+        clarification_answers=req.clarification_answers,
+    )
 
 
 def _looks_like_url(value: str) -> bool:
@@ -293,14 +295,15 @@ def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> 
     if req.input_type != "article":
         raise_pipeline_pending(PIPELINE_NATURAL_QUERY_PENDING, "자연어·자동 질의 경로가 아직 연결되지 않았습니다.")
 
-    from backend.develop_verify_service import article_date_required_response, normalize_article_date, verify_article_develop
+    from backend.develop_verify_service import verify_article_develop
 
-    normalized_date = normalize_article_date(req.date, req.date_source)
-    if normalized_date is None:
-        return article_date_required_response()
-    date, date_source = normalized_date
     require_pipeline_runtime()
-    return verify_article_develop(req.text, date=date, date_source=date_source)
+    return verify_article_develop(
+        req.text,
+        date=req.date,
+        date_source=req.date_source,
+        clarification_answers=req.clarification_answers,
+    )
 
 
 @app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf)])

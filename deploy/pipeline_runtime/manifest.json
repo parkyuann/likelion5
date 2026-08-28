@@ -54,10 +54,10 @@
       "size": 180,
       "sha256": "593097c5556f236ed2301d3ae0185e2a8ba9962a112164676b1aa1a8de1e5774"
     },
-    {
-      "path": "develop/l2_segmentation.py",
-      "size": 28468,
-      "sha256": "a1a623805b23b8d54b18e248606ce2dee7982f8f6952cdef9b4cb370e695345f"
+      {
+        "path": "develop/l2_segmentation.py",
+        "size": 37380,
+        "sha256": "a6285f5295f8252b5add11bc82c918ba33b11046ac6b8192f93b9291a7866db3"
     },
     {
       "path": "develop/l2_span_resolver.py",
@@ -74,15 +74,15 @@
       "size": 7969,
       "sha256": "4188269c1cf2dcecb4510f16962f1d99feda1f876e1919d261caa1a729ccd28d"
     },
-    {
-      "path": "develop/run_article_body_pipeline_trace_v1.py",
-      "size": 37970,
-      "sha256": "3e56d4144a20179fc4ac84fe946d8904ceae3047f7c39264293d2638ef8e924c"
+      {
+        "path": "develop/run_article_body_pipeline_trace_v1.py",
+        "size": 39439,
+        "sha256": "81331a801a4bea9d49157d72ec8c31546f700e30d2b016530e78a99829f57d69"
     },
     {
       "path": "develop/run_l2_segmentation.py",
-      "size": 7004,
-      "sha256": "81ab560e650f5a5f98700188fcb7aa811e76955188c0094c27ce29e68c43cccf"
+      "size": 8897,
+      "sha256": "03ac5d04b0e8a788a076bf2ddabc5be8d6b8fef95c6770aeda6fb4987798b211"
     },
     {
       "path": "develop/run_layer_stack.py",

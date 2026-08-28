@@ -27,9 +27,10 @@ from .deterministic_query_claim_front_v1 import (
     build_query_claim_front,
 )
 from .l1_value_candidates import build_span_candidates
-from .run_l2_segmentation import run as run_l2
+from .run_l2_segmentation import L2ReceiptError, run as run_l2
 from .run_layer_stack import run_stack
 from .run_pipeline_operational_v2 import (
+    OperationalPipelineError,
     materialize_operational_l2,
     project_trace_operational_l2,
     run_live_from_files,
@@ -55,6 +56,14 @@ _STAGE_FILES = {
     "04": ({"04_stage_ledger.jsonl", "04_answers.jsonl"}, {"04_trace.log"}),
 }
 _SECRET_RE = re.compile(r"(?:Bearer\s+[A-Za-z0-9._~+/=-]+|(?:api[_-]?key|token)\s*[:=]\s*\S+)", re.I)
+_SECRET_ENV_NAME_RE = re.compile(
+    r"(?:^|_)(?:API_KEY|APIKEY|SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE_KEY|CREDENTIAL)(?:_|$)",
+    re.I,
+)
+_NON_SECRET_ENV_SUFFIX_RE = re.compile(
+    r"_(?:URL|URI|PATH|FILE|SOURCE|ID|REVISION|SHA256|HOST|PORT|PRESENT|ENABLED|NAME|COUNT|LIMIT|MODE|TYPE)$",
+    re.I,
+)
 
 
 class TraceStageError(RuntimeError):
@@ -196,7 +205,16 @@ def _atomic_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
 
 
 def _safe_env_secrets() -> list[str]:
-    return [value for value in os.environ.values() if isinstance(value, str) and len(value) >= 8]
+    values: list[str] = []
+    for name, value in os.environ.items():
+        if (
+            isinstance(value, str)
+            and len(value) >= 8
+            and _SECRET_ENV_NAME_RE.search(name)
+            and not _NON_SECRET_ENV_SUFFIX_RE.search(name)
+        ):
+            values.append(value)
+    return values
 
 
 def _scan_text(value: str) -> bool:
@@ -502,20 +520,46 @@ def run_l2_stage(
         resolved_api_key = api_key or env_api_key()
         if not resolved_api_key:
             raise TraceStageError("L2_CALL_FAILED")
-        predictions, raw_manifest = run_l2(articles, api_key=resolved_api_key, retries=0, pause_seconds=0, sentence_span_iterator=sentence_span_iterator)
+        try:
+            predictions, raw_manifest = run_l2(
+                articles,
+                api_key=resolved_api_key,
+                retries=0,
+                pause_seconds=0,
+                sentence_span_iterator=sentence_span_iterator,
+            )
+        except L2ReceiptError as exc:
+            error_code = (
+                exc.args[0]
+                if len(exc.args) == 1 and isinstance(exc.args[0], str)
+                else ""
+            )
+            if error_code == "L2_RESPONSE_INVALID":
+                raise TraceStageError("L2_RESPONSE_INVALID") from exc
+            raise TraceStageError("L2_STAGE_FAILED") from exc
     total_tokens = raw_manifest.get("total_tokens")
     if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
         raise TraceStageError("L2_RESPONSE_INVALID")
     if total_tokens > 60000:
         raise TraceStageError("CALL_BUDGET_EXHAUSTED")
-    materialized = materialize_operational_l2(
-        articles,
-        predictions,
-        raw_manifest,
-        external_model_calls=0 if deterministic_query_front else int(len(articles)),
-        sentence_span_iterator=sentence_span_iterator,
-    )
-    projected = project_trace_operational_l2(materialized)
+    try:
+        materialized = materialize_operational_l2(
+            articles,
+            predictions,
+            raw_manifest,
+            external_model_calls=0 if deterministic_query_front else int(len(articles)),
+            sentence_span_iterator=sentence_span_iterator,
+        )
+        projected = project_trace_operational_l2(materialized)
+    except OperationalPipelineError as exc:
+        error_code = (
+            exc.args[0]
+            if len(exc.args) == 1 and isinstance(exc.args[0], str)
+            else ""
+        )
+        if error_code == "L2_RESPONSE_INVALID":
+            raise TraceStageError("L2_RESPONSE_INVALID") from exc
+        raise TraceStageError("L2_STAGE_FAILED") from exc
     flat: list[dict[str, Any]] = []
     result_rows: list[dict[str, Any]] = []
     for result in projected["results"]:

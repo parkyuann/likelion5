@@ -61,6 +61,250 @@ def value_candidates_by_sentence(
 
 SOURCE_SUBTYPES = ("공식집계", "민간조사", "정책목표", "잠정추산", "법정기준")
 DOMINANCE_NONE = "지배 없음"
+_SPAN_ERROR_CODES = {
+    "EMPTY",
+    "NOT_FOUND",
+    "AMBIGUOUS",
+    "OCCURRENCE_INDEX_INVALID",
+    "UNKNOWN",
+}
+
+
+def _normalize_span_error_code(exc: SpanResolutionError, span_text: str) -> str:
+    """Map resolver diagnostics to the finite L2 receipt vocabulary."""
+    message = str(exc).lower()
+    if not str(span_text).strip() or "empty" in message:
+        return "EMPTY"
+    if "ambiguous" in message:
+        return "AMBIGUOUS"
+    if "occurrence_index" in message:
+        return "OCCURRENCE_INDEX_INVALID"
+    if "not found" in message:
+        return "NOT_FOUND"
+    return "UNKNOWN"
+
+
+def _unresolved_span_detail(
+    sentence_id: int,
+    field: str,
+    span_text: str,
+    exc: SpanResolutionError,
+) -> dict[str, Any]:
+    code = _normalize_span_error_code(exc, span_text)
+    if code not in _SPAN_ERROR_CODES:  # pragma: no cover - defensive contract guard
+        code = "UNKNOWN"
+    return {
+        "sentence_id": int(sentence_id),
+        "field": field,
+        "source_span_text": str(span_text)[:512],
+        "span_error_code": code,
+    }
+
+
+class HcxSpanResolutionError(SpanResolutionError):
+    """Bounded failure from the HCX model-span normalization layer."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_HCX_QUOTE_TRANSLATION = str.maketrans({
+    "‘": "'",
+    "’": "'",
+    "ʼ": "'",
+    "“": '"',
+    "”": '"',
+})
+_HCX_CONNECTIVE_PREFIXES = (
+    "는데",
+    "지만",
+    "으며",
+    "면서",
+    "도록",
+    "다가",
+    "고",
+    "서",
+    "아서",
+    "어서",
+    "여서",
+    "라서",
+    "므로",
+    "기에",
+)
+_HCX_TERMINAL_SUFFIXES = {
+    "다",
+    "요",
+    "죠",
+    "니다",
+    "습니다",
+    "이다",
+    "였다",
+    "했다",
+    "한다",
+    "된다",
+    "있다",
+    "없다",
+}
+
+
+def _validate_hcx_model_span_inputs(sentence_text: str, span_text: str) -> None:
+    if not isinstance(sentence_text, str) or not sentence_text:
+        raise HcxSpanResolutionError("UNKNOWN", "sentence text is empty")
+    if not isinstance(span_text, str) or not span_text.strip():
+        raise HcxSpanResolutionError("EMPTY", "source_span_text is empty")
+
+
+def _occurrences(sentence_text: str, span_text: str) -> list[int]:
+    starts: list[int] = []
+    cursor = sentence_text.find(span_text)
+    while cursor >= 0:
+        starts.append(cursor)
+        cursor = sentence_text.find(span_text, cursor + 1)
+    return starts
+
+
+def _normalized_span_text(text: str, *, ignore_whitespace: bool) -> tuple[str, list[int]]:
+    normalized: list[str] = []
+    offsets: list[int] = []
+    for index, char in enumerate(text.translate(_HCX_QUOTE_TRANSLATION)):
+        if ignore_whitespace and char.isspace():
+            continue
+        normalized.append(char)
+        offsets.append(index)
+    return "".join(normalized), offsets
+
+
+def _find_normalized_matches(
+    sentence_text: str,
+    span_text: str,
+    *,
+    ignore_whitespace: bool,
+) -> tuple[list[int], list[int]]:
+    sentence_normalized, offsets = _normalized_span_text(
+        sentence_text,
+        ignore_whitespace=ignore_whitespace,
+    )
+    span_normalized, _ = _normalized_span_text(
+        span_text,
+        ignore_whitespace=ignore_whitespace,
+    )
+    return _occurrences(sentence_normalized, span_normalized), offsets
+
+
+def find_hcx_model_span_matches(sentence_text: str, span_text: str) -> list[int]:
+    """Return unique-candidate offsets after quote/space normalization."""
+    _validate_hcx_model_span_inputs(sentence_text, span_text)
+    matches, offsets = _find_normalized_matches(
+        sentence_text,
+        span_text,
+        ignore_whitespace=True,
+    )
+    return [offsets[start] for start in matches]
+
+
+def _morphological_prefix_matches(
+    sentence_text: str,
+    span_text: str,
+) -> list[tuple[int, int, list[int]]]:
+    source_normalized, offsets = _normalized_span_text(
+        sentence_text,
+        ignore_whitespace=True,
+    )
+    model_normalized, _ = _normalized_span_text(
+        span_text.rstrip(" .,!?:;。！？…"),
+        ignore_whitespace=True,
+    )
+    minimum_prefix = max(8, (len(model_normalized) * 3) // 5)
+    candidates: set[tuple[int, int]] = set()
+    for cut in range(len(model_normalized) - 1, minimum_prefix - 1, -1):
+        model_suffix = model_normalized[cut:]
+        if model_suffix not in _HCX_TERMINAL_SUFFIXES:
+            continue
+        prefix = model_normalized[:cut]
+        for start in _occurrences(source_normalized, prefix):
+            source_suffix = source_normalized[start + cut:]
+            if any(source_suffix.startswith(value) for value in _HCX_CONNECTIVE_PREFIXES):
+                candidates.add((start, cut))
+    return [(start, cut, offsets) for start, cut in sorted(candidates)]
+
+
+def resolve_hcx_model_span(sentence_text: str, span_text: str) -> dict[str, Any]:
+    """Resolve an HCX span exactly, by quote/space equivalence, or safely by morphology."""
+    _validate_hcx_model_span_inputs(sentence_text, span_text)
+    try:
+        return resolve_span(sentence_text, span_text)
+    except SpanResolutionError:
+        pass
+
+    quote_sentence = sentence_text.translate(_HCX_QUOTE_TRANSLATION)
+    quote_span = span_text.translate(_HCX_QUOTE_TRANSLATION)
+    quote_matches = _occurrences(quote_sentence, quote_span)
+    if len(quote_matches) == 1:
+        start = quote_matches[0]
+        source_span_text = sentence_text[start:start + len(span_text)]
+        if len(source_span_text) == len(span_text):
+            return {
+                "source_span_text": source_span_text,
+                "source_char_start": start,
+                "source_char_end": start + len(source_span_text),
+                "model_source_span_text": span_text,
+                "span_match_mode": "QUOTE_EQUIVALENT",
+                "offset_provenance": "DERIVED_FROM_MODEL_SPAN_QUOTE_EQUIVALENT",
+            }
+    if len(quote_matches) > 1:
+        raise HcxSpanResolutionError("AMBIGUOUS", "source_span_text is ambiguous")
+
+    normalized_matches, offsets = _find_normalized_matches(
+        sentence_text,
+        span_text,
+        ignore_whitespace=True,
+    )
+    if len(normalized_matches) == 1:
+        start = normalized_matches[0]
+        end = offsets[start + len(_normalized_span_text(span_text, ignore_whitespace=True)[0]) - 1] + 1
+        source_span_text = sentence_text[offsets[start]:end]
+        return {
+            "source_span_text": source_span_text,
+            "source_char_start": offsets[start],
+            "source_char_end": end,
+            "model_source_span_text": span_text,
+            "span_match_mode": "WHITESPACE_EQUIVALENT",
+            "offset_provenance": "DERIVED_FROM_MODEL_SPAN_WHITESPACE_EQUIVALENT",
+        }
+    if len(normalized_matches) > 1:
+        raise HcxSpanResolutionError("AMBIGUOUS", "source_span_text is ambiguous")
+
+    morphological_matches = _morphological_prefix_matches(sentence_text, span_text)
+    if len(morphological_matches) == 1:
+        start, length, source_offsets = morphological_matches[0]
+        source_start = source_offsets[start]
+        source_end = source_offsets[start + length - 1] + 1
+        return {
+            "source_span_text": sentence_text[source_start:source_end],
+            "source_char_start": source_start,
+            "source_char_end": source_end,
+            "model_source_span_text": span_text,
+            "span_match_mode": "MORPHOLOGICAL_CONTAINMENT",
+            "offset_provenance": "DERIVED_FROM_MODEL_SPAN_MORPHOLOGICAL_CONTAINMENT",
+        }
+    if len(morphological_matches) > 1:
+        raise HcxSpanResolutionError("AMBIGUOUS", "source_span_text is ambiguous")
+    raise HcxSpanResolutionError(
+        "NOT_FOUND",
+        f"source_span_text not found in sentence: {span_text!r}",
+    )
+
+
+def _apply_hcx_span_resolution(target: dict[str, Any], span: dict[str, Any]) -> None:
+    """Attach model-span offsets without changing exact-result fields."""
+    target["source_char_start"] = span["source_char_start"]
+    target["source_char_end"] = span["source_char_end"]
+    if span.get("span_match_mode"):
+        target["source_span_text"] = span["source_span_text"]
+        target["model_source_span_text"] = span["model_source_span_text"]
+        target["span_match_mode"] = span["span_match_mode"]
+        target["offset_provenance"] = span["offset_provenance"]
 
 L2_SOURCE_SYSTEM_PROMPT = """당신은 한국어 경제·사회 기사에서 각 문장이 누구
 자료를 말하고 있는지만 표시한다. 지표나 수치의 의미는 판단하지 않는다.
@@ -318,6 +562,7 @@ def resolve_prediction(
     resolved: list[dict[str, Any]] = []
     cross_source_promotions: list[tuple[int, dict[str, Any]]] = []
     unresolved = 0
+    unresolved_span_details: list[dict[str, Any]] = []
     for item in prediction.get("sentences") or []:
         sentence_id = item.get("sentence_id")
         text = sentences.get(sentence_id, "")
@@ -328,14 +573,21 @@ def resolve_prediction(
                 "source_span_text": scope.get("source_span_text") or "",
             }
             try:
-                span = resolve_span(text, entry["source_span_text"])
-                entry["source_char_start"] = span["source_char_start"]
-                entry["source_char_end"] = span["source_char_end"]
+                span = resolve_hcx_model_span(text, entry["source_span_text"])
+                _apply_hcx_span_resolution(entry, span)
                 entry["span_status"] = "RESOLVED"
             except SpanResolutionError as exc:
                 entry["span_status"] = "UNRESOLVED"
                 entry["span_error"] = str(exc)
                 unresolved += 1
+                unresolved_span_details.append(
+                    _unresolved_span_detail(
+                        sentence_id,
+                        "indicator_scope",
+                        entry["source_span_text"],
+                        exc,
+                    )
+                )
             scopes.append(entry)
         region = dict(item.get("source_region") or {})
         # Derive the category from the pointer so downstream code and the
@@ -351,9 +603,8 @@ def resolve_prediction(
         region_span = str(region.get("source_span_text") or "").strip()
         if region_span:
             try:
-                span = resolve_span(text, region_span)
-                region["source_char_start"] = span["source_char_start"]
-                region["source_char_end"] = span["source_char_end"]
+                span = resolve_hcx_model_span(text, region_span)
+                _apply_hcx_span_resolution(region, span)
                 region["span_status"] = "RESOLVED"
             except SpanResolutionError as exc:
                 # Article leads often state the number first and attribute it
@@ -364,10 +615,10 @@ def resolve_prediction(
                 cross_sentence_matches = []
                 if sentence_span_iterator is not None:
                     for candidate_id, candidate_text in sentences.items():
-                        if candidate_id == sentence_id or region_span not in candidate_text:
+                        if candidate_id == sentence_id:
                             continue
                         try:
-                            candidate_span = resolve_span(candidate_text, region_span)
+                            candidate_span = resolve_hcx_model_span(candidate_text, region_span)
                         except SpanResolutionError:
                             continue
                         cross_sentence_matches.append((candidate_id, candidate_span))
@@ -385,6 +636,14 @@ def resolve_prediction(
                     region["span_status"] = "UNRESOLVED"
                     region["span_error"] = str(exc)
                     unresolved += 1
+                    unresolved_span_details.append(
+                        _unresolved_span_detail(
+                            sentence_id,
+                            "source_region",
+                            region_span,
+                            exc,
+                        )
+                    )
         resolved.append({
             "sentence_id": sentence_id,
             "text": text,
@@ -424,6 +683,7 @@ def resolve_prediction(
         "sentences": resolved,
         "missing_sentence_ids": sorted(set(sentences) - covered),
         "unresolved_spans": unresolved,
+        "unresolved_span_details": unresolved_span_details,
     }
 
 

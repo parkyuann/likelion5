@@ -24,6 +24,58 @@ except ImportError:  # pragma: no cover - direct script execution
     from l2_segmentation import call_hcx_l2_segmentation, call_hcx_l2_split
 
 
+class L2ReceiptError(ValueError):
+    """Raised when the L2 producer receipt violates its bounded contract."""
+
+
+_UNRESOLVED_SPAN_FIELDS = {"indicator_scope", "source_region"}
+_UNRESOLVED_SPAN_ERROR_CODES = {
+    "EMPTY",
+    "NOT_FOUND",
+    "AMBIGUOUS",
+    "OCCURRENCE_INDEX_INVALID",
+    "UNKNOWN",
+}
+
+
+def _validated_unresolved_span_receipt(
+    resolved: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]]]:
+    """Validate the producer/consumer boundary before writing the manifest."""
+    if not isinstance(resolved, dict):
+        raise L2ReceiptError("L2_RESPONSE_INVALID")
+    count = resolved.get("unresolved_spans")
+    details = resolved.get("unresolved_span_details")
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        or not isinstance(details, list)
+        or count != len(details)
+    ):
+        raise L2ReceiptError("L2_RESPONSE_INVALID")
+    for detail in details:
+        if not isinstance(detail, dict) or set(detail) != {
+            "sentence_id",
+            "field",
+            "source_span_text",
+            "span_error_code",
+        }:
+            raise L2ReceiptError("L2_RESPONSE_INVALID")
+        if (
+            isinstance(detail["sentence_id"], bool)
+            or not isinstance(detail["sentence_id"], int)
+            or not isinstance(detail["field"], str)
+            or detail["field"] not in _UNRESOLVED_SPAN_FIELDS
+            or not isinstance(detail["source_span_text"], str)
+            or len(detail["source_span_text"]) > 512
+            or not isinstance(detail["span_error_code"], str)
+            or detail["span_error_code"] not in _UNRESOLVED_SPAN_ERROR_CODES
+        ):
+            raise L2ReceiptError("L2_RESPONSE_INVALID")
+    return count, details
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [
         json.loads(line)
@@ -72,6 +124,7 @@ def run(
                 last_error = exc
                 time.sleep(pause_seconds * (attempt + 1))
                 continue
+            unresolved_count, unresolved_details = _validated_unresolved_span_receipt(resolved)
             latency_total += latency_ms
             article_usage = {
                 "prompt_tokens": int(usage.get("promptTokens") or 0),
@@ -99,11 +152,12 @@ def run(
                     "kind": "MISSING_SENTENCES",
                     "sentence_ids": resolved["missing_sentence_ids"],
                 })
-            if resolved["unresolved_spans"]:
+            if unresolved_count:
                 errors.append({
                     "article_idx": article_idx,
                     "kind": "UNRESOLVED_SPANS",
-                    "count": resolved["unresolved_spans"],
+                    "count": unresolved_count,
+                    "details": unresolved_details,
                 })
             last_error = None
             break

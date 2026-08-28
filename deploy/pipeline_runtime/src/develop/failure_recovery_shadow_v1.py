@@ -7,7 +7,7 @@ override Late Binding or the strict cell validator.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import re
@@ -34,7 +34,26 @@ _CLARIFY_REASONS = frozenset({
     "MULTIPLE_COMPATIBLE_SERIES", "REGION_UNBOUND", "POPULATION_UNBOUND",
     "PERIOD_UNKNOWN", "PERIOD_INVALID",
 })
-_CLARIFICATION_PRIORITY = ("article_date", "period", "region", "population", "indicator", "unit")
+# This is a closed, shared wire contract.  It deliberately describes semantic
+# constraints, never table/axis/value authority.  Keep the packaged copy and
+# the repository source byte-identical (the closure test enforces that).
+CLARIFICATION_ROLES = (
+    "article_date", "period", "indicator", "item", "unit", "source", "population",
+    "region", "sex", "age", "classification", "measurement_basis",
+)
+_CLARIFICATION_PRIORITY = CLARIFICATION_ROLES
+
+
+@dataclass(frozen=True)
+class SlotDiagnostic:
+    role: str
+    status: str
+    table_key: str = ""
+    profile_sha256: str | None = None
+    axis_semantic_role: str | None = None
+    axis_inventory_path: str | None = None
+    option_inventory: tuple[Mapping[str, Any], ...] = ()
+    reason: str = ""
 
 
 def _sha(value: Any) -> str:
@@ -86,6 +105,11 @@ def _question_for_missing(reason: str, row: Mapping[str, Any] | None = None) -> 
 def _question_for_multiple(projections: Sequence[Any]) -> dict[str, Any]:
     labels_by_role: dict[str, set[str]] = {}
     for projection in projections:
+        # An incomplete profile cannot safely supply a user-selectable value.
+        # Do not let one bad profile suppress options supported by complete
+        # candidates; the caller records its exclusion in the plan receipt.
+        if "PROFILE_INCOMPLETE" in tuple(getattr(projection, "hold_reasons", ()) or ()):
+            continue
         for assignment in getattr(projection, "assignments", ()):
             for binding in getattr(assignment, "bindings", ()):
                 evidence = getattr(binding, "evidence", {})
@@ -93,7 +117,29 @@ def _question_for_multiple(projections: Sequence[Any]) -> dict[str, Any]:
                 role = str(getattr(binding, "bound_atom", "") or "")
                 if role and label:
                     labels_by_role.setdefault(role, set()).add(label)
+    diagnostics: list[Mapping[str, Any]] = []
+    for projection in projections:
+        for diagnostic in getattr(projection, "slot_diagnostics", ()) or ():
+            if isinstance(diagnostic, Mapping):
+                diagnostics.append(diagnostic)
+    option_roles: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for diagnostic in diagnostics:
+        role = str(diagnostic.get("role") or "classification")
+        if diagnostic.get("status") not in {"MISSING", "AMBIGUOUS"}:
+            continue
+        for item in diagnostic.get("option_inventory") or ():
+            if not isinstance(item, Mapping):
+                continue
+            label = str(item.get("label") or item.get("display_label") or "").strip()
+            if label:
+                option_roles.setdefault(role, {}).setdefault(label, []).append({
+                    "table_key": diagnostic.get("table_key"),
+                    "profile_sha256": diagnostic.get("profile_sha256"),
+                    "axis_id": item.get("axis_id"), "value_id": item.get("value_id"),
+                })
     differing = [(role, sorted(labels)) for role, labels in sorted(labels_by_role.items()) if len(labels) > 1]
+    if not differing:
+        differing = [(role, sorted(values)) for role, values in sorted(option_roles.items()) if values]
     if not differing:
         return {
             "question_id": "clarify-indicator", "role": "indicator", "prompt": "어떤 통계 지표를 확인할까요?",
@@ -104,15 +150,102 @@ def _question_for_multiple(projections: Sequence[Any]) -> dict[str, Any]:
     prompts = {
         "indicator": "어떤 통계 지표를 확인할까요?", "region": "어느 지역 기준인가요?",
         "population": "어떤 대상 집단 기준인가요?", "period": "어떤 시점·주기 기준인가요?",
-        "unit": "어떤 단위 기준인가요?",
+        "unit": "어떤 단위 기준인가요?", "item": "어떤 통계 항목 기준인가요?",
+        "source": "어느 통계 작성기관 또는 조사 기준인지 알려주세요.",
+        "sex": "어느 성별 기준인지 알려주세요.", "age": "어느 연령 기준인지 알려주세요.",
+        "classification": "어떤 분류 기준인지 알려주세요.",
+        "measurement_basis": "증가율과 증가량 중 어떤 기준인지 알려주세요.",
     }
+    option_map = option_roles.get(role, {})
+    option_objects = [
+        {
+            "id": "co-" + hashlib.sha256(f"{role}:{label}".encode("utf-8")).hexdigest()[:24],
+            "label": label,
+            "description": f"현재 후보 통계표 {len(option_map.get(label) or [])}개에 적용 가능",
+            "applicable_candidate_count": len(option_map.get(label) or []),
+            "applicability": option_map.get(label) or [],
+        }
+        for label in labels
+    ]
     return {
         "question_id": f"clarify-{role}", "role": role,
         "prompt": prompts.get(role, "어떤 통계 기준을 의미하는지 선택해 주세요."),
         "input_mode": "OPTIONS" if len(labels) <= 20 else "SEARCHABLE_OPTIONS",
-        "options": labels, "answer": None, "options_complete": True,
+        "allow_direct_input": False if option_objects else True,
+        "options": option_objects, "answer": None, "options_complete": True,
         "internal_ids_exposed": False, "model_prefill": False,
     }
+
+
+def build_post_binding_clarification_plan(top50: Any, *, target_id: str) -> dict[str, Any] | None:
+    """Build an option-backed plan only from complete candidate profiles."""
+    resolution = getattr(top50, "resolution", None)
+    projections = tuple(getattr(top50, "projections", ()) or ())
+    if not projections or getattr(resolution, "outcome", None) == "QUERY_READY":
+        return None
+    complete = tuple(
+        projection for projection in projections
+        if "PROFILE_INCOMPLETE" not in tuple(getattr(projection, "hold_reasons", ()) or ())
+    )
+    if not complete:
+        return None
+    question = _question_for_multiple(complete)
+    if not question.get("options"):
+        return None
+    sealed_target_id = str(target_id or "").strip()
+    if not sealed_target_id:
+        raise ValueError("BINDING_CONTINUATION_TARGET_REQUIRED")
+    membership = sorted({str(value) for value in getattr(top50, "candidate_membership", ()) or ()})
+    question_id = str(question.get("question_id") or "")
+    plan = {
+        "contract_version": "clarification-plan-v2",
+        "reason": str(getattr(resolution, "hold_reason", None) or "CLARIFICATION_REQUIRED"),
+        "question": question,
+        "candidate_membership_sha256": _sha(membership),
+        "profile_bundle_sha256": _sha([
+            {"table_key": projection.table_key, "canonical_sha256": projection.canonical_sha256}
+            for projection in complete
+        ]),
+        "profile_exclusions": [
+            {"table_key": str(projection.table_key), "reason": "PROFILE_INCOMPLETE"}
+            for projection in projections
+            if "PROFILE_INCOMPLETE" in tuple(getattr(projection, "hold_reasons", ()) or ())
+        ],
+        "speculative": False,
+        "binding_continuation": {
+            "contract_version": "binding-continuation-v1",
+            "target_ids": [sealed_target_id],
+            "target_scope_sha256": _sha([sealed_target_id]),
+            "candidate_membership": membership,
+            "candidate_membership_sha256": _sha(membership),
+            "raw_profiles": {str(key): dict(value) for key, value in getattr(top50, "pinned_raw_profiles", {}).items()},
+            "projection_profiles": {str(key): dict(value) for key, value in getattr(top50, "pinned_projection_profiles", {}).items()},
+        },
+    }
+    plan["binding_continuation"]["profile_bundle_sha256"] = _sha([
+        {"table_key": key, "profile_sha256": str(value.get("profile_sha256") or ""), "release_id": str(value.get("release_id") or "")}
+        for key, value in sorted(plan["binding_continuation"]["raw_profiles"].items())
+    ])
+    plan["binding_continuation"]["projection_bundle_sha256"] = _sha(
+        plan["binding_continuation"]["projection_profiles"]
+    )
+    release_ids = sorted({
+        str(value.get("release_id") or "")
+        for value in plan["binding_continuation"]["raw_profiles"].values()
+        if isinstance(value, Mapping)
+    })
+    if len(release_ids) != 1 or not release_ids[0]:
+        raise ValueError("BINDING_CONTINUATION_RELEASE_REQUIRED")
+    plan["binding_continuation"]["release_id"] = release_ids[0]
+    question["id"] = "cq-" + hashlib.sha256(f"{question_id}:{plan['candidate_membership_sha256']}".encode()).hexdigest()[:24]
+    bundle = {
+        "contract_version": "clarification-option-bundle-v2", "question_id": question["id"],
+        "role": question["role"], "candidate_membership_sha256": plan["candidate_membership_sha256"],
+        "profile_bundle_sha256": plan["profile_bundle_sha256"], "options": question["options"],
+    }
+    plan["question"]["options"] = bundle["options"]
+    plan["option_bundle"] = bundle
+    return plan
 
 
 def _item_miss_ratio(projections: Sequence[Any]) -> float:
@@ -207,6 +340,6 @@ def merge_candidate_rounds(
 
 
 __all__ = [
-    "CASE_LIBRARY", "CONTRACT_VERSION", "corrective_claim_query", "merge_candidate_rounds",
-    "plan_failure_recovery",
+    "CASE_LIBRARY", "CLARIFICATION_ROLES", "CONTRACT_VERSION", "SlotDiagnostic", "build_post_binding_clarification_plan",
+    "corrective_claim_query", "merge_candidate_rounds", "plan_failure_recovery",
 ]

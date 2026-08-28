@@ -17,6 +17,8 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
+import time
 from types import MappingProxyType
 import uuid
 from typing import Any, Callable, Mapping, Sequence
@@ -30,7 +32,7 @@ from src.news_verification.runtime.bge_m3_ko_query_encoder_service import (
     SERVICE_CONTRACT as ENCODER_SERVICE_CONTRACT,
 )
 from src.news_verification.runtime.canonical_quantity import QuantityNormalizationError, compare_canonical, normalize_quantity
-from src.news_verification.runtime.operational_answer_v2 import Hcx007AnswerClient, build_evidence_packet, generate_guarded_answer
+from src.news_verification.runtime.operational_answer_v2 import Hcx007AnswerClient, answer_render_mode, build_evidence_packet, render_answer
 from src.news_verification.runtime.same_series_evidence_v1 import (
     FEATURE_GATE_ENV,
     SameSeriesEvidenceError,
@@ -47,7 +49,11 @@ from src.news_verification.runtime.operational_live_adapters_v2 import (
     CountingReranker,
     FailClosedCellFetcher,
     LiveAdapterError,
+    MonotonicTimingRecorder,
     OperationalProfileProvider,
+    RequestScopedEncoder,
+    RequestScopedProfileProvider,
+    RequestScopedRetrievalCache,
     V6CatalogPassageStore,
     load_live_articles,
     safe_adapter_failure,
@@ -58,6 +64,7 @@ from src.news_verification.runtime.audit_budget_v1 import BudgetedCallable, Http
 from src.news_verification.runtime.l1_value_candidates import build_span_candidates, sentence_offset_map
 from src.news_verification.runtime.l3_role_assignment import attach_indicator_evidence_monthly_v2h
 from src.news_verification.runtime.adapters.shadow_compat import failure_recovery_api, user_intent_api
+from src.develop.failure_recovery_shadow_v1 import CLARIFICATION_ROLES, build_post_binding_clarification_plan
 
 def corrective_claim_query(*args: Any, **kwargs: Any) -> Any:
     return failure_recovery_api()[0](*args, **kwargs)
@@ -78,6 +85,8 @@ from src.news_verification.runtime.operational_article_acquisition_v2 import (
     acquire_article_url,
 )
 from src.news_verification.runtime.operational_retrieval_v2 import (
+    RerankedCandidate,
+    RrfCandidate,
     build_candidate_passages,
     rerank_top50,
     retrieve_parallel,
@@ -132,10 +141,13 @@ def _snapshot_target_call_counts(
 ) -> dict[str, Any]:
     """Capture only integer counters at the start of one routed target."""
     channel_calls: dict[str, int | None] = {}
+    channel_sum_ms: dict[str, int | None] = {}
     audit_cursors: dict[str, int | None] = {}
     for name, channel in search_channels.items():
         value = getattr(channel, "calls", None)
         channel_calls[str(name)] = value if isinstance(value, int) and not isinstance(value, bool) else None
+        duration = getattr(channel, "sum_ms", None)
+        channel_sum_ms[str(name)] = duration if isinstance(duration, int) and not isinstance(duration, bool) else None
         cursor_method = getattr(channel, "audit_cursor", None)
         cursor = cursor_method() if callable(cursor_method) else None
         audit_cursors[str(name)] = cursor if isinstance(cursor, int) and not isinstance(cursor, bool) and cursor >= 0 else None
@@ -143,6 +155,7 @@ def _snapshot_target_call_counts(
     metadata_lookups = getattr(profile_provider, "lookups", None)
     return {
         "channel_calls": channel_calls,
+        "channel_sum_ms": channel_sum_ms,
         "audit_cursors": audit_cursors,
         "metadata_api_calls": metadata_calls
         if isinstance(metadata_calls, int) and not isinstance(metadata_calls, bool)
@@ -151,6 +164,59 @@ def _snapshot_target_call_counts(
         if isinstance(metadata_lookups, int) and not isinstance(metadata_lookups, bool)
         else None,
     }
+
+
+def _retrieval_identity(
+    claim_query: Mapping[str, Any],
+    *,
+    release_sha256_by_channel: Mapping[str, str],
+    path_top_k: int,
+    union_top_k: int,
+) -> dict[str, Any]:
+    """Build the release/query identity used by the request-local cache."""
+    payload = {
+        "release_binding_sha256": dict(sorted((str(k), str(v)) for k, v in release_sha256_by_channel.items())),
+        "query_register": dict(claim_query),
+        "channels": sorted(str(key) for key in release_sha256_by_channel),
+        "path_top_k": int(path_top_k),
+        "union_top_k": int(union_top_k),
+        "field_contract_sha256": hashlib.sha256(b"retrieval-contract-v2").hexdigest(),
+    }
+    return payload
+
+
+def _retrieve_with_request_cache(
+    claim_query: Mapping[str, Any],
+    search_channels: Mapping[str, Callable[..., Any]],
+    *,
+    release_sha256_by_channel: Mapping[str, str],
+    path_top_k: int,
+    union_top_k: int,
+    retrieval_cache: RequestScopedRetrievalCache | None,
+    timeout_seconds: float | None = None,
+    channel_allowlist: frozenset[str] | None = None,
+):
+    callback = lambda: retrieve_parallel(
+        claim_query,
+        search_channels,
+        release_sha256_by_channel=release_sha256_by_channel,
+        path_top_k=path_top_k,
+        union_top_k=union_top_k,
+        timeout_seconds=timeout_seconds,
+        channel_allowlist=channel_allowlist,
+    )
+    if retrieval_cache is None:
+        return callback()
+    candidates, audit = retrieval_cache.get_or_call(
+        _retrieval_identity(
+            claim_query,
+            release_sha256_by_channel=release_sha256_by_channel,
+            path_top_k=path_top_k,
+            union_top_k=union_top_k,
+        ),
+        callback,
+    )
+    return candidates, {**dict(audit), "request_cache": retrieval_cache.audit()}
 
 
 def _bounded_channel_audit_events(raw_events: Any) -> list[dict[str, Any]]:
@@ -193,6 +259,8 @@ def _target_call_deltas(
     if not isinstance(before_channels, Mapping):
         before_channels = {}
     channel_calls: dict[str, int] = {}
+    channel_sum_ms: dict[str, int] = {}
+    before_durations = snapshot.get("channel_sum_ms") if isinstance(snapshot.get("channel_sum_ms"), Mapping) else {}
     for name, channel in search_channels.items():
         before = before_channels.get(str(name))
         after = getattr(channel, "calls", None)
@@ -201,6 +269,10 @@ def _target_call_deltas(
             and isinstance(after, int) and not isinstance(after, bool)
         ):
             channel_calls[str(name)] = max(0, after - before)
+            after_duration = getattr(channel, "sum_ms", None)
+            before_duration = before_durations.get(str(name))
+            if isinstance(after_duration, int) and isinstance(before_duration, int):
+                channel_sum_ms[str(name)] = max(0, after_duration - before_duration)
     channel_audits: dict[str, list[dict[str, Any]]] = {}
     before_cursors = snapshot.get("audit_cursors")
     if not isinstance(before_cursors, Mapping):
@@ -236,11 +308,339 @@ def _target_call_deltas(
         "retrieval": {
             "calls": sum(channel_calls.values()),
             "channel_calls": channel_calls,
+            "channel_durations_ms": channel_sum_ms,
             "channel_audits": channel_audits,
         },
         "metadata_api_calls": metadata_calls,
         "metadata_lookups": metadata_lookups,
     }
+
+
+def _speculative_query_text(value: Any) -> str:
+    """Remove asserted measurements before a selector-only search probe."""
+    text = _NUMBER_TOKEN.sub(" ", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+class _SpeculativeDeadlineExceeded(TimeoutError):
+    pass
+
+
+def _binding_profile_sha(profile: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(
+        {key: value for key, value in profile.items() if key not in {"retrieved_at", "profile_sha256"}},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
+
+
+def _binding_sha(value: Any) -> str:
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
+
+
+def _validate_binding_continuation_runtime(
+    continuation: Mapping[str, Any],
+    *,
+    expected_release_id: str,
+) -> tuple[frozenset[str], list[str], Mapping[str, Any]]:
+    if continuation.get("contract_version") != "binding-continuation-v1":
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    target_ids = continuation.get("target_ids")
+    membership = continuation.get("candidate_membership")
+    raw_profiles = continuation.get("raw_profiles")
+    projection_profiles = continuation.get("projection_profiles")
+    if (
+        not isinstance(target_ids, list) or not target_ids
+        or len(target_ids) != len(set(target_ids))
+        or any(not isinstance(value, str) or not value.strip() for value in target_ids)
+        or _binding_sha(target_ids) != continuation.get("target_scope_sha256")
+        or not isinstance(membership, list) or not membership
+        or len(membership) != len(set(membership))
+        or any(not isinstance(value, str) or not value.strip() for value in membership)
+        or _binding_sha(membership) != continuation.get("candidate_membership_sha256")
+        or not isinstance(raw_profiles, Mapping) or set(raw_profiles) != set(membership)
+        or not isinstance(projection_profiles, Mapping)
+        or _binding_sha(projection_profiles) != continuation.get("projection_bundle_sha256")
+    ):
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    release_id = str(continuation.get("release_id") or "")
+    receipt = []
+    for table_key in sorted(membership):
+        profile = raw_profiles.get(table_key)
+        if not isinstance(profile, Mapping):
+            raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+        profile_sha = str(profile.get("profile_sha256") or "")
+        profile_release = str(profile.get("release_id") or "")
+        if (
+            str(profile.get("table_key") or table_key) != table_key
+            or not release_id or profile_release != release_id
+            or profile_sha != _binding_profile_sha(profile)
+        ):
+            raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+        receipt.append({"table_key": table_key, "profile_sha256": profile_sha, "release_id": profile_release})
+    if (
+        _binding_sha(receipt) != continuation.get("profile_bundle_sha256")
+        or expected_release_id and release_id != expected_release_id
+    ):
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    return frozenset(target_ids), list(membership), raw_profiles
+
+
+def _binding_or_retrieve_candidates(
+    *,
+    target_id: str,
+    target_scope: frozenset[str],
+    membership: Sequence[str],
+    retrieve: Callable[[], tuple[Any, Mapping[str, Any]]],
+) -> tuple[Any, Mapping[str, Any]]:
+    if target_id in target_scope:
+        candidates = tuple(RrfCandidate(key, 0.0, index, ()) for index, key in enumerate(membership, 1))
+        return candidates, {
+            "calls": 0, "physical_calls": 0, "channel_calls": {},
+            "candidate_membership": list(membership), "binding_continuation": True,
+        }
+    return retrieve()
+
+
+def _native_speculative_timeout_supported(adapter: Any) -> bool:
+    """Follow transparent wrappers and attest the leaf transport capability."""
+    seen: set[int] = set()
+    current = adapter
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        inner = getattr(current, "inner", None)
+        if inner is not None and inner is not current:
+            current = inner
+            continue
+        return callable(getattr(current, "speculative", None))
+    return False
+
+
+def _missing_high_impact_role(fields: Mapping[str, Any]) -> str | None:
+    """Return only the Gate-A roles allowed to trigger speculative retrieval."""
+    indicator = str(fields.get("indicator") or "").strip()
+    if not indicator or indicator.casefold() in {"unknown", "ambiguous", "unavailable"}:
+        return "indicator"
+    # ``item`` is not universally a separate routed slot: for many KOSIS
+    # claims the resolved indicator itself is the searchable item label.  Gate
+    # A may ask for a missing item only when the upstream route explicitly
+    # marks that slot as required; otherwise ordinary indicator-only claims
+    # must continue to retrieval.
+    item = fields.get("item")
+    if fields.get("item_required") is True and item in (None, "", (), []):
+        return "item"
+    return None
+
+
+def _speculative_clarification_plan(
+    row: Mapping[str, Any],
+    *,
+    article_text: str,
+    search_channels: Mapping[str, Callable[..., Any]],
+    release_sha256_by_channel: Mapping[str, str],
+    profile_provider: Callable[[str], Mapping[str, Any] | None],
+    retrieval_cache: RequestScopedRetrievalCache | None,
+    deadline_ms: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Run the bounded, read-only Gate-A probe for a missing indicator/item.
+
+    The returned options are proposals only.  This helper never performs
+    binding, cell reads, comparison, HCX rendering, or candidate promotion.
+    """
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    role = _missing_high_impact_role(fields)
+    started = time.monotonic_ns()
+    audit: dict[str, Any] = {
+        "contract_version": "speculative-retrieval-v1",
+        "enabled": True,
+        "deadline_ms": int(deadline_ms),
+        "max_targets": 1,
+        "max_queries": 2,
+        "path_top_k": 10,
+        "union_top_k": 30,
+        "profile_limit": 30,
+        "retry_limit": 0,
+        "role": role,
+        "queries_attempted": 0,
+        "candidates": 0,
+        "profiles": 0,
+        "cell_api_calls": 0,
+        "hcx_answer_calls": 0,
+    }
+    if role is None:
+        audit["status"] = "NOT_REQUIRED"
+        audit["wall_ms"] = max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+        return None, audit
+    sentence = _speculative_query_text(row.get("sentence_text"))
+    source = _speculative_query_text(
+        row.get("source_text") or row.get("source_region_text") or ""
+    )
+    queries: list[str] = []
+    for query in (sentence, source):
+        if query and query not in queries:
+            queries.append(query)
+    if not queries:
+        audit["status"] = "NO_CONTEXT"
+        audit["wall_ms"] = max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+        return {
+            "contract_version": "clarification-plan-v2",
+            "reason": f"{role.upper()}_REQUIRED",
+            "question": {
+                "id": "cq-" + hashlib.sha256(f"speculative:{role}:{row.get('target_id') or row.get('value_span_id') or ''}".encode()).hexdigest()[:24],
+                "role": role, "prompt": "어떤 통계 지표를 확인할지 알려주세요." if role == "indicator" else "어떤 항목 기준인지 알려주세요.",
+                "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [],
+                "speculative": True,
+            },
+            "resume_from_stage": "layers" if role == "indicator" else "retrieval",
+            "changed_roles": [role],
+            "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
+            "reusable_artifacts": ["l1", "l2", "layers"],
+            "speculative_bundle": {"contract_version": "speculative-bundle-v1", "status": "NO_CONTEXT"},
+        }, audit
+
+    supported_channels = {
+        name: channel for name, channel in search_channels.items()
+        if _native_speculative_timeout_supported(channel)
+    }
+    excluded_channels = sorted(set(search_channels) - set(supported_channels))
+    profile_supported = _native_speculative_timeout_supported(profile_provider)
+    audit["native_timeout"] = {
+        "supported_channels": sorted(supported_channels),
+        "excluded_channels": excluded_channels,
+        "profile_supported": profile_supported,
+    }
+    audit["executor_tasks_submitted"] = 0
+    if not supported_channels or not profile_supported:
+        audit["status"] = "DEADLINE_EXCEEDED"
+        audit["wall_ms"] = max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+        question_id = "cq-" + hashlib.sha256(
+            f"speculative:{role}:{hashlib.sha256(article_text.encode('utf-8')).hexdigest()}".encode()
+        ).hexdigest()[:24]
+        return {
+            "contract_version": "clarification-plan-v2", "reason": f"{role.upper()}_REQUIRED",
+            "question": {"id": question_id, "role": role, "prompt": "어떤 통계 지표를 확인할지 알려주세요.", "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "speculative": True},
+            "speculative": True, "resume_from_stage": "layers" if role == "indicator" else "retrieval",
+            "changed_roles": [role], "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
+            "reusable_artifacts": ["l1", "l2", "layers"],
+            "speculative_bundle": {"contract_version": "speculative-bundle-v1", "status": "DEADLINE_EXCEEDED"},
+            "speculative_audit": audit,
+        }, audit
+
+    candidates_by_key: dict[str, Any] = {}
+    receipts: list[dict[str, Any]] = []
+    for query in queries[:2]:
+        elapsed = (time.monotonic_ns() - started) // 1_000_000
+        if elapsed >= int(deadline_ms):
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        audit["queries_attempted"] += 1
+        try:
+            remaining = int(deadline_ms) - int((time.monotonic_ns() - started) // 1_000_000)
+            candidates, retrieval_audit = _retrieve_with_request_cache(
+                    {"indicator": "", "item": "", "sentence": query, "_speculative": True},
+                    search_channels, release_sha256_by_channel=release_sha256_by_channel,
+                    path_top_k=10, union_top_k=30, retrieval_cache=retrieval_cache,
+                    timeout_seconds=remaining / 1000.0,
+                    channel_allowlist=frozenset(supported_channels),
+            )
+            audit["executor_tasks_submitted"] += len(supported_channels)
+        except _SpeculativeDeadlineExceeded:
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        except Exception as exc:
+            receipts.append({"status": "FAILED", "error_type": type(exc).__name__})
+            continue
+        receipts.append({"status": "OK", "candidate_count": len(candidates), "retrieval": retrieval_audit})
+        for candidate in candidates[:30]:
+            key = str(getattr(candidate, "table_key", "") or (candidate.get("table_key") if isinstance(candidate, Mapping) else ""))
+            if key:
+                candidates_by_key.setdefault(key, candidate)
+        if len(candidates_by_key) >= 30:
+            break
+    ordered_keys = sorted(candidates_by_key)[:30]
+    option_map: dict[str, list[dict[str, Any]]] = {}
+    profile_receipts: list[dict[str, Any]] = []
+    for table_key in ordered_keys:
+        if (time.monotonic_ns() - started) // 1_000_000 >= int(deadline_ms):
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        try:
+            remaining = int(deadline_ms) - int((time.monotonic_ns() - started) // 1_000_000)
+            speculative_profile = getattr(profile_provider, "speculative")
+            profile = speculative_profile(table_key, timeout_seconds=remaining / 1000.0)
+        except _SpeculativeDeadlineExceeded:
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        except Exception as exc:
+            profile_receipts.append({"table_key_sha256": hashlib.sha256(table_key.encode()).hexdigest(), "status": "FAILED", "error_type": type(exc).__name__})
+            continue
+        if not isinstance(profile, Mapping) or str(profile.get("meta_status") or "READY") not in {"READY", ""}:
+            continue
+        profile_sha = str(profile.get("profile_sha256") or "")
+        for item in profile.get("items") or ():
+            if not isinstance(item, Mapping):
+                continue
+            label = str(item.get("itm_nm") or item.get("item_name") or "").strip()
+            if not label:
+                continue
+            option_map.setdefault(label, []).append({
+                "table_key": table_key,
+                "profile_sha256": profile_sha,
+                "axis_id": "ITEM",
+                "value_id": str(item.get("itm_id") or item.get("item_id") or ""),
+            })
+        profile_receipts.append({"table_key_sha256": hashlib.sha256(table_key.encode()).hexdigest(), "profile_sha256": profile_sha, "status": "OK"})
+    labels = sorted(option_map)
+    question_id = "cq-" + hashlib.sha256(
+        f"speculative:{role}:{hashlib.sha256(article_text.encode('utf-8')).hexdigest()}".encode()
+    ).hexdigest()[:24]
+    options = [
+        {
+            "id": "co-" + hashlib.sha256(f"{question_id}:{label}".encode()).hexdigest()[:24],
+            "label": label,
+            "description": f"선행 검색에서 확인된 후보 통계표 {len(option_map[label])}개에 포함",
+            "applicable_candidate_count": len(option_map[label]),
+            "applicability": option_map[label],
+        }
+        for label in labels
+    ]
+    audit.update({
+        "status": audit.get("status") or ("OPTIONS_READY" if options else "FREE_TEXT_FALLBACK"),
+        "candidates": len(ordered_keys),
+        "profiles": len(profile_receipts),
+        "profile_receipts": profile_receipts,
+        "query_receipts": receipts,
+        "wall_ms": max(0, int(round((time.monotonic_ns() - started) / 1_000_000))),
+    })
+    plan = {
+        "contract_version": "clarification-plan-v2",
+        "reason": f"{role.upper()}_REQUIRED",
+        "question": {
+            "id": question_id, "role": role,
+            "prompt": "어떤 통계 지표를 확인할지 선택하거나 직접 입력해 주세요." if role == "indicator" else "어떤 통계 항목 기준인지 선택하거나 직접 입력해 주세요.",
+            "input_mode": "SEARCHABLE_OPTIONS" if len(options) > 20 else ("OPTIONS" if options else "FREE_TEXT"),
+            "allow_direct_input": True,
+            "options": options,
+            "speculative": True,
+        },
+        "candidate_membership_sha256": hashlib.sha256(json.dumps(ordered_keys, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(),
+        "profile_bundle_sha256": hashlib.sha256(json.dumps(profile_receipts, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "speculative": True,
+        "resume_from_stage": "layers" if role == "indicator" else "retrieval",
+        "changed_roles": [role],
+        "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
+        "reusable_artifacts": ["l1", "l2", "layers"],
+        "speculative_bundle": {
+            "contract_version": "speculative-bundle-v1",
+            "candidate_membership": ordered_keys,
+            "candidate_membership_sha256": hashlib.sha256(json.dumps(ordered_keys, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(),
+            "profile_receipts": profile_receipts,
+            "authority": "SELECTOR_PROPOSAL_ONLY",
+        },
+        "speculative_audit": audit,
+    }
+    return plan, audit
 from src.news_verification.runtime.bge_reranker_v2_service import HttpRerankerClient
 from src.news_verification.runtime.adapters.shadow_compat import role_aware_dimension_api
 
@@ -710,7 +1110,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-_CLARIFICATION_ROLES = ("article_date", "period", "region", "population", "indicator", "unit")
+_CLARIFICATION_ROLES = CLARIFICATION_ROLES
 _CLARIFICATION_PERIOD_RE = re.compile(
     r"^(?:\d{4}|\d{4}-\d{2}|\d{4}년\s*[1-4]분기|\d{4}년\s*(?:0?[1-9]|1[0-2])월)$"
 )
@@ -758,7 +1158,7 @@ def _load_articles_for_clarification(
         raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID") from exc
     answers = context.get("clarification_answers")
     expected_sha = str(context.get("article_body_sha256") or "")
-    if context.get("contract_version") != "clarification-context-v1" or not isinstance(answers, list) or len(answers) > 3:
+    if context.get("contract_version") not in {"clarification-context-v1", "clarification-context-v2"} or not isinstance(answers, list) or len(answers) > 3:
         raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID")
     if expected_sha and any(
         hashlib.sha256(str(row.get("article_text") or "").encode("utf-8")).hexdigest() != expected_sha
@@ -806,7 +1206,7 @@ def _article_date_provenance_from_clarification(
     role = str(answer.get("role") or "").strip()
     value = str(answer.get("value") or "").strip()
     if (
-        question_id != "clarify-article_date"
+        not question_id
         or role != "article_date"
         or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
     ):
@@ -847,7 +1247,8 @@ def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any
         role = str(answer.get("role") or "").strip()
         question_id = str(answer.get("question_id") or "").strip()
         value = str(answer.get("value") or "").strip()
-        if role not in _CLARIFICATION_ROLES or question_id != f"clarify-{role}" or not value:
+        option_id = str(answer.get("option_id") or "").strip()
+        if role not in _CLARIFICATION_ROLES or not question_id or not value:
             raise OperationalPipelineError("CLARIFICATION_INVALID")
         if role == "article_date":
             try:
@@ -866,6 +1267,8 @@ def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any
             "source": "USER_CLARIFICATION",
             "answer_sha256": _clarification_answer_sha({"question_id": question_id, "role": role, "value": value}),
         }
+        if option_id:
+            record["option_id"] = option_id
         clarifications[role] = record
         if role == "article_date":
             article_text = str(article.get("article_text") or row.get("article_text") or "")
@@ -883,6 +1286,8 @@ def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any
             fields["period_raw"] = value
         else:
             fields[role] = value
+    if clarifications:
+        merged["semantic_constraints"] = list(clarifications.values())
     merged["retrieval_fields"] = fields
     merged["user_clarifications"] = clarifications
     return merged
@@ -2346,7 +2751,7 @@ def run_technical_canary(
             "LIMITATION": reason,
         },
     )
-    answer = generate_guarded_answer(packet, hcx_answerer)
+    answer = render_answer(packet, hcx_answerer, mode="DETERMINISTIC_ONLY")
     return {
         "namespace": "TECHNICAL_CANARY",
         "metric_inclusion": False,
@@ -2392,6 +2797,10 @@ def run_new_articles_v2(
     user_intent_shadow: bool = False,
     evidence_first_statistics_shadow: bool | None = None,
     release_bound_mode: bool | None = None,
+    answer_render_mode_name: str | None = None,
+    retrieval_cache: RequestScopedRetrievalCache | None = None,
+    timing: MonotonicTimingRecorder | None = None,
+    binding_continuation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the complete live contract with injectable external adapters."""
     evidence_first_statistics_shadow = _evidence_first_enabled(evidence_first_statistics_shadow)
@@ -2446,6 +2855,9 @@ def run_new_articles_v2(
             user_intent_shadow=user_intent_shadow,
             evidence_first_statistics_shadow=evidence_first_statistics_shadow,
             release_bound_mode=release_bound_mode,
+            answer_render_mode_name=answer_render_mode_name,
+            retrieval_cache=retrieval_cache,
+            timing=timing,
         )
         if len(pilot.get("stage_ledger") or []) == 0 or len(pilot.get("answers") or []) == 0:
             raise OperationalPipelineError("AUDIT_PILOT_BARRIER_PARTITION_MISSING")
@@ -2471,6 +2883,9 @@ def run_new_articles_v2(
             user_intent_shadow=user_intent_shadow,
             evidence_first_statistics_shadow=evidence_first_statistics_shadow,
             release_bound_mode=release_bound_mode,
+            answer_render_mode_name=answer_render_mode_name,
+            retrieval_cache=retrieval_cache,
+            timing=timing,
         )
         pilot_manifest, batch_manifest = pilot.get("l2", {}), batch.get("l2", {})
         merged_l2 = {**pilot_manifest, **batch_manifest,
@@ -2491,7 +2906,10 @@ def run_new_articles_v2(
         if budget_ledger is not None and answerer is not None:
             from src.news_verification.runtime.audit_budget_v1 import BudgetedAnswerer
             answerer = BudgetedAnswerer(answerer, budget_ledger, budget_run_id or "audit", target_id)
-        return generate_guarded_answer(packet, answerer, rag=rag, use_rag=use_rag)
+        return render_answer(
+            packet, answerer, mode=answer_render_mode_name,
+            rag=rag, use_rag=use_rag,
+        )
 
     if precomputed_l2 is None:
         l2 = run_operational_l2(articles, api_key=l2_api_key, runner=l2_runner, budget_ledger=budget_ledger, budget_run_id=budget_run_id)
@@ -2626,6 +3044,22 @@ def run_new_articles_v2(
     ledgers: list[dict[str, Any]] = []
     answers: list[dict[str, Any]] = []
     represented_articles: set[str] = set()
+    speculative_used = False
+    target_started_ns = 0
+    binding_target_scope: frozenset[str] = frozenset()
+    binding_membership: list[str] = []
+    binding_profiles: Mapping[str, Any] = {}
+    if isinstance(binding_continuation, Mapping):
+        binding_target_scope, binding_membership, binding_profiles = _validate_binding_continuation_runtime(
+            binding_continuation,
+            expected_release_id=os.getenv("KOSIS_RELEASE_ID", ""),
+        )
+        routed_target_scope = {
+            f"{item.get('article_idx')}:{item.get('value_span_id') or item.get('sentence_id') or 'target'}"
+            for item in routed if isinstance(item, Mapping)
+        }
+        if not binding_target_scope.issubset(routed_target_scope):
+            raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
     if intent_clarification and user_intent is not None:
         prompts = [str(question.get("prompt") or "") for question in user_intent.get("questions") or []]
         for article_id in sorted(ready_ids):
@@ -2685,13 +3119,20 @@ def run_new_articles_v2(
         ledger["candidate_membership"] = membership
         ledger["metadata_api_calls"] = deltas["metadata_api_calls"]
         ledger["metadata_lookups"] = deltas["metadata_lookups"]
+        if target_started_ns:
+            ledger["timing"] = {
+                "wall_ms": max(0, int(round((time.monotonic_ns() - target_started_ns) / 1_000_000))),
+                "retrieval_wall_ms": int(audit.get("wall_ms") or 0),
+            }
         ledgers.append(ledger)
 
     for row in routed:
+        target_started_ns = time.monotonic_ns()
         target_call_snapshot = _snapshot_target_call_counts(search_channels, profile_provider)
         article_id = str(row.get("article_idx"))
         set_article_phase(article_id)
         target_id = f"{article_id}:{row.get('value_span_id') or row.get('sentence_id') or 'target'}"
+        target_continuation = target_id in binding_target_scope
         represented_articles.add(article_id)
         article = article_index[article_id]
         sentence = str(row.get("sentence_text") or "")
@@ -2800,17 +3241,63 @@ def run_new_articles_v2(
                 and source_text.count(period_surface) == 1
             ):
                 row["period_sentence_id"] = source_id
+        speculative_enabled = os.getenv(
+            "PIPELINE_SPECULATIVE_RETRIEVAL_ENABLED", "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not target_continuation and not speculative_used and speculative_enabled:
+            try:
+                deadline_ms = int(os.getenv("PIPELINE_SPECULATIVE_DEADLINE_MS", "2500"))
+            except ValueError:
+                deadline_ms = 2500
+            deadline_ms = max(500, min(3000, deadline_ms))
+            speculative_plan, speculative_audit = _speculative_clarification_plan(
+                row,
+                article_text=article_text,
+                search_channels=search_channels,
+                release_sha256_by_channel=release_sha256_by_channel,
+                profile_provider=profile_provider,
+                retrieval_cache=retrieval_cache,
+                deadline_ms=deadline_ms,
+            )
+            if speculative_plan is not None:
+                speculative_used = True
+                append_target_ledger({
+                    "article_idx": article_id,
+                    "target_id": target_id,
+                    "value_span_id": row.get("value_span_id"),
+                    "resolution": "CLARIFICATION_REQUIRED",
+                    "clarification_plan": speculative_plan,
+                    "speculative_retrieval": speculative_audit,
+                    "failure_recovery_shadow": {
+                        "contract_version": "clarification-plan-v2",
+                        "action": "ASK_USER",
+                        "reason": speculative_plan.get("reason"),
+                        "clarification_plan": speculative_plan,
+                        "cell_values_used": False,
+                    },
+                    "call_ledger": {"cell_api": 0, "answer_deterministic": 0, "answer_hcx_shadow": 0},
+                }, target_call_snapshot=target_call_snapshot, candidate_membership=(), retrieval_audit={
+                    "speculative": True,
+                    "candidate_membership": [],
+                })
+                continue
         failure_recovery: dict[str, Any] = {
             "contract_version": "failure-recovery-shadow-v1", "action": "DISABLED",
             "retry_budget": {"used": 0, "limit": 1},
         }
         try:
-            candidates, retrieval_audit = retrieve_parallel(
+            candidates, retrieval_audit = _binding_or_retrieve_candidates(
+                target_id=target_id,
+                target_scope=binding_target_scope,
+                membership=binding_membership,
+                retrieve=lambda: _retrieve_with_request_cache(
                 claim_query,
                 search_channels,
                 release_sha256_by_channel=release_sha256_by_channel,
                 path_top_k=20,
                 union_top_k=100,
+                retrieval_cache=retrieval_cache,
+                ),
             )
         except RuntimeError as exc:
             retrieval_code = _bounded_exception_code(exc, "RETRIEVAL_UNAVAILABLE", {
@@ -2840,17 +3327,18 @@ def run_new_articles_v2(
                 "user_intent_shadow": user_intent, "answer": answer,
             }, target_call_snapshot=target_call_snapshot)
             continue
-        if not candidates and failure_recovery_shadow:
+        if not target_continuation and not candidates and failure_recovery_shadow:
             failure_recovery = plan_failure_recovery(row, None)
             if failure_recovery.get("action") == "CORRECTIVE_RETRIEVAL":
                 try:
                     correction_query = corrective_claim_query(claim_query, failure_recovery)
-                    round1, round1_audit = retrieve_parallel(
+                    round1, round1_audit = _retrieve_with_request_cache(
                         correction_query,
                         search_channels,
                         release_sha256_by_channel=release_sha256_by_channel,
                         path_top_k=20,
                         union_top_k=100,
+                        retrieval_cache=retrieval_cache,
                     )
                     candidates = merge_candidate_rounds(candidates, round1, limit=100)
                     failure_recovery = {
@@ -2898,7 +3386,10 @@ def run_new_articles_v2(
             )
             passages = build_candidate_passages(candidates, candidate_records)
         try:
-            if release_bound_mode:
+            if target_continuation:
+                rerank_text = ""
+                reranked = tuple(RerankedCandidate(key, index, 0.0, 0.0, 0.0) for index, key in enumerate(binding_membership, 1))
+            elif release_bound_mode:
                 rerank_text = ""
                 reranked = _rrf_only_order(candidates)
             else:
@@ -2931,7 +3422,12 @@ def run_new_articles_v2(
                 "answer": answer,
             }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
             continue
-        prefetch = getattr(profile_provider, "prefetch", None)
+        if target_continuation:
+            profile_provider_for_binding = lambda key: deepcopy(binding_profiles.get(str(key)))
+            prefetch = None
+        else:
+            profile_provider_for_binding = profile_provider
+            prefetch = getattr(profile_provider, "prefetch", None)
         if callable(prefetch):
             prefetch(candidate.table_key for candidate in reranked)
         core = (
@@ -2952,20 +3448,21 @@ def run_new_articles_v2(
         if not monthly_contract:
             resolver_kwargs["release_bound_mode"] = release_bound_mode
         top50 = resolver(
-            core, reranked, profile_provider,
+            core, reranked, profile_provider_for_binding,
             **resolver_kwargs,
         )
-        if failure_recovery_shadow and failure_recovery["retry_budget"]["used"] == 0:
+        if not target_continuation and failure_recovery_shadow and failure_recovery["retry_budget"]["used"] == 0:
             failure_recovery = plan_failure_recovery(row, top50)
             if failure_recovery.get("action") == "CORRECTIVE_RETRIEVAL":
                 try:
                     correction_query = corrective_claim_query(claim_query, failure_recovery)
-                    round1, round1_audit = retrieve_parallel(
+                    round1, round1_audit = _retrieve_with_request_cache(
                         correction_query,
                         search_channels,
                         release_sha256_by_channel=release_sha256_by_channel,
                         path_top_k=20,
                         union_top_k=100,
+                        retrieval_cache=retrieval_cache,
                     )
                     union = merge_candidate_rounds(candidates, round1, limit=100)
                     if release_bound_mode:
@@ -3026,6 +3523,55 @@ def run_new_articles_v2(
             if post_retry.get("action") == "ASK_USER":
                 failure_recovery["action"] = "ASK_USER_AFTER_CORRECTION"
                 failure_recovery["question"] = post_retry["question"]
+        if failure_recovery_shadow and os.getenv("PIPELINE_CLARIFICATION_OPTIONS_ENABLED", "true").strip().lower() == "true":
+            clarification_plan = build_post_binding_clarification_plan(top50, target_id=target_id)
+            if clarification_plan is not None:
+                question = dict(clarification_plan.get("question") or {})
+                failure_recovery = {
+                    **failure_recovery,
+                    "contract_version": "clarification-plan-v2",
+                    "action": "ASK_USER",
+                    "reason": clarification_plan.get("reason") or "CLARIFICATION_REQUIRED",
+                    "question": question,
+                    "clarification_plan": clarification_plan,
+                    "cell_values_used": False,
+                }
+                append_target_ledger({
+                    "article_idx": row.get("article_idx"), "target_id": target_id,
+                    "value_span_id": row.get("value_span_id"),
+                    "retrieval": retrieval_audit,
+                    "candidate_membership": list(top50.candidate_membership),
+                    "resolution": "CLARIFICATION_REQUIRED",
+                    "clarification_plan": clarification_plan,
+                    "failure_recovery_shadow": failure_recovery,
+                    "user_intent_shadow": user_intent,
+                    "call_ledger": {"cell_api": 0},
+                }, target_call_snapshot=target_call_snapshot, candidate_membership=top50.candidate_membership, retrieval_audit=retrieval_audit)
+                continue
+        # Never allow an unresolved compatible-series tie to escape as an
+        # operational exception.  If complete profiles could not yield a safe
+        # semantic option, report the bounded limitation; no selector, Cell,
+        # or HCX answer call is authorized on this path.
+        if str(top50.resolution.hold_reason or "") == "MULTIPLE_COMPATIBLE_SERIES":
+            packet = build_evidence_packet(
+                verdict="UNVERIFIABLE",
+                claim_source={"sentence": sentence, "value": row.get("value_text")},
+                binding_plan={}, official_cell={}, comparison={},
+                limitation={"reason": "MULTIPLE_COMPATIBLE_SERIES"},
+                placeholders={"CLAIM": sentence, "LIMITATION": "후보 통계표를 하나의 공식 통계열로 안전하게 특정하지 못했습니다."},
+            )
+            answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
+            answers.append(answer)
+            append_target_ledger({
+                "article_idx": article_id, "target_id": target_id,
+                "value_span_id": row.get("value_span_id"),
+                "retrieval": retrieval_audit,
+                "candidate_membership": list(top50.candidate_membership),
+                "resolution": {"outcome": "HOLD", "hold_reason": "MULTIPLE_COMPATIBLE_SERIES"},
+                "answer": answer,
+                "call_ledger": {"cell_api": 0, "answer_hcx_shadow": 0},
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=top50.candidate_membership, retrieval_audit=retrieval_audit)
+            continue
         assignment = assignment_for_resolution(top50)
         cell_result: dict[str, Any] = {}
         cell_calls_before = getattr(cell_fetcher, "calls", None)
@@ -3525,8 +4071,12 @@ def run_live_from_files(
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
     deterministic_answer_only: bool = False,
+    planning_only: bool = False,
+    binding_continuation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Construct every approved live adapter and execute a new article file."""
+    timing = MonotonicTimingRecorder()
+    retrieval_cache = RequestScopedRetrievalCache()
     config_path = Path(config_path).resolve()
     article_path = Path(article_path).resolve()
     output_root = Path(output_root).resolve()
@@ -3543,6 +4093,12 @@ def run_live_from_files(
     # preflight or adapter construction: malformed trace inputs must be zero-call.
     precomputed_l2 = precomputed_routed = None
     local_articles = _load_articles_for_clarification(article_path, clarification_context_path)
+    binding_continuation = None
+    if binding_continuation_path is not None:
+        try:
+            binding_continuation = _read_json(Path(binding_continuation_path).resolve())
+        except Exception as exc:
+            raise OperationalPipelineError("RESUME_ARTIFACT_STALE") from exc
     expected_article_ids = [str(row.get("article_idx") or "") for row in local_articles]
     if precomputed_l2_manifest_path is not None:
         precomputed_l2 = _discover_precomputed_manifest(Path(precomputed_l2_manifest_path).resolve(), stage="02", article_path=article_path, expected_article_ids=expected_article_ids)
@@ -3557,18 +4113,47 @@ def run_live_from_files(
         if predecessor_sha and predecessor_sha != l2_sha:
             raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
     config = _read_json(config_path)
-    root = config_path.parent.parent
     try:
         from dotenv import load_dotenv
-        load_dotenv(root / ".env", override=False)
+        load_dotenv(config_path.parent.parent / ".env", override=False)
     except ImportError:
         pass
+    try:
+        answer_mode = "DETERMINISTIC_ONLY" if deterministic_answer_only else answer_render_mode()
+    except RuntimeError as exc:
+        raise OperationalPipelineError(str(exc)) from None
+    try:
+        hcx_timeout_seconds = float(os.getenv("PIPELINE_HCX_ANSWER_TIMEOUT_SECONDS", "3.0"))
+    except ValueError:
+        raise OperationalPipelineError("HCX_ANSWER_TIMEOUT_INVALID") from None
+    if not 0.5 <= hcx_timeout_seconds <= 10.0:
+        raise OperationalPipelineError("HCX_ANSWER_TIMEOUT_INVALID")
+    try:
+        speculative_deadline_ms = int(os.getenv("PIPELINE_SPECULATIVE_DEADLINE_MS", "2500"))
+    except ValueError:
+        raise OperationalPipelineError("SPECULATIVE_DEADLINE_INVALID") from None
+    if not 500 <= speculative_deadline_ms <= 3000:
+        raise OperationalPipelineError("SPECULATIVE_DEADLINE_INVALID")
+    for gate_name in (
+        "PIPELINE_EARLY_CLARIFICATION_ENABLED",
+        "PIPELINE_CLARIFICATION_OPTIONS_ENABLED",
+        "PIPELINE_REQUEST_CACHE_ENABLED",
+        "PIPELINE_SPECULATIVE_RETRIEVAL_ENABLED",
+        "PIPELINE_TIMING_RECEIPT_ENABLED",
+    ):
+        gate_value = os.getenv(gate_name)
+        if gate_value is not None and gate_value.strip().lower() not in {"true", "false"}:
+            raise OperationalPipelineError("FEATURE_GATE_INVALID:" + gate_name)
+    request_cache_enabled = os.getenv("PIPELINE_REQUEST_CACHE_ENABLED", "true").strip().lower() == "true"
+    root = config_path.parent.parent
     release_bound_mode = release_runtime_enabled()
     release_runtime = None
     if release_bound_mode:
         try:
             release_runtime = build_release_bound_runtime()
+            preflight_started = __import__("time").monotonic_ns()
             gate = release_runtime.preflight()
+            timing.observe("preflight", preflight_started)
         except BackendError as exc:
             raise OperationalPipelineError(f"RELEASE_RUNTIME_PREFLIGHT_BLOCKED:{exc.code}") from None
         if service_urls_override is not None or ignore_env:
@@ -3581,7 +4166,9 @@ def run_live_from_files(
         }
         if deterministic_answer_only:
             preflight_kwargs["allow_deterministic_answer_only"] = True
+        preflight_started = __import__("time").monotonic_ns()
         gate = preflight(config_path, **preflight_kwargs)
+        timing.observe("preflight", preflight_started)
     if gate["status"] != "READY":
         raise OperationalPipelineError("LIVE_PREFLIGHT_BLOCKED:" + ",".join(gate["blockers"]))
     articles = local_articles
@@ -3621,7 +4208,7 @@ def run_live_from_files(
         encoder_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", encoder_call, phase_provider=phase_provider)
         if reranker_call is not None:
             reranker_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", reranker_call, phase_provider=phase_provider)
-    encoder = CountingEncoder(encoder_call)
+    encoder = RequestScopedEncoder(encoder_call) if request_cache_enabled else CountingEncoder(encoder_call)
     reranker = None if release_bound_mode else CountingReranker(reranker_call)
     passage_store = None
     seed_cache_path: Path | None = None
@@ -3673,15 +4260,20 @@ def run_live_from_files(
             budget_run_id=audit_run_id or output_root.name,
             budget_phase="pilot" if budget_ledger is not None else "batch",
         )
+    if request_cache_enabled:
+        profile_provider = RequestScopedProfileProvider(profile_provider)
     from src.news_verification.runtime.kosis_client import get_data_from_query
     # run_new_articles_v2 applies target-scoped cell/answer reservations at
     # the exact call sites.  Keep these inner transports unwrapped here to
     # avoid double-counting one network attempt.
     cell_fetcher = FailClosedCellFetcher(get_data_from_query)
     answerer = (
-        None
-        if deterministic_answer_only
-        else CountingAnswerer(Hcx007AnswerClient(os.environ["NCP_CLOVASTUDIO_API_KEY"]))
+        CountingAnswerer(Hcx007AnswerClient(
+            os.environ["NCP_CLOVASTUDIO_API_KEY"],
+            timeout_seconds=hcx_timeout_seconds,
+        ))
+        if answer_mode == "HCX_SHADOW_SYNC"
+        else None
     )
     release_sha = (
         {
@@ -3696,6 +4288,38 @@ def run_live_from_files(
             "dense": str(gate["v6_dense_manifest"]["zip_sha256"]),
         }
     )
+    # Gate A invokes the same release-bound adapters as the live path, but its
+    # authority ends at an option proposal.  It intentionally never reaches
+    # Late Binding, Cell API, comparator, or answer rendering.
+    if planning_only:
+        if precomputed_routed is None:
+            raise OperationalPipelineError("SPECULATIVE_PRECOMPUTED_REQUIRED")
+        routed_rows = list(precomputed_routed.get("rows") or [])
+        row = next((item for item in routed_rows if isinstance(item, Mapping) and _missing_high_impact_role(item.get("retrieval_fields") if isinstance(item.get("retrieval_fields"), Mapping) else {}) is not None), None)
+        if row is None:
+            raise OperationalPipelineError("SPECULATIVE_NOT_REQUIRED")
+        article = next((item for item in local_articles if str(item.get("article_idx") or "") == str(row.get("article_idx") or "")), None)
+        if article is None:
+            raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
+        speculative_started = time.monotonic_ns()
+        plan, audit = _speculative_clarification_plan(
+            row, article_text=str(article.get("article_text") or ""),
+            search_channels={"official": official, "bm25": bm25, "dense": dense},
+            release_sha256_by_channel=release_sha, profile_provider=profile_provider,
+            retrieval_cache=retrieval_cache if request_cache_enabled else None,
+            deadline_ms=speculative_deadline_ms,
+        )
+        timing.observe("speculative_retrieval", speculative_started)
+        return {
+            "planning_only": True, "clarification_plan": plan,
+            "speculative_retrieval": audit,
+            "api_calls": {"official_search": official.calls, "bm25": bm25.calls,
+                          "query_encoder": encoder.calls, "qdrant_dense": dense.calls,
+                          "metadata_api": profile_provider.metadata_api_calls,
+                          "cell_api": 0, "hcx_answer": 0},
+            "timing": timing.snapshot(),
+        }
+    live_started = __import__("time").monotonic_ns()
     result = run_new_articles_v2(
         articles,
         l2_api_key="" if deterministic_answer_only else os.environ["NCP_CLOVASTUDIO_API_KEY"],
@@ -3720,7 +4344,12 @@ def run_live_from_files(
         failure_recovery_shadow=failure_recovery_shadow,
         user_intent_shadow=user_intent_shadow,
         release_bound_mode=release_bound_mode,
+        answer_render_mode_name=answer_mode,
+        retrieval_cache=retrieval_cache if request_cache_enabled else None,
+        timing=timing,
+        binding_continuation=binding_continuation,
     )
+    timing.observe("live", live_started)
     article_call_snapshot = {
         "metadata_api": profile_provider.metadata_api_calls,
         "cell_api": cell_fetcher.calls,
@@ -3783,6 +4412,12 @@ def run_live_from_files(
         **article_call_snapshot,
     }
     result["technical_canary_api_calls"] = canary_call_delta
+    result["timing"] = timing.snapshot()
+    result["timing"]["cache"] = {
+        "retrieval": retrieval_cache.audit() if request_cache_enabled else {"enabled": False},
+        "profile": profile_provider.audit() if request_cache_enabled else {"enabled": False},
+        "query_encoder": encoder.audit() if hasattr(encoder, "audit") else {"enabled": False},
+    }
     result["ranking"] = {
         "mode": RRF_ONLY_ORDERING if release_bound_mode else "MODEL_RERANKER",
         "reason": RRF_ORDER_RERANKER_DISABLED if release_bound_mode else None,
@@ -3835,6 +4470,8 @@ def run_live_from_files(
         "role_aware_dimension_shadow": role_aware_dimension_shadow,
         "claim_query": claim_query,
         "deterministic_answer_only": deterministic_answer_only,
+        "answer_render_mode": answer_mode,
+        "timing": result["timing"],
     }
     if release_bound_mode:
         manifest["seed_cache"] = {"enabled": False, "reason": "RELEASE_BOUND_POSTGRES_PROFILE"}

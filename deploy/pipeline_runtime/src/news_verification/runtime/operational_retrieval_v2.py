@@ -200,17 +200,35 @@ def retrieve_parallel(
     release_sha256_by_channel: Mapping[str, str],
     path_top_k: int = 20,
     union_top_k: int = 100,
+    timeout_seconds: float | None = None,
+    channel_allowlist: frozenset[str] | None = None,
 ) -> tuple[tuple[RrfCandidate, ...], dict[str, Any]]:
     """Execute all approved paths concurrently and flat-RRF their table hits."""
     register = build_query_register(claim)
-    jobs = [(query, channel) for query in register for channel in query.channels]
+    jobs = [
+        (query, channel) for query in register for channel in query.channels
+        if channel_allowlist is None or channel in channel_allowlist
+    ]
+    if not jobs:
+        raise RuntimeError("SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED")
     missing = sorted({channel for _, channel in jobs if channel not in channels})
     if missing:
         raise RuntimeError(f"SEARCH_CHANNEL_UNAVAILABLE:{','.join(missing)}")
+    if timeout_seconds is not None and (
+        timeout_seconds <= 0
+        or any(not callable(getattr(channels[channel], "speculative", None)) for _, channel in jobs)
+    ):
+        raise RuntimeError("SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED")
     path_results: dict[tuple[str, str], tuple[RetrievalHit, ...]] = {}
     with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as executor:
         pending = {
-            executor.submit(channels[channel], query, query.fields_by_channel[channel], path_top_k): (query, channel)
+            executor.submit(
+                getattr(channels[channel], "speculative") if timeout_seconds is not None else channels[channel],
+                query,
+                query.fields_by_channel[channel],
+                path_top_k,
+                **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
+            ): (query, channel)
             for query, channel in jobs
         }
         for future in as_completed(pending):
@@ -312,5 +330,3 @@ __all__ = [
     "CONTRACT_VERSION", "QuerySpec", "RetrievalHit", "RerankedCandidate", "RrfCandidate",
     "build_candidate_passages", "build_query_register", "rerank_top50", "retrieve_parallel",
 ]
-
-

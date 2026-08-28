@@ -38,8 +38,8 @@
     },
     {
       "path": "develop/failure_recovery_shadow_v1.py",
-      "sha256": "24eec200c5cb18c5056ac35572ef2faa29b79c6704c15e22807d9b78bf8c99ff",
-      "size": 10265
+      "sha256": "daa2405b8cbfcd138ab461602c84bd84f95f038e0c6c99ffd5de1b465187a703",
+      "size": 17198
     },
     {
       "path": "develop/hcx_client.py",
@@ -73,8 +73,8 @@
     },
     {
       "path": "develop/run_article_body_pipeline_trace_v1.py",
-      "sha256": "9ffec810c15efa1908ec447e2f74318ba5c3100ba3edbc8473933345dcabaee7",
-      "size": 45609
+      "sha256": "df6e51ec7211100487bc573753d807c2bc4e7c51433f7e85d53ff1d8cf55bcfd",
+      "size": 46592
     },
     {
       "path": "develop/run_l2_segmentation.py",
@@ -233,8 +233,8 @@
     },
     {
       "path": "news_verification/runtime/operational_answer_v2.py",
-      "sha256": "cbffc64e82198a534291fe831d1acd35247e5aed4b0e1b44bcc5f5f9e928a78f",
-      "size": 19612
+      "sha256": "63f9ad81734580a512a3d8be50c4246a699ee6b87615850e765b7b8d0c643481",
+      "size": 21660
     },
     {
       "path": "news_verification/runtime/operational_article_acquisition_v2.py",
@@ -248,13 +248,13 @@
     },
     {
       "path": "news_verification/runtime/operational_live_adapters_v2.py",
-      "sha256": "15925b427173e33660a62a09bb028d63bf4b9d1230e8946eae3bc72b3423312e",
-      "size": 20527
+      "sha256": "fa4219700a872f901362f1d076f2897f9ca6e6339af964115a18dd8ec2af821e",
+      "size": 32860
     },
     {
       "path": "news_verification/runtime/operational_retrieval_v2.py",
-      "sha256": "abcb816c4f3e4abfb16170e6e97433931975efc68e5811f245d4dbb382030818",
-      "size": 12553
+      "sha256": "ad6f21735d1b1e4566b0a02e560524b2caba536307052e4e1f70960d56cc18eb",
+      "size": 13316
     },
     {
       "path": "news_verification/runtime/period_text.py",
@@ -293,8 +293,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_projection_v2.py",
-      "sha256": "0f4a1dfe656a002585633741072106f4f83b46f6b7b73d3d88860ae8c4ab3078",
-      "size": 91424
+      "sha256": "f7b4231f236bf4d1f9ca4732c2ab25aabd229a768dfc98bbd53eebdedb98416f",
+      "size": 95573
     },
     {
       "path": "news_verification/runtime/retrieval_query.py",
@@ -318,8 +318,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "fe8e11bf6a7bfc41360cb327c9ec037e68af4b96a89ee3a41625020d9daa9107",
-      "size": 194752
+      "sha256": "afbd1386831ebe44727634185ef40e35513a0bd1138a6d07f66b80f6001a9b60",
+      "size": 226824
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

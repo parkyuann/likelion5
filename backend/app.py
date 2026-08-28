@@ -19,10 +19,10 @@ from backend.runtime_gate import (
     require_application_product_state,
     require_csrf,
     raise_pipeline_pending,
+    require_pipeline_image,
     require_pipeline_runtime,
-    PIPELINE_IMAGE_PENDING,
+    require_pipeline_url,
     PIPELINE_NATURAL_QUERY_PENDING,
-    PIPELINE_URL_PENDING,
 )
 
 
@@ -297,7 +297,11 @@ def _looks_like_url(value: str) -> bool:
 def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> dict:
     del user
     if req.input_type == "url" or (req.input_type == "auto" and _looks_like_url(req.text)):
-        raise_pipeline_pending(PIPELINE_URL_PENDING, "URL 기사 추출 경로가 아직 연결되지 않았습니다.")
+        require_pipeline_runtime()
+        require_pipeline_url()
+        from backend.url_article_service import prepare_url_article
+
+        return prepare_url_article(req.text)
     if req.input_type != "article":
         raise_pipeline_pending(PIPELINE_NATURAL_QUERY_PENDING, "자연어·자동 질의 경로가 아직 연결되지 않았습니다.")
 
@@ -313,6 +317,24 @@ def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> 
 
 
 @app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf)])
-def analyze_image(file: UploadFile = File(...), conversation_id: str | None = Form(None), focus_question: str = Form(""), user: dict | None = Depends(optional_user)) -> dict:
-    del file, conversation_id, focus_question, user
-    raise_pipeline_pending(PIPELINE_IMAGE_PENDING, "이미지 입력 경로가 아직 연결되지 않았습니다.")
+async def analyze_image(file: UploadFile = File(...), conversation_id: str | None = Form(None), focus_question: str = Form(""), user: dict | None = Depends(optional_user)) -> dict:
+    del conversation_id, focus_question, user
+    require_pipeline_runtime()
+    require_pipeline_image()
+    from backend.develop_verify_service import verify_article_develop
+    from backend.image_ocr_service import prepare_image_article
+
+    prepared = prepare_image_article(
+        await file.read(),
+        filename=file.filename,
+        declared_content_type=file.content_type,
+    )
+    document = prepared["article_document"]
+    verified = verify_article_develop(
+        document["text"],
+        title="이미지에서 추출한 기사",
+    )
+    # The UI needs the OCR text only when a date/period clarification resumes.
+    # Keep source and OCR provenance in the response; neither credentials nor
+    # raw image bytes are returned.
+    return {**verified, "source": prepared["source"], "extraction": prepared["extraction"], "article_document": document}

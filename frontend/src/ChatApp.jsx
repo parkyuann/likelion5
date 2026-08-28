@@ -876,7 +876,23 @@ function ChatApp({
 
       // 실제 OCR 완료 체크를 인지할 수 있도록 짧게 유지한 뒤 결과를 표시한다.
       await new Promise((resolve) => setTimeout(resolve, 550));
-      handleResult(result, focusQuestion);
+      if (result?.type === "needs_user_input" && result.article_document?.text) {
+        requestClarification({
+          text: result.article_document.text,
+          title: result.article_document.title || "이미지에서 추출한 기사",
+          inputType: "article",
+          focusQuestion,
+          date: "",
+          dateSource: null,
+          conversationId,
+          clarificationAnswers: [],
+          resumeToken: result.resume_token || null,
+        }, result);
+      } else if (result?.type === "article") {
+        await showArticleResult(result, Date.now());
+      } else {
+        handleResult(result, focusQuestion);
+      }
     } catch (err) {
       handleError(err);
     } finally {

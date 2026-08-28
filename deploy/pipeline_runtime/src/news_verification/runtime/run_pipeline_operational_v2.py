@@ -21,6 +21,7 @@ import uuid
 from typing import Any, Callable, Mapping, Sequence
 from urllib import request
 
+from backend.errors import BackendError
 from src.news_verification.runtime.bge_reranker_v2_service import MODEL_REVISION, SERVICE_CONTRACT
 from src.news_verification.runtime.bge_m3_ko_query_encoder_service import (
     HttpQueryEncoderClient,
@@ -104,6 +105,12 @@ def run_hcx_l2(*args: Any, **kwargs: Any) -> Any:
     return l2_runner()(*args, **kwargs)
 from src.news_verification.runtime.run_layer_stack import run_stack
 from src.news_verification.runtime.v6_search_channels import OfficialKosisSearchChannel, V6Bm25Channel, V6DenseChannel
+from src.news_verification.runtime.release_bound_live_adapters_v1 import (
+    RRF_ONLY_ORDERING,
+    RRF_ORDER_RERANKER_DISABLED,
+    build_release_bound_runtime,
+    release_runtime_enabled,
+)
 from src.news_verification.runtime.bge_reranker_v2_service import HttpRerankerClient
 from src.news_verification.runtime.adapters.shadow_compat import role_aware_dimension_api
 
@@ -128,6 +135,27 @@ def source_sentence(*args: Any, **kwargs: Any) -> Any:
 
 
 CONTRACT_VERSION = "kosis-operational-article-verification-v2"
+
+
+@dataclass(frozen=True)
+class RrfOnlyCandidate:
+    """RRF order without fabricated model scores when reranking is disabled."""
+
+    table_key: str
+    rank: int
+    rrf_score: float
+    ranking_mode: str = RRF_ONLY_ORDERING
+
+
+def _rrf_only_order(candidates: Sequence[Any]) -> tuple[RrfOnlyCandidate, ...]:
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (-float(candidate.rrf_score), int(candidate.best_rank), str(candidate.table_key)),
+    )
+    return tuple(
+        RrfOnlyCandidate(str(candidate.table_key), rank, float(candidate.rrf_score))
+        for rank, candidate in enumerate(ordered[:50], 1)
+    )
 
 
 def _evidence_first_enabled(value: bool | None = None) -> bool:
@@ -1579,9 +1607,11 @@ def run_new_articles_v2(
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
     evidence_first_statistics_shadow: bool | None = None,
+    release_bound_mode: bool | None = None,
 ) -> dict[str, Any]:
     """Execute the complete live contract with injectable external adapters."""
     evidence_first_statistics_shadow = _evidence_first_enabled(evidence_first_statistics_shadow)
+    release_bound_mode = release_runtime_enabled() if release_bound_mode is None else bool(release_bound_mode)
     if (precomputed_l2 is None) != (precomputed_routed is None):
         raise OperationalPipelineError("PRECOMPUTED_INPUT_INCOMPLETE")
     if precomputed_l2 is not None and precomputed_routed is not None:
@@ -1631,6 +1661,7 @@ def run_new_articles_v2(
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
             evidence_first_statistics_shadow=evidence_first_statistics_shadow,
+            release_bound_mode=release_bound_mode,
         )
         if len(pilot.get("stage_ledger") or []) == 0 or len(pilot.get("answers") or []) == 0:
             raise OperationalPipelineError("AUDIT_PILOT_BARRIER_PARTITION_MISSING")
@@ -1655,6 +1686,7 @@ def run_new_articles_v2(
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
             evidence_first_statistics_shadow=evidence_first_statistics_shadow,
+            release_bound_mode=release_bound_mode,
         )
         pilot_manifest, batch_manifest = pilot.get("l2", {}), batch.get("l2", {})
         merged_l2 = {**pilot_manifest, **batch_manifest,
@@ -1956,7 +1988,14 @@ def run_new_articles_v2(
             retrieval_code = _bounded_exception_code(exc, "RETRIEVAL_UNAVAILABLE", {
                 "KOSIS_SEARCH_UNAVAILABLE", "KOSIS_SEARCH_INVALID_RESPONSE", "V6_BM25_EMPTY_QUERY",
                 "V6_BM25_UNAVAILABLE", "V6_BM25_QUERY_FAILED", "V6_QUERY_VECTOR_DIMENSION_MISMATCH",
-                "V6_DENSE_QUERY_FAILED",
+                "V6_DENSE_QUERY_FAILED", "OPENSEARCH_UNAVAILABLE", "OPENSEARCH_MAPPING_INVALID",
+                "OPENSEARCH_INDEX_NOT_CONCRETE", "OPENSEARCH_INDEX_CONFIG_MISMATCH",
+                "OPENSEARCH_FIELD_INVALID", "QDRANT_UNAVAILABLE", "QDRANT_QUERY_API_UNAVAILABLE",
+                "QDRANT_GROUP_QUERY_UNAVAILABLE", "QDRANT_VECTOR_INVALID", "QDRANT_PAYLOAD_CONTRACT_MISMATCH",
+                "QDRANT_COLLECTION_CONTRACT_MISMATCH", "QDRANT_COLLECTION_NOT_CONCRETE",
+                "KOSIS_RELEASE_MISMATCH", "CROSS_STORE_RELEASE_MISMATCH", "METADATA_PROFILE_INCOMPLETE",
+                "METADATA_PROFILE_CONTRACT_MISMATCH", "METADATA_PROFILE_READ_FAILED",
+                "QUERY_ENCODER_UNAVAILABLE", "QUERY_ENCODER_CONTRACT_MISMATCH",
             })
             retrieval_failure = safe_adapter_failure(retrieval_code, exc)
             reason = retrieval_failure["error_code"]
@@ -2020,21 +2059,29 @@ def run_new_articles_v2(
                 "user_intent_shadow": user_intent, "answer": answer,
             })
             continue
-        candidate_records = (
-            candidate_record_provider([candidate.table_key for candidate in candidates])
-            if candidate_record_provider is not None
-            else catalog_records
-        )
-        passages = build_candidate_passages(candidates, candidate_records)
-        try:
-            rerank_text = (
-                build_role_aware_reranker_query(
-                    claim_query["indicator"], source_terms, retrieval_fields.get("period_absolute")
-                )
-                if role_aware_dimension_shadow
-                else str(claim_query["indicator"])
+        if release_bound_mode:
+            candidate_records = ()
+            passages = ()
+        else:
+            candidate_records = (
+                candidate_record_provider([candidate.table_key for candidate in candidates])
+                if candidate_record_provider is not None
+                else catalog_records
             )
-            reranked = rerank_top50(rerank_text, candidates, passages, reranker)
+            passages = build_candidate_passages(candidates, candidate_records)
+        try:
+            if release_bound_mode:
+                rerank_text = ""
+                reranked = _rrf_only_order(candidates)
+            else:
+                rerank_text = (
+                    build_role_aware_reranker_query(
+                        claim_query["indicator"], source_terms, retrieval_fields.get("period_absolute")
+                    )
+                    if role_aware_dimension_shadow
+                    else str(claim_query["indicator"])
+                )
+                reranked = rerank_top50(rerank_text, candidates, passages, reranker)
         except RuntimeError as exc:
             reranker_code = _bounded_exception_code(exc, "RERANKER_UNAVAILABLE", {
                 "RERANKER_UNAVAILABLE", "RERANKER_CONTRACT_MISMATCH", "RERANKER_CUDA_UNAVAILABLE",
@@ -2082,12 +2129,15 @@ def run_new_articles_v2(
                         union_top_k=100,
                     )
                     union = merge_candidate_rounds(candidates, round1, limit=100)
-                    correction_records = (
-                        candidate_record_provider([candidate.table_key for candidate in union])
-                        if candidate_record_provider is not None else catalog_records
-                    )
-                    correction_passages = build_candidate_passages(union, correction_records)
-                    corrected_reranked = rerank_top50(rerank_text, union, correction_passages, reranker)
+                    if release_bound_mode:
+                        corrected_reranked = _rrf_only_order(union)
+                    else:
+                        correction_records = (
+                            candidate_record_provider([candidate.table_key for candidate in union])
+                            if candidate_record_provider is not None else catalog_records
+                        )
+                        correction_passages = build_candidate_passages(union, correction_records)
+                        corrected_reranked = rerank_top50(rerank_text, union, correction_passages, reranker)
                     if callable(prefetch):
                         prefetch(candidate.table_key for candidate in corrected_reranked)
                     corrected_top50 = resolver(
@@ -2242,6 +2292,7 @@ def run_new_articles_v2(
                 "reranker_query": rerank_text,
                 "unqualified_region_assumption": "NATIONWIDE" if role_aware_dimension_shadow else None,
             },
+            "ranking_mode": RRF_ORDER_RERANKER_DISABLED if release_bound_mode else "MODEL_RERANKER",
             "failure_recovery_shadow": failure_recovery,
             "user_intent_shadow": user_intent or {
                 "contract_version": "user-intent-router-shadow-v1", "status": "DISABLED",
@@ -2564,14 +2615,25 @@ def run_live_from_files(
         load_dotenv(root / ".env", override=False)
     except ImportError:
         pass
-    preflight_kwargs = {
-        "check_service": True,
-        "service_urls_override": service_urls_override,
-        "ignore_env": ignore_env,
-    }
-    if deterministic_answer_only:
-        preflight_kwargs["allow_deterministic_answer_only"] = True
-    gate = preflight(config_path, **preflight_kwargs)
+    release_bound_mode = release_runtime_enabled()
+    release_runtime = None
+    if release_bound_mode:
+        try:
+            release_runtime = build_release_bound_runtime()
+            gate = release_runtime.preflight()
+        except BackendError as exc:
+            raise OperationalPipelineError(f"RELEASE_RUNTIME_PREFLIGHT_BLOCKED:{exc.code}") from None
+        if service_urls_override is not None or ignore_env:
+            raise OperationalPipelineError("RELEASE_RUNTIME_SERVICE_OVERRIDE_UNSUPPORTED")
+    else:
+        preflight_kwargs = {
+            "check_service": True,
+            "service_urls_override": service_urls_override,
+            "ignore_env": ignore_env,
+        }
+        if deterministic_answer_only:
+            preflight_kwargs["allow_deterministic_answer_only"] = True
+        gate = preflight(config_path, **preflight_kwargs)
     if gate["status"] != "READY":
         raise OperationalPipelineError("LIVE_PREFLIGHT_BLOCKED:" + ",".join(gate["blockers"]))
     articles = local_articles
@@ -2595,56 +2657,74 @@ def run_live_from_files(
         )
         budget_ledger.startup_recover()
         budget_ledger.set_phase(audit_run_id or output_root.name, audit_phase or "pilot")
-    encoder_inner: Any = HttpQueryEncoderClient(service_urls["query_encoder"])
-    reranker_inner: Any = HttpRerankerClient(service_urls["reranker"])
-    encoder_call: Any = encoder_inner.encode
-    reranker_call: Any = reranker_inner.rerank
+    encoder_inner: Any = None
+    reranker_inner: Any = None
+    if release_bound_mode:
+        assert release_runtime is not None
+        encoder_call = release_runtime.encoder.encode
+        reranker_call = None
+    else:
+        encoder_inner = HttpQueryEncoderClient(service_urls["query_encoder"])
+        reranker_inner = HttpRerankerClient(service_urls["reranker"])
+        encoder_call = encoder_inner.encode
+        reranker_call = reranker_inner.rerank
     if budget_ledger is not None:
         phase_provider = lambda: budget_ledger.current_phase(audit_run_id or output_root.name)
         encoder_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", encoder_call, phase_provider=phase_provider)
-        reranker_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", reranker_call, phase_provider=phase_provider)
+        if reranker_call is not None:
+            reranker_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", reranker_call, phase_provider=phase_provider)
     encoder = CountingEncoder(encoder_call)
-    reranker = CountingReranker(reranker_call)
-    qdrant_client_module = __import__("qdrant_client", fromlist=["QdrantClient"])
-    qdrant_timeout = float(config.get("limits", {}).get("qdrant_query_timeout_seconds", 90))
-    if not 30 <= qdrant_timeout <= 300:
-        raise OperationalPipelineError("QDRANT_QUERY_TIMEOUT_INVALID")
-    qdrant = qdrant_client_module.QdrantClient(
-        url=service_urls["qdrant"], timeout=qdrant_timeout,
-    )
-    bm25_index = (root / config["assets"]["v6_bm25_index"]).resolve()
-    passage_store = V6CatalogPassageStore(bm25_index)
+    reranker = None if release_bound_mode else CountingReranker(reranker_call)
+    passage_store = None
+    seed_cache_path: Path | None = None
+    seed_cache_sha_before: str | None = None
     official_inner: Any = OfficialKosisSearchChannel(os.environ["KOSIS_API_KEY"])
     if budget_ledger is not None:
         official_inner = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", official_inner, phase_provider=lambda: budget_ledger.current_phase(audit_run_id or output_root.name))
     official = CountingAdapter(official_inner)
-    bm25 = CountingAdapter(V6Bm25Channel(bm25_index))
-    dense = CountingAdapter(V6DenseChannel(
-        qdrant,
-        config["services"]["qdrant_collection"],
-        encoder,
-        vector_name=config["services"]["qdrant_vector_name"],
-    ))
-    seed_cache_path = (
-        Path(profile_seed_override).resolve()
-        if profile_seed_override is not None
-        else (root / config["assets"]["profile_cache"]).resolve()
-    )
-    if profile_seed_override is not None and not seed_cache_path.is_file():
-        raise OperationalPipelineError("PROFILE_CACHE_SEED_UNAVAILABLE")
-    seed_cache_sha_before = sha256_file(seed_cache_path)
-    operational_cache_path = Path(operational_cache_override).resolve() if operational_cache_override is not None else (root / config["assets"]["operational_profile_cache"]).resolve()
-    snapshot_root_path = Path(snapshot_root_override).resolve() if snapshot_root_override is not None else (root / config["assets"]["operational_profile_snapshots"]).resolve()
-    profile_provider = OperationalProfileProvider(
-        seed_cache_path,
-        operational_cache_path,
-        snapshot_root_path,
-        max_age_seconds=float(config["limits"]["profile_max_age_seconds"]),
-        delay_seconds=float(config["limits"]["metadata_delay_seconds"]),
-        budget_ledger=budget_ledger,
-        budget_run_id=audit_run_id or output_root.name,
-        budget_phase="pilot" if budget_ledger is not None else "batch",
-    )
+    if release_bound_mode:
+        assert release_runtime is not None
+        release_channels = release_runtime.channels(encoder)
+        bm25 = CountingAdapter(release_channels["bm25"])
+        dense = CountingAdapter(release_channels["dense"])
+        profile_provider = release_runtime.metadata
+    else:
+        qdrant_client_module = __import__("qdrant_client", fromlist=["QdrantClient"])
+        qdrant_timeout = float(config.get("limits", {}).get("qdrant_query_timeout_seconds", 90))
+        if not 30 <= qdrant_timeout <= 300:
+            raise OperationalPipelineError("QDRANT_QUERY_TIMEOUT_INVALID")
+        qdrant = qdrant_client_module.QdrantClient(
+            url=service_urls["qdrant"], timeout=qdrant_timeout,
+        )
+        bm25_index = (root / config["assets"]["v6_bm25_index"]).resolve()
+        passage_store = V6CatalogPassageStore(bm25_index)
+        bm25 = CountingAdapter(V6Bm25Channel(bm25_index))
+        dense = CountingAdapter(V6DenseChannel(
+            qdrant,
+            config["services"]["qdrant_collection"],
+            encoder,
+            vector_name=config["services"]["qdrant_vector_name"],
+        ))
+        seed_cache_path = (
+            Path(profile_seed_override).resolve()
+            if profile_seed_override is not None
+            else (root / config["assets"]["profile_cache"]).resolve()
+        )
+        if profile_seed_override is not None and not seed_cache_path.is_file():
+            raise OperationalPipelineError("PROFILE_CACHE_SEED_UNAVAILABLE")
+        seed_cache_sha_before = sha256_file(seed_cache_path)
+        operational_cache_path = Path(operational_cache_override).resolve() if operational_cache_override is not None else (root / config["assets"]["operational_profile_cache"]).resolve()
+        snapshot_root_path = Path(snapshot_root_override).resolve() if snapshot_root_override is not None else (root / config["assets"]["operational_profile_snapshots"]).resolve()
+        profile_provider = OperationalProfileProvider(
+            seed_cache_path,
+            operational_cache_path,
+            snapshot_root_path,
+            max_age_seconds=float(config["limits"]["profile_max_age_seconds"]),
+            delay_seconds=float(config["limits"]["metadata_delay_seconds"]),
+            budget_ledger=budget_ledger,
+            budget_run_id=audit_run_id or output_root.name,
+            budget_phase="pilot" if budget_ledger is not None else "batch",
+        )
     from src.news_verification.runtime.kosis_client import get_data_from_query
     # run_new_articles_v2 applies target-scoped cell/answer reservations at
     # the exact call sites.  Keep these inner transports unwrapped here to
@@ -2655,18 +2735,26 @@ def run_live_from_files(
         if deterministic_answer_only
         else CountingAnswerer(Hcx007AnswerClient(os.environ["NCP_CLOVASTUDIO_API_KEY"]))
     )
-    release_sha = {
-        "official": "KOSIS_LIVE",
-        "bm25": str(gate["v6_bm25_manifest"]["index_sha256"]),
-        "dense": str(gate["v6_dense_manifest"]["zip_sha256"]),
-    }
+    release_sha = (
+        {
+            "official": "KOSIS_LIVE",
+            "bm25": str(gate["release_binding_sha256"]),
+            "dense": str(gate["release_binding_sha256"]),
+        }
+        if release_bound_mode else
+        {
+            "official": "KOSIS_LIVE",
+            "bm25": str(gate["v6_bm25_manifest"]["index_sha256"]),
+            "dense": str(gate["v6_dense_manifest"]["zip_sha256"]),
+        }
+    )
     result = run_new_articles_v2(
         articles,
         l2_api_key="" if deterministic_answer_only else os.environ["NCP_CLOVASTUDIO_API_KEY"],
         search_channels={"official": official, "bm25": bm25, "dense": dense},
         release_sha256_by_channel=release_sha,
         catalog_records=(),
-        candidate_record_provider=passage_store.records_for_tables,
+        candidate_record_provider=None if release_bound_mode else passage_store.records_for_tables,
         reranker=reranker,
         profile_provider=profile_provider,
         cell_fetcher=cell_fetcher,
@@ -2683,6 +2771,7 @@ def run_live_from_files(
         claim_query=claim_query,
         failure_recovery_shadow=failure_recovery_shadow,
         user_intent_shadow=user_intent_shadow,
+        release_bound_mode=release_bound_mode,
     )
     article_call_snapshot = {
         "metadata_api": profile_provider.metadata_api_calls,
@@ -2690,8 +2779,12 @@ def run_live_from_files(
         "hcx_answer": 0 if answerer is None else answerer.calls,
     }
     canary_call_delta = {"metadata_api": 0, "cell_api": 0, "hcx_answer": 0}
-    canary_manifest: dict[str, Any] = {"enabled": False} if not include_technical_canary else {}
-    if include_technical_canary:
+    canary_manifest: dict[str, Any] = (
+        {"enabled": False, "reason": "RELEASE_BOUND_POSTGRES_PROFILE"}
+        if release_bound_mode else
+        ({"enabled": False} if not include_technical_canary else {})
+    )
+    if include_technical_canary and not release_bound_mode:
         canary_path = (root / config["assets"]["technical_canary"]).resolve()
         canary_config = _read_json(canary_path)
         technical_canary = run_technical_canary(
@@ -2731,7 +2824,7 @@ def run_live_from_files(
         "bm25": bm25.calls,
         "query_encoder": encoder.calls,
         "qdrant_dense": dense.calls,
-        "reranker": reranker.calls,
+        "reranker": 0 if release_bound_mode else reranker.calls,
         "metadata_api": profile_provider.metadata_api_calls,
         "cell_api": cell_fetcher.calls,
         "hcx_answer": 0 if answerer is None else answerer.calls,
@@ -2742,11 +2835,20 @@ def run_live_from_files(
         **article_call_snapshot,
     }
     result["technical_canary_api_calls"] = canary_call_delta
+    result["ranking"] = {
+        "mode": RRF_ONLY_ORDERING if release_bound_mode else "MODEL_RERANKER",
+        "reason": RRF_ORDER_RERANKER_DISABLED if release_bound_mode else None,
+    }
     result["runtime"] = {
         "status": "COMPLETE",
         "api_calls": calls,
         "profile_cache": profile_provider.audit(),
-        "passage_store": {"calls": passage_store.calls, "rows_read": passage_store.rows_read},
+        "passage_store": (
+            {"enabled": False, "reason": "RELEASE_BOUND_POSTGRES_PROFILE"}
+            if release_bound_mode else
+            {"calls": passage_store.calls, "rows_read": passage_store.rows_read}
+        ),
+        "release_runtime": dict(gate) if release_bound_mode else {"enabled": False},
         "preflight_blockers": [],
         "silent_fallback": False,
     }
@@ -2759,11 +2861,21 @@ def run_live_from_files(
         "config": {"path": str(config_path), "sha256": sha256_file(config_path)},
         "gpu_receipts": gate["gpu_receipts"],
         "services": service_urls,
-        "qdrant": {
-            "collection": config["services"]["qdrant_collection"],
-            "points": gate["qdrant_health"]["points_count"],
-            "indexed_vectors": gate["qdrant_health"]["indexed_vectors_count"],
-        },
+        "qdrant": (
+            {
+                "collection": gate["qdrant"]["collection"],
+                "vector_size": gate["qdrant"]["vector_size"],
+                "receipt_sha256": gate["qdrant"]["receipt_sha256"],
+            }
+            if release_bound_mode else
+            {
+                "collection": config["services"]["qdrant_collection"],
+                "points": gate["qdrant_health"]["points_count"],
+                "indexed_vectors": gate["qdrant_health"]["indexed_vectors_count"],
+            }
+        ),
+        "release_runtime": dict(gate) if release_bound_mode else {"enabled": False},
+        "ranking_mode": RRF_ONLY_ORDERING if release_bound_mode else "MODEL_RERANKER",
         "release_sha256_by_channel": release_sha,
         "api_calls": calls,
         "article_api_calls": result["article_api_calls"],
@@ -2776,7 +2888,9 @@ def run_live_from_files(
         "claim_query": claim_query,
         "deterministic_answer_only": deterministic_answer_only,
     }
-    if not include_technical_canary or audit_run_id or operational_cache_override is not None or snapshot_root_override is not None:
+    if release_bound_mode:
+        manifest["seed_cache"] = {"enabled": False, "reason": "RELEASE_BOUND_POSTGRES_PROFILE"}
+    elif not include_technical_canary or audit_run_id or operational_cache_override is not None or snapshot_root_override is not None:
         manifest.update({
             "audit_run_id": audit_run_id,
             "seed_cache_sha256_before": seed_cache_sha_before,

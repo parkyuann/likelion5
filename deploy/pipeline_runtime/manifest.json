@@ -2,7 +2,7 @@
   "contract": "news-verification-materialized-deployment-v1",
   "source_bundle_manifest_sha256": "63251f70d95933492e23c4b978ecb1fa8f283329bd946c8f2e0630409891a51c",
   "release_id": "kosis_canonical_20260821_full_r3_13ko_views",
-  "runtime_module_files": 73,
+  "runtime_module_files": 74,
   "files": [
     {
       "path": "claim_context_resolver.py",
@@ -305,6 +305,11 @@
       "sha256": "d53a5771c1e48696fc6128cbf4c0bd93ee1965751e4528c9c42bcefc25bca9a6"
     },
     {
+      "path": "news_verification/runtime/release_bound_live_adapters_v1.py",
+      "size": 22023,
+      "sha256": "a7fcf45ad68ad8ed4058c6c9b47deab1df969124d0e3a79c8f63df6d83e8b97c"
+    },
+    {
       "path": "news_verification/runtime/run_layer_stack.py",
       "size": 5175,
       "sha256": "391d3e4b600a8c6de067a68e2084ac9abb73459a7344da7b13868e74b26c3e49"
@@ -316,8 +321,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "size": 146743,
-      "sha256": "67b6890ac2bdcfb3eafb8f63543ef9e5cd43e5acbf950311b3f304568493ca84"
+      "size": 152066,
+      "sha256": "fb407cac5e956a9ccac2ffb82c0befbaafce4abfd9eeb0d0d13bcb7fa6e1e22d"
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

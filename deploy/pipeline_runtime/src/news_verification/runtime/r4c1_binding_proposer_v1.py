@@ -14,6 +14,7 @@ from typing import Any
 
 
 CONTRACT_VERSION = "r4c1-binding-proposer-v1"
+TERMINOLOGY_REGISTRY_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class SurfaceProposal:
 _ALIASES = (
     ("국민총소득", "국민소득", "ko-stat-gni-common-name"),
     ("수납액", "세수", "ko-tax-receipts-common-name"),
+    ("출생건수", "출생아 수", "ko-stat-birth-count-common-name"),
 )
 
 
@@ -91,6 +93,8 @@ def propose_semantic_alias_matches(
     return tuple(sorted(proposals.values(), key=lambda row: (row.start, row.end, row.rule_id)))
 
 
-__all__ = ["CONTRACT_VERSION", "SurfaceProposal", "propose_semantic_alias_matches"]
-
+__all__ = [
+    "CONTRACT_VERSION", "TERMINOLOGY_REGISTRY_VERSION", "SurfaceProposal",
+    "propose_semantic_alias_matches",
+]
 

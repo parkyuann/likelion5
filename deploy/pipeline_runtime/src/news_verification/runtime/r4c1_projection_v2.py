@@ -16,6 +16,9 @@ from src.news_verification.runtime.r4c1_binding_proposer_v1 import propose_seman
 CONTRACT_VERSION = "r4c1-projection-v2"
 PROJECTION_CONTRACT_VERSION = CONTRACT_VERSION
 QUERY_FIELDS = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de", "obj_levels")
+_INDICATOR_METRIC_SUFFIX_RE = re.compile(
+    r"\s*(?:증가|감소|상승|하락|증감|변화|변동|성장)\s*(?:율|률|량|폭)$"
+)
 
 
 def _norm(value: Any) -> str:
@@ -185,6 +188,32 @@ def _context_provenance(atom: Mapping[str, Any], path: str) -> dict[str, Any] | 
         "article_idx": prov.get("article_idx"),
         "article_id": prov.get("article_id"),
         "sentence_id": prov.get("sentence_id"),
+        "span_path": path,
+        "start": start,
+        "end": end,
+        "text": text,
+    }
+    return result if _complete_span(result) else None
+
+
+def _indicator_subject_context_provenance(
+    atom: Mapping[str, Any], path: str,
+) -> dict[str, Any] | None:
+    """Recover one source-backed subject span when the whole indicator span is absent."""
+    provenance = _base_claim_prov(atom)
+    sentence = provenance.get("sentence_text")
+    indicator = str(_get(atom, "surface", "") or "").strip()
+    if not isinstance(sentence, str) or not sentence or not indicator:
+        return None
+    subject = _INDICATOR_METRIC_SUFFIX_RE.sub("", indicator).strip() or indicator
+    matches = _submatches(sentence, subject)
+    if len(matches) != 1:
+        return None
+    start, end, text = matches[0]
+    result = {
+        "article_idx": provenance.get("article_idx"),
+        "article_id": provenance.get("article_id"),
+        "sentence_id": provenance.get("sentence_id"),
         "span_path": path,
         "start": start,
         "end": end,
@@ -722,8 +751,18 @@ def _geographic_nationwide_default(
     if len(totals) != 1:
         return None
     vindex, value = totals[0]
+    context = _context_provenance(indicator_atom, "indicator.unqualified_nationwide_scope")
+    if context is None:
+        context = _indicator_subject_context_provenance(
+            indicator_atom, "indicator.unqualified_nationwide_scope"
+        )
+    context_atom = dict(indicator_atom)
+    context_atom["provenance"] = {
+        **dict(_base_claim_prov(indicator_atom)),
+        **({"context_span": context} if context is not None else {}),
+    }
     evidence = _evidence(
-        indicator_atom,
+        context_atom,
         profile_path=f"dimensions[{dindex}].values[{vindex}]",
         profile_label=value.get("value_name"),
         profile_id=value.get("value_id"),

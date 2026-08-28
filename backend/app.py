@@ -131,6 +131,7 @@ class DevelopVerifyRequest(StrictModel):
     date_source: Literal["user_feedback", "url_metadata", "api_request"] | None = None
     conversation_id: str | None = None
     clarification_answers: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    resume_token: str | None = Field(None, min_length=32, max_length=256)
 
 
 app = FastAPI(title="뉴스 사실검증 API", version="0.2.0")
@@ -271,12 +272,17 @@ def verify_develop(req: DevelopVerifyRequest, user: dict | None = Depends(option
     if _looks_like_question(req.text.strip()):
         return {"type": "not_article", "reason": "question"}
     require_pipeline_runtime()
+    kwargs = {
+        "title": req.title,
+        "date": req.date,
+        "date_source": req.date_source,
+        "clarification_answers": req.clarification_answers,
+    }
+    if req.resume_token is not None:
+        kwargs["resume_token"] = req.resume_token
     return verify_article_develop(
         req.text,
-        title=req.title,
-        date=req.date,
-        date_source=req.date_source,
-        clarification_answers=req.clarification_answers,
+        **kwargs,
     )
 
 

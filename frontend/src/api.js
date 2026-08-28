@@ -68,6 +68,7 @@ export async function verifyArticleDevelop(text, {
   date = "",
   dateSource = null,
   clarificationAnswers = [],
+  resumeToken = null,
 } = {}) {
   const response = await apiFetch("/v1/verify/develop", {
     method: "POST",
@@ -77,6 +78,7 @@ export async function verifyArticleDevelop(text, {
       date,
       date_source: dateSource,
       clarification_answers: clarificationAnswers,
+      ...(resumeToken ? { resume_token: resumeToken } : {}),
       ...(conversationId ? { conversation_id: conversationId } : {}),
     }),
   });

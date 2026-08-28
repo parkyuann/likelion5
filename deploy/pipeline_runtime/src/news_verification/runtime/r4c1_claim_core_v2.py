@@ -558,7 +558,9 @@ def _monthly_structured_period_v2h(row: Mapping[str, Any]) -> str:
     return value if re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", value) else ""
 
 
-def _monthly_anchor_v2h(raw_text: str, article_date: str) -> tuple[str, dict[str, Any], str | None]:
+def _monthly_anchor_v2h(
+    raw_text: str, article_date: str, *, date_source: str = "client_asserted",
+) -> tuple[str, dict[str, Any], str | None]:
     anchor = date.fromisoformat(article_date)
     anchor_month = (anchor.year, anchor.month)
     normalized = re.sub(r"\s+", " ", raw_text).strip()
@@ -597,7 +599,7 @@ def _monthly_anchor_v2h(raw_text: str, article_date: str) -> tuple[str, dict[str
         "contract_version": "monthly-period-anchor-v2h",
         "raw_text": raw_text,
         "article_date": article_date,
-        "date_source": "client_asserted",
+        "date_source": date_source,
         "rule_id": rule_id,
         "calculation_branch": branch,
         "structured_period": structured,
@@ -617,12 +619,22 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
         hashlib.sha256(article_text.encode("utf-8")).hexdigest()
         if isinstance(article_text, str) else None
     )
+    legacy_date_provenance = (
+        isinstance(date_receipt, Mapping)
+        and date_receipt.get("date_source") == "client_asserted"
+        and date_receipt.get("source_path") in {"terminal_argument", "backend_request"}
+    )
+    clarification_date_provenance = (
+        isinstance(date_receipt, Mapping)
+        and date_receipt.get("date_source") == "user_feedback"
+        and date_receipt.get("source_path") == "clarification_context"
+        and bool(re.fullmatch(r"[0-9a-fA-F]{64}", str(date_receipt.get("answer_sha256") or "")))
+    )
     date_valid = (
         isinstance(article_text, str)
         and bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", article_date))
         and isinstance(date_receipt, Mapping)
-        and date_receipt.get("date_source") == "client_asserted"
-        and date_receipt.get("source_path") in {"terminal_argument", "backend_request"}
+        and (legacy_date_provenance or clarification_date_provenance)
         and date_receipt.get("date_field") == "date"
         and date_receipt.get("article_text_sha256") == article_sha
         and bool(re.fullmatch(r"[0-9a-f]{64}", str(date_receipt.get("article_text_sha256") or "")))
@@ -729,7 +741,8 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
 
     structured_period = _monthly_structured_period_v2h(row)
     calculated_period, anchor_receipt, anchor_error = _monthly_anchor_v2h(
-        period_evidence["text"], article_date
+        period_evidence["text"], article_date,
+        date_source=str(date_receipt.get("date_source") or "client_asserted"),
     )
     if anchor_error:
         raise MonthlyClaimProvenanceError(

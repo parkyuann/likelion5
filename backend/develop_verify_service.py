@@ -27,6 +27,7 @@ from typing import Any
 
 from backend.errors import BackendError
 from backend.runtime_gate import pipeline_live_stage_enabled
+from backend.verification_checkpoint_store import CheckpointError, consume as consume_checkpoint, create as create_checkpoint, discard as discard_checkpoint, update_context
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "configs" / "pipeline_operational_v2.json"
@@ -146,6 +147,81 @@ def _clarification_response(question: dict[str, Any], reason: str) -> dict[str, 
     }
 
 
+def _with_checkpoint(
+    response: dict[str, Any], *, token: str, resume_from_stage: str,
+) -> dict[str, Any]:
+    return {**response, "resume_token": token, "resume_from_stage": resume_from_stage}
+
+
+def _runtime_fingerprint() -> str:
+    runtime_root = _pipeline_runtime_root()
+    files = (
+        runtime_root / "src" / "develop" / "run_article_body_pipeline_trace_v1.py",
+        runtime_root / "src" / "news_verification" / "runtime" / "run_pipeline_operational_v2.py",
+        ROOT / "backend" / "verification_checkpoint_store.py",
+    )
+    if any(not path.is_file() for path in files):
+        return ""
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(str(path.resolve()).replace("\\", "/").encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _config_fingerprint() -> str:
+    path = _pipeline_config_path()
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+
+
+def _pending_article_date_from_live(
+    out_root: Path, *, body: str = "", article_date: str = "",
+) -> dict[str, Any] | None:
+    """Project date-provenance or relative-period holds into a date question."""
+    for row in _read_jsonl(out_root / "04_stage_ledger.jsonl"):
+        resolution = row.get("resolution")
+        if isinstance(resolution, dict):
+            code = str(resolution.get("hold_reason") or resolution.get("reason") or "")
+        else:
+            code = str(resolution or "")
+        relative_period_without_date = (
+            not article_date
+            and code == "PERIOD_INVALID"
+            and bool(_RELATIVE_PERIOD_PATTERN.search(body))
+        )
+        if code == "ARTICLE_DATE_PROVENANCE_INVALID" or relative_period_without_date:
+            return _clarification_response(
+                {
+                    "role": "article_date",
+                    "prompt": "기사의 상대 시점을 정확한 통계 시점으로 바꾸려면 기사 발행일이 필요합니다. 기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+                    "input_mode": "DATE",
+                    "options": [],
+                },
+                code,
+            )
+    return None
+
+
+def _public_answer_text(value: Any) -> str:
+    text = str(value or "")
+    replacements = {
+        "ARTICLE_DATE_PROVENANCE_INVALID": "기사 발행일을 기준으로 통계 시점을 확정할 수 없습니다.",
+        "PERIOD_INVALID": "기사의 통계 시점을 현재 지원하는 형식으로 확정하지 못했습니다.",
+        "PERIOD_UNSUPPORTED": "현재 지원하는 통계 주기로 확인하지 못했습니다.",
+        "RANK_TIE_POLICY_PENDING": "동률 처리 기준이 없어 순위 주장은 확인하지 못했습니다.",
+    }
+    for code, message in replacements.items():
+        text = text.replace(code, message)
+    text = re.sub(
+        r"\b(?:ARTICLE|PERIOD|ANNUAL|RANK|QUERY|PROFILE|CELL|RESUME)_[A-Z0-9_:-]+\b",
+        "추가 근거를 확인하지 못했습니다.",
+        text,
+    )
+    return text
+
+
 def _pending_clarification(out_root: Path) -> dict[str, Any] | None:
     candidates: list[tuple[int, dict[str, Any], str]] = []
     for row in _read_jsonl(out_root / "04_stage_ledger.jsonl"):
@@ -253,6 +329,9 @@ def _load_trace_runner() -> tuple[Any, type[Exception]]:
         sys.path.insert(0, root_text)
     try:
         module = importlib.import_module("src.develop.run_article_body_pipeline_trace_v1")
+        # Keep the public loader tuple backward compatible while exposing the
+        # continuation primitive to the service.
+        setattr(module.run_trace, "_prepare_resume", module.prepare_resume)
         return module.run_trace, module.TraceStageError
     except Exception as exc:
         raise BackendError(
@@ -277,9 +356,44 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+_ROUTED_FAMILY_SUFFIXES = (
+    "증가율", "감소율", "상승률", "하락률", "증감률", "변화율", "변동률",
+    "증가량", "감소량", "상승량", "하락량", "증감량", "변화량", "변동량",
+    "증가폭", "감소폭", "상승폭", "하락폭", "증감폭", "변화폭", "변동폭",
+    "증가 폭", "감소 폭", "상승 폭", "하락 폭", "증감 폭", "변화 폭", "변동 폭",
+    "건수", "규모", "수준", "수",
+)
+_ROUTED_FREQUENCY_PREFIX_RE = re.compile(r"^(?:월별)\s+")
+
+
+def _routed_indicator_family_key(value: Any) -> str:
+    """Normalize closed measurement-role suffixes for article-wide grouping."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = _ROUTED_FREQUENCY_PREFIX_RE.sub("", text)
+    while text:
+        for suffix in _ROUTED_FAMILY_SUFFIXES:
+            if text.endswith(suffix):
+                text = text[: -len(suffix)].strip()
+                break
+        else:
+            break
+    return text
+
+
 def _deterministic_claim_query_from_routed(out_root: Path) -> str | None:
-    """Build the live selector query from the first routed LEVEL claim only."""
-    for row in _read_jsonl(out_root / "03_routed.jsonl"):
+    """Build a single-family live selector query; preserve multi-family rows."""
+    routed_rows = _read_jsonl(out_root / "03_routed.jsonl")
+    families: set[str] = set()
+    for row in routed_rows:
+        fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), dict) else {}
+        indicator = fields.get("indicator") or row.get("indicator") or row.get("indicator_label")
+        family = _routed_indicator_family_key(indicator)
+        if family:
+            families.add(family)
+    if len(families) > 1:
+        return None
+
+    for row in routed_rows:
         fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), dict) else {}
         measurement_type = str(
             fields.get("measurement_type") or row.get("measurement_type") or ""
@@ -353,12 +467,12 @@ def _sentence_segment(
         "text": text,
         "verifiable": True,
         "verdict": verdict,
-        "answer": str(answer.get("explanation") or answer.get("headline") or ""),
+        "answer": _public_answer_text(answer.get("explanation") or answer.get("headline") or ""),
     }
     evidence_answer = answer.get("evidence_answer")
     if isinstance(evidence_answer, dict) and str(evidence_answer.get("text") or "").strip():
         segment["evidence_answer"] = evidence_answer
-        segment["answer"] = str(evidence_answer["text"])
+        segment["answer"] = _public_answer_text(evidence_answer["text"])
     table = _live_table(ledger_for_sentence.get(sid) or {})
     if table:
         segment["table"] = table
@@ -434,6 +548,7 @@ def verify_article_develop(
     date: str | None = "",
     date_source: str | None = None,
     clarification_answers: Any = None,
+    resume_token: str | None = None,
 ) -> dict[str, Any]:
     """기사 본문을 develop 파이프라인으로 검증하고 프론트 표시 계약으로 반환한다.
 
@@ -450,6 +565,12 @@ def verify_article_develop(
         return {"type": "not_article", "reason": "question"}
 
     clarification_history = _validate_clarification_answers(clarification_answers)
+    if clarification_history and not resume_token:
+        raise BackendError(
+            "RESUME_CHECKPOINT_REQUIRED",
+            "추가 입력을 이어서 처리할 검증 체크포인트가 없습니다. 원문을 다시 제출해 주세요.",
+            status_code=409,
+        )
     evidence_first_statistics = _evidence_first_statistics_enabled_monthly_v2h()
     normalized_date = normalize_article_date(
         date, None if evidence_first_statistics else date_source
@@ -466,47 +587,90 @@ def verify_article_develop(
     # PENDING 경로가 먼저 닫힌 뒤, explicit article만 승인된 closure를 지연 로드한다.
     run_trace, trace_stage_error = _load_trace_runner()
     live = pipeline_live_stage_enabled()
-    article_id = uuid.uuid4().hex
     article_body_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    workdir = Path(tempfile.mkdtemp(prefix="verify_develop_"))
-    articles_path = workdir / "articles.jsonl"
-    out_root = workdir / "out"
-    articles_path.write_text(
-        json.dumps(
-            {
-                "article_idx": article_id,
-                "title": title.strip() or "제목 미상 기사",
-                "date": article_date,
-                "article_text": body,
-                "clarification_answers": clarification_history,
-                "article_date_provenance": (
-                    build_article_date_provenance_monthly_v2h(body)
-                    if evidence_first_statistics else
-                    {
-                        "date_source": article_date_source,
-                        "date_field": "date",
-                        "article_text_sha256": article_body_sha256,
-                    }
-                ),
-            },
-            ensure_ascii=False,
+    config_sha256 = _config_fingerprint()
+    runtime_fingerprint = _runtime_fingerprint()
+    supplied_title = title.strip() or "제목 미상 기사"
+    checkpoint = None
+    if resume_token:
+        try:
+            checkpoint = consume_checkpoint(
+                resume_token,
+                article_body_sha256=article_body_sha256,
+                title=supplied_title,
+                clarification_history=clarification_history,
+                runtime_fingerprint=runtime_fingerprint,
+                config_sha256=config_sha256,
+            )
+        except CheckpointError as exc:
+            raise BackendError(
+                exc.code,
+                "이전 검증을 이어서 처리할 수 없습니다. 원문을 다시 제출해 주세요.",
+                status_code=409,
+            ) from None
+        workdir = checkpoint.root
+        articles_path = checkpoint.article_path
+        out_root = checkpoint.output_root
+        article_id = str(checkpoint.metadata.get("article_id") or "")
+        update_context(checkpoint, clarification_history)
+        resume_from_stage = str(checkpoint.metadata.get("resume_from_stage") or "")
+    else:
+        article_id = uuid.uuid4().hex
+        workdir = Path(tempfile.mkdtemp(prefix="verify_develop_"))
+        articles_path = workdir / "articles.jsonl"
+        out_root = workdir / "out"
+        articles_path.write_text(
+            json.dumps(
+                {
+                    "article_idx": article_id,
+                    "title": supplied_title,
+                    "date": article_date,
+                    "article_text": body,
+                    "article_date_provenance": (
+                        build_article_date_provenance_monthly_v2h(body)
+                        if evidence_first_statistics else
+                        {
+                            "date_source": article_date_source,
+                            "date_field": "date",
+                            "article_text_sha256": article_body_sha256,
+                        }
+                    ),
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
-    )
+        resume_from_stage = ""
+    preserve_workdir = False
 
     def _value_claim_count() -> int:
         rows = _read_jsonl(out_root / "01_value_candidates.jsonl")
         return sum(1 for row in rows if row.get("kind") == "value_unit")
 
     try:
-        # L1(결정론적·HCX 없음)로 검증 대상 수치 주장이 있는지 먼저 판별한다.
-        run_trace(articles_path=articles_path, output_root=out_root, stage="l1")
+        # L1(결정론적·HCX 없음)은 최초 실행에서만 수행한다.  Resume은
+        # 봉인된 01/02 산출물의 존재와 cardinality를 그대로 사용한다.
+        if not resume_token:
+            run_trace(articles_path=articles_path, output_root=out_root, stage="l1")
         if _value_claim_count() == 0:
             # 수치 주장이 없으면 기사가 아니다(질문·잡담). 상위 라우터가 처리하도록 신호만 준다.
             return {"type": "not_article", "reason": "no_numeric_claims"}
-        # 수치 주장이 있으면 나머지 단계를 진행한다(인프라 있으면 live까지).
-        remaining = ["l2", "layers"] + (["live"] if live else [])
+        # Checkpoint continuation starts only at the stage recorded when the
+        # question was issued.  L1/L2 artifacts are immutable and never rerun.
+        if resume_token:
+            if resume_from_stage not in {"layers", "live"}:
+                raise BackendError("RESUME_CHECKPOINT_INVALID", "검증 재개 단계가 올바르지 않습니다.", status_code=409)
+            prepare_resume = getattr(run_trace, "_prepare_resume", None)
+            if prepare_resume is None:
+                raise BackendError("RESUME_CHECKPOINT_UNSUPPORTED", "현재 pipeline runtime은 재개를 지원하지 않습니다.", status_code=409)
+            prepare_resume(out_root, resume_from_stage)
+            remaining = [resume_from_stage]
+            if resume_from_stage == "layers" and live:
+                remaining.append("live")
+        else:
+            # 수치 주장이 있으면 나머지 단계를 진행한다(인프라 있으면 live까지).
+            remaining = ["l2", "layers"] + (["live"] if live else [])
         for stage in remaining:
             live_kwargs: dict[str, Any] = {}
             if stage == "live":
@@ -514,6 +678,8 @@ def verify_article_develop(
                     "claim_query": _deterministic_claim_query_from_routed(out_root),
                     "role_aware_dimension_shadow": True,
                 }
+            if resume_token:
+                live_kwargs["clarification_context_path"] = checkpoint.context_path
             run_trace(
                 articles_path=articles_path,
                 output_root=out_root,
@@ -524,10 +690,43 @@ def verify_article_develop(
             )
         segments = _project_segments(out_root, body, live=live)
         if live and len(clarification_history) < 3:
-            pending = _pending_clarification(out_root)
+            pending = _pending_article_date_from_live(
+                out_root, body=body, article_date=article_date,
+            )
+            if pending is None:
+                pending = _pending_clarification(out_root)
             if pending is None and not article_date:
                 pending = _pending_article_date_from_routed(out_root)
             if pending:
+                resume_from = "layers" if pending.get("question", {}).get("role") in {"article_date", "period"} else "live"
+                if checkpoint is None:
+                    source_workdir = workdir
+                    checkpoint = create_checkpoint(
+                        workdir=workdir,
+                        article_body_sha256=article_body_sha256,
+                        title=supplied_title,
+                        article_id=article_id,
+                        clarification_history=clarification_history,
+                        runtime_fingerprint=runtime_fingerprint,
+                        config_sha256=config_sha256,
+                        resume_from_stage=resume_from,
+                    )
+                    shutil.rmtree(source_workdir, ignore_errors=True)
+                else:
+                    next_checkpoint = create_checkpoint(
+                        workdir=workdir,
+                        article_body_sha256=article_body_sha256,
+                        title=supplied_title,
+                        article_id=article_id,
+                        clarification_history=clarification_history,
+                        runtime_fingerprint=runtime_fingerprint,
+                        config_sha256=config_sha256,
+                        resume_from_stage=resume_from,
+                    )
+                    discard_checkpoint(checkpoint)
+                    checkpoint = next_checkpoint
+                preserve_workdir = True
+                pending = _with_checkpoint(pending, token=checkpoint.token, resume_from_stage=resume_from)
                 return {
                     **pending,
                     "title": title,
@@ -535,6 +734,8 @@ def verify_article_develop(
                     "date_source": article_date_source,
                     "clarification_history": clarification_history,
                 }
+    except BackendError:
+        raise
     except trace_stage_error as exc:
         code = str(exc.args[0]) if exc.args else "PIPELINE_FAILED"
         raise BackendError(
@@ -551,7 +752,11 @@ def verify_article_develop(
             status_code=502,
         ) from None
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        if not preserve_workdir:
+            if checkpoint is not None:
+                discard_checkpoint(checkpoint)
+            else:
+                shutil.rmtree(workdir, ignore_errors=True)
 
     counts = {"match": 0, "mismatch": 0, "unverifiable": 0}
     for segment in segments:

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from dataclasses import asdict, dataclass
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field
 from datetime import date as calendar_date, datetime, timezone
 import hashlib
 import json
@@ -33,9 +34,11 @@ from src.news_verification.runtime.operational_answer_v2 import Hcx007AnswerClie
 from src.news_verification.runtime.same_series_evidence_v1 import (
     FEATURE_GATE_ENV,
     SameSeriesEvidenceError,
+    indicator_family_key,
     select_primary_target,
     synthesize_same_series_evidence,
 )
+from src.develop.annual_requery_shadow_v1 import AnnualRequeryError, verify_annual_requery
 from src.news_verification.runtime.operational_gpu_receipts_v2 import GpuReceiptError, validate_gpu_receipts
 from src.news_verification.runtime.operational_live_adapters_v2 import (
     CountingAdapter,
@@ -80,9 +83,18 @@ from src.news_verification.runtime.operational_retrieval_v2 import (
     retrieve_parallel,
 )
 from src.news_verification.runtime.r4c1_claim_core_v2 import (
+    ClaimAtom,
+    ClaimCore,
     MonthlyClaimProvenanceError,
     build_claim_core_monthly_v2h,
     build_claim_core_v2,
+    canonical_bytes,
+)
+from src.news_verification.runtime.l4_field_normalization import (
+    NO_BASIS,
+    YOY,
+    comparison_basis,
+    comparison_basis_monthly_v2h,
 )
 from src.news_verification.contracts.query_plan_inventory import validate_query_plan_inventory
 from src.news_verification.runtime.services.terminal_partition import build_terminal_partition
@@ -95,6 +107,7 @@ from src.news_verification.runtime.r4c1_projection_v2 import (
     project_candidate_monthly_v2j,
     project_candidate_monthly_v2h,
     project_candidate_v2,
+    _query_plan,
     validate_target_monthly_v2h,
     validate_target_v2,
 )
@@ -134,7 +147,35 @@ def source_sentence(*args: Any, **kwargs: Any) -> Any:
     return role_aware_dimension_api()[4](*args, **kwargs)
 
 
+def _preserve_role_aware_sentence_inventory(
+    row: dict[str, Any], article_text: str, sentence: str,
+) -> tuple[Any, str]:
+    """Update the current sentence without dropping inherited source context."""
+    existing = row.get("sentences")
+    sentences = dict(existing) if isinstance(existing, Mapping) else {}
+    current_id = row.get("article_sentence_id", row.get("sentence_id"))
+    if current_id is not None:
+        sentences[current_id] = sentence
+
+    source_id = row.get("source_region_sentence_id")
+    source_id_text = str(source_id).strip() if source_id is not None else ""
+    try:
+        int(source_id)
+    except (TypeError, ValueError):
+        source_id_valid = False
+    else:
+        source_id_valid = bool(source_id_text) and source_id_text.casefold() != "none"
+    source_text = ""
+    if source_id_valid:
+        source_text = str(source_sentence(article_text, source_id) or "")
+        sentences[source_id] = source_text
+    row["sentences"] = sentences
+    return source_id, source_text
+
+
 CONTRACT_VERSION = "kosis-operational-article-verification-v2"
+RELEASE_BOUND_DOMINANCE_RULE_ID = "release-bound-evidence-specificity-dominance-v1"
+RELEASE_BOUND_DOMINANCE_RULE_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -512,6 +553,31 @@ def _bounded_exception_code(exc: BaseException, fallback: str, allowed: set[str]
     return candidate if candidate in allowed else fallback
 
 
+_ANNUAL_REQUERY_REASON_CODES = frozenset({
+    "ANNUAL_FREQUENCY_REQUIRED",
+    "SINGLE_ANNUAL_CELL_REQUIRED",
+    "BASELINE_MUST_PRECEDE_MEASUREMENT",
+    "REQUERY_SERIES_MUTATED",
+    "CURRENT_TARGET_NOT_FOUND",
+    "ANNUAL_CHANGE_NOT_UNIQUE",
+    "ANNUAL_MEASUREMENT_UNSUPPORTED",
+    "CURRENT_CELL_NOT_RESOLVED",
+    "BASELINE_CELL_NOT_RESOLVED",
+    "OFFICIAL_CELL_NOT_NUMERIC",
+    "BASELINE_ZERO",
+})
+
+
+def _bounded_annual_requery_reason(exc: BaseException) -> str:
+    """Return only a registered annual reason, without exposing exception text."""
+    prefix = str(exc).strip().split(":", 1)[0].strip()
+    return (
+        prefix
+        if prefix in _ANNUAL_REQUERY_REASON_CODES
+        else "ANNUAL_REQUERY_NOT_EVALUATED"
+    )
+
+
 def _sha_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -533,7 +599,10 @@ _CLARIFICATION_PERIOD_RE = re.compile(
 )
 
 
-def _load_articles_for_clarification(path: str | Path) -> list[dict[str, Any]]:
+def _load_articles_for_clarification(
+    path: str | Path,
+    clarification_context_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
     """Live input loader that defers a missing date to the binding stage."""
     source = Path(path)
     try:
@@ -563,13 +632,85 @@ def _load_articles_for_clarification(path: str | Path) -> list[dict[str, Any]]:
                 raise LiveAdapterError("ARTICLE_DATE_INVALID") from exc
         seen.add(article_id)
         result.append({**row, "article_idx": article_id, "title": title, "article_text": body, "date": published})
-    return result
+    if clarification_context_path is None:
+        return result
+    try:
+        context_path = Path(clarification_context_path).resolve()
+        context = _read_json(context_path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, OperationalPipelineError) as exc:
+        raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID") from exc
+    answers = context.get("clarification_answers")
+    expected_sha = str(context.get("article_body_sha256") or "")
+    if context.get("contract_version") != "clarification-context-v1" or not isinstance(answers, list) or len(answers) > 3:
+        raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID")
+    if expected_sha and any(
+        hashlib.sha256(str(row.get("article_text") or "").encode("utf-8")).hexdigest() != expected_sha
+        for row in result
+    ):
+        raise LiveAdapterError("CLARIFICATION_CONTEXT_FINGERPRINT_MISMATCH")
+    hydrated: list[dict[str, Any]] = []
+    date_answers = [
+        answer
+        for answer in answers
+        if isinstance(answer, Mapping) and str(answer.get("role") or "").strip() == "article_date"
+    ]
+    for row in result:
+        updated = {**row, "clarification_answers": list(answers)}
+        if date_answers:
+            answer = date_answers[-1]
+            body_sha = hashlib.sha256(str(updated["article_text"]).encode("utf-8")).hexdigest()
+            try:
+                date_provenance = _article_date_provenance_from_clarification(
+                    answer,
+                    article_text_sha256=body_sha,
+                )
+            except OperationalPipelineError as exc:
+                raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID") from exc
+            resolved_date = str(answer.get("value") or "").strip()
+            updated["date"] = resolved_date
+            updated["article_date"] = resolved_date
+            updated["article_date_provenance"] = date_provenance
+        hydrated.append(updated)
+    return hydrated
 
 
 def _clarification_answer_sha(answer: Mapping[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(dict(answer), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _article_date_provenance_from_clarification(
+    answer: Mapping[str, Any],
+    *,
+    article_text_sha256: str,
+) -> dict[str, str]:
+    question_id = str(answer.get("question_id") or "").strip()
+    role = str(answer.get("role") or "").strip()
+    value = str(answer.get("value") or "").strip()
+    if (
+        question_id != "clarify-article_date"
+        or role != "article_date"
+        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+    ):
+        raise OperationalPipelineError("CLARIFICATION_INVALID")
+    try:
+        calendar_date.fromisoformat(value)
+    except ValueError as exc:
+        raise OperationalPipelineError("CLARIFICATION_INVALID") from exc
+    answer_sha = _clarification_answer_sha(
+        {"question_id": question_id, "role": role, "value": value}
+    )
+    return {
+        "source": "USER_CLARIFICATION",
+        "question_id": question_id,
+        "role": role,
+        "date_source": "user_feedback",
+        "source_path": "clarification_context",
+        "date_field": "date",
+        "article_text_sha256": article_text_sha256,
+        "answer_sha256": answer_sha,
+    }
 
 
 def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any]) -> dict[str, Any]:
@@ -610,11 +751,13 @@ def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any
         }
         clarifications[role] = record
         if role == "article_date":
+            article_text = str(article.get("article_text") or row.get("article_text") or "")
             merged["article_date"] = value
-            merged["article_date_provenance"] = {
-                "source": "USER_CLARIFICATION", "question_id": question_id, "role": role,
-                "answer_sha256": record["answer_sha256"],
-            }
+            merged["date"] = value
+            merged["article_date_provenance"] = _article_date_provenance_from_clarification(
+                {"question_id": question_id, "role": role, "value": value},
+                article_text_sha256=hashlib.sha256(article_text.encode("utf-8")).hexdigest(),
+            )
         elif role == "period":
             normalized = value.replace("-", ".")
             if "년" in value:
@@ -921,6 +1064,30 @@ class Top50Resolution:
     projections: tuple[CandidateProjection, ...]
     candidate_membership: tuple[str, ...]
     projected_count: int
+    # Generic resolution used to carry only the four fields above.  Keep
+    # defaults so existing positional construction remains source-compatible,
+    # while pinning the already-read profiles for the live selection step.
+    pinned_raw_profiles: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    pinned_projection_profiles: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+
+
+def _pin_profile_snapshots(
+    scope: Sequence[str],
+    profiles: Sequence[Mapping[str, Any] | None],
+) -> Mapping[str, Mapping[str, Any]]:
+    """Freeze in-memory profile snapshots without performing a provider read."""
+
+    pinned: dict[str, Mapping[str, Any]] = {}
+    for table_key, profile in zip(scope, profiles):
+        if isinstance(profile, Mapping):
+            # Copy before exposing the snapshot so a transform or later
+            # caller mutation cannot alter the profile used for the receipt.
+            pinned[str(table_key)] = MappingProxyType(deepcopy(dict(profile)))
+    return MappingProxyType(pinned)
 
 
 @dataclass(frozen=True)
@@ -1227,6 +1394,228 @@ def resolve_top50_monthly_v2j(
     )
 
 
+def _release_bound_item_specificity(assignment: CandidateAssignment) -> dict[str, Any]:
+    item = next(
+        (binding for binding in assignment.bindings if binding.axis_kind == "ITEM"),
+        None,
+    )
+    evidence = item.evidence if item is not None else {}
+    consumed = evidence.get("consumed_span") if isinstance(evidence, Mapping) else None
+    source_backed = bool(
+        isinstance(consumed, Mapping)
+        and isinstance(consumed.get("start"), int)
+        and isinstance(consumed.get("end"), int)
+        and consumed.get("end") > consumed.get("start")
+        and bool(consumed.get("text"))
+    )
+    binding_basis = str(item.binding_basis if item is not None else "")
+    exact_or_semantic = binding_basis in {"EXACT_LABEL", "SEMANTIC_ALIAS"} or (
+        isinstance(evidence, Mapping)
+        and str(evidence.get("match_rule") or "").endswith("semantic_alias")
+    )
+    specific = source_backed and exact_or_semantic and binding_basis != "SINGLETON_INVENTORY"
+    return {
+        "source_backed_consumed_span": source_backed,
+        "exact_or_semantic_item": exact_or_semantic,
+        "binding_basis": binding_basis,
+        "score": 1 if specific else 0,
+    }
+
+
+def _release_bound_geo_binding(binding: Any) -> bool:
+    if getattr(binding, "axis_kind", "") != "DIMENSION":
+        return False
+    if getattr(binding, "binding_basis", "") != "DISCLOSED_NATIONWIDE_DEFAULT":
+        return False
+    evidence = getattr(binding, "evidence", {})
+    disclosure = evidence.get("inference_disclosure") if isinstance(evidence, Mapping) else None
+    return isinstance(disclosure, Mapping) and disclosure.get("rule_id") == "unqualified-geographic-axis-nationwide"
+
+
+def _release_bound_semantic_signature(assignment: CandidateAssignment) -> tuple[Any, ...]:
+    return tuple(
+        (
+            binding.axis_kind,
+            binding.axis_id,
+            binding.value_id,
+            binding.bound_atom,
+        )
+        for binding in assignment.bindings
+        if not _release_bound_geo_binding(binding)
+    )
+
+
+def _release_bound_geo_signature(assignment: CandidateAssignment) -> tuple[Any, ...]:
+    result: list[tuple[Any, ...]] = []
+    for binding in assignment.bindings:
+        if not _release_bound_geo_binding(binding):
+            continue
+        evidence = binding.evidence if isinstance(binding.evidence, Mapping) else {}
+        value_evidence = evidence.get("value_evidence") if isinstance(evidence.get("value_evidence"), Mapping) else {}
+        result.append(
+            (
+                binding.value_id,
+                str(value_evidence.get("profile_label") or evidence.get("profile_label") or ""),
+            )
+        )
+    return tuple(result)
+
+
+def _release_bound_geo_cardinality(
+    assignment: CandidateAssignment, profile: Mapping[str, Any] | None,
+) -> tuple[int, ...] | None:
+    if not isinstance(profile, Mapping):
+        return None
+    dimensions = profile.get("dimensions")
+    if not isinstance(dimensions, list):
+        return None
+    cardinalities: list[int] = []
+    for binding in assignment.bindings:
+        if not _release_bound_geo_binding(binding):
+            continue
+        evidence = binding.evidence if isinstance(binding.evidence, Mapping) else {}
+        axis_evidence = evidence.get("axis_evidence") if isinstance(evidence.get("axis_evidence"), Mapping) else {}
+        path = str(axis_evidence.get("profile_inventory_path") or "")
+        match = re.fullmatch(r"dimensions\[(\d+)\]", path)
+        if match is None:
+            return None
+        index = int(match.group(1))
+        if index >= len(dimensions) or not isinstance(dimensions[index], Mapping):
+            return None
+        values = dimensions[index].get("values")
+        if not isinstance(values, list) or not values:
+            return None
+        cardinalities.append(len(values))
+    return tuple(cardinalities) if cardinalities else None
+
+
+def _release_bound_candidate_receipt(
+    assignment: CandidateAssignment, profile: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    item = _release_bound_item_specificity(assignment)
+    geo_bindings = [binding for binding in assignment.bindings if _release_bound_geo_binding(binding)]
+    dimension_bindings = [binding for binding in assignment.bindings if binding.axis_kind == "DIMENSION"]
+    cardinality = _release_bound_geo_cardinality(assignment, profile)
+    return {
+        "table_key": assignment.table_key,
+        "signature": str(assignment.signature),
+        "item_specificity": item,
+        "components": {
+            "non_geo_semantic_signature": str(_release_bound_semantic_signature(assignment)),
+            "geo_signature": str(_release_bound_geo_signature(assignment)),
+            "all_geographic_axes_disclosed_nationwide": bool(dimension_bindings) and len(geo_bindings) == len(dimension_bindings),
+            "geo_dimension_cardinality": list(cardinality) if cardinality is not None else None,
+        },
+        "score": {
+            "item_source_specificity": item["score"],
+            "coarser_geo_cardinality": -min(cardinality) if cardinality else None,
+        },
+    }
+
+
+def _apply_release_bound_evidence_specificity_dominance(
+    resolution: TargetResolution,
+    projections: Sequence[CandidateProjection],
+    profiles_by_table: Mapping[str, Mapping[str, Any] | None],
+) -> TargetResolution:
+    if resolution.hold_reason != "MULTIPLE_COMPATIBLE_SERIES":
+        return resolution
+    records = [
+        {
+            "assignment": assignment,
+            "receipt": _release_bound_candidate_receipt(
+                assignment, profiles_by_table.get(assignment.table_key)
+            ),
+        }
+        for projection in projections
+        for assignment in projection.assignments
+    ]
+    receipt: dict[str, Any] = {
+        "rule_id": RELEASE_BOUND_DOMINANCE_RULE_ID,
+        "rule_version": RELEASE_BOUND_DOMINANCE_RULE_VERSION,
+        "candidates": [row["receipt"] for row in records],
+        "score_components": [
+            "item_source_specificity",
+            "coarser_geo_cardinality",
+        ],
+        "chosen_table": None,
+        "decision": "NOT_UNIQUE",
+    }
+    if not records:
+        return resolution
+
+    specific = [
+        row for row in records if row["receipt"]["item_specificity"]["score"] == 1
+    ]
+    considered = specific if specific else records
+    if len(considered) == 1:
+        chosen = considered[0]["assignment"]
+    else:
+        semantic_groups = {
+            _release_bound_semantic_signature(row["assignment"])
+            for row in considered
+        }
+        geo_groups = {
+            _release_bound_geo_signature(row["assignment"])
+            for row in considered
+        }
+        all_nationwide = all(
+            row["receipt"]["components"]["all_geographic_axes_disclosed_nationwide"]
+            for row in considered
+        )
+        cardinalities = [
+            _release_bound_geo_cardinality(
+                row["assignment"], profiles_by_table.get(row["assignment"].table_key)
+            )
+            for row in considered
+        ]
+        valid_cardinalities = all(value is not None and len(value) == 1 for value in cardinalities)
+        chosen = None
+        if len(semantic_groups) == 1 and len(geo_groups) == 1 and all_nationwide and valid_cardinalities:
+            minimum = min(value[0] for value in cardinalities if value is not None)
+            winners = [
+                row for row, value in zip(considered, cardinalities)
+                if value is not None and value[0] == minimum
+            ]
+            if len(winners) == 1:
+                chosen = winners[0]["assignment"]
+
+    if chosen is None:
+        return TargetResolution(
+            resolution.outcome,
+            resolution.hold_reason,
+            resolution.query_plan,
+            resolution.chosen_table_key,
+            resolution.compatible_series,
+            {**resolution.audit, "release_bound_evidence_specificity_dominance": receipt},
+            hashlib.sha256(
+                canonical_bytes({
+                    "outcome": resolution.outcome,
+                    "hold_reason": resolution.hold_reason,
+                    "query_plan": resolution.query_plan,
+                    "chosen_table_key": resolution.chosen_table_key,
+                    "compatible_series": resolution.compatible_series,
+                    "audit": {**resolution.audit, "release_bound_evidence_specificity_dominance": receipt},
+                })
+            ).hexdigest(),
+        )
+    plan = _query_plan(chosen)
+    if plan is None:
+        return resolution
+    receipt["chosen_table"] = chosen.table_key
+    receipt["decision"] = "CHOSEN"
+    audit = {**resolution.audit, "release_bound_evidence_specificity_dominance": receipt}
+    data = {
+        "outcome": "QUERY_READY",
+        "hold_reason": None,
+        "query_plan": plan,
+        "chosen_table_key": chosen.table_key,
+        "compatible_series": resolution.compatible_series,
+        "audit": audit,
+    }
+    return TargetResolution(**data, canonical_sha256=hashlib.sha256(canonical_bytes(data)).hexdigest())
+
+
 def resolve_top50(
     claim_core: Any,
     ranked_candidates: Sequence[Any],
@@ -1235,14 +1624,23 @@ def resolve_top50(
     profile_transform: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     allow_unqualified_nationwide: bool = False,
     table_context_terms: Sequence[str] = (),
+    release_bound_mode: bool = False,
 ) -> Top50Resolution:
-    """Project every fixed-scope candidate before global uniqueness."""
+    """Project every fixed-scope candidate before global uniqueness.
+
+    ``release_bound_mode`` is an explicit opt-in for evidence-specificity
+    dominance.  The ordinary resolver remains unchanged when it is false.
+    """
     scope = tuple(str(getattr(row, "table_key", None) or row["table_key"]) for row in ranked_candidates[:50])
     if len(scope) != len(set(scope)):
         raise OperationalPipelineError("DUPLICATE_CANDIDATE_SCOPE")
     profiles = [profile_provider(table_key) for table_key in scope]
+    raw_profiles = tuple(profiles)
     if profile_transform is not None:
-        profiles = [profile_transform(profile) if profile is not None else None for profile in profiles]
+        profiles = [
+            profile_transform(deepcopy(profile)) if profile is not None else None
+            for profile in profiles
+        ]
     normalized_terms = [
         re.sub(r"[\s\-_./:(),]+", "", str(term or "")).casefold()
         for term in table_context_terms
@@ -1272,7 +1670,20 @@ def resolve_top50(
     if len(projections) != len(scope):
         raise OperationalPipelineError("EARLY_PROJECTION_EXIT")
     resolution = validate_target_v2(projections)
-    return Top50Resolution(resolution, projections, scope, len(projections))
+    if release_bound_mode:
+        resolution = _apply_release_bound_evidence_specificity_dominance(
+            resolution,
+            projections,
+            {table_key: profile for table_key, profile in zip(scope, profiles)},
+        )
+    return Top50Resolution(
+        resolution,
+        projections,
+        scope,
+        len(projections),
+        pinned_raw_profiles=_pin_profile_snapshots(scope, raw_profiles),
+        pinned_projection_profiles=_pin_profile_snapshots(scope, profiles),
+    )
 
 
 def assignment_for_resolution(result: Top50Resolution) -> CandidateAssignment | None:
@@ -1405,6 +1816,188 @@ def _bounded_article_date_provenance(article: Mapping[str, Any], article_text: s
     provenance.setdefault("date_field", "date")
     provenance["article_text_sha256"] = hashlib.sha256(article_text.encode("utf-8")).hexdigest()
     return provenance
+
+
+def _uses_monthly_claim_contract(row: Mapping[str, Any]) -> bool:
+    """Select monthly-v2h only for a lossless monthly source expression."""
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measurement = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    absolute = str(measurement.get("absolute") or fields.get("period_absolute") or "").strip()
+    raw = str(measurement.get("raw") or fields.get("period_raw") or "").strip()
+    return bool(
+        re.fullmatch(r"\d{4}-\d{2}", absolute)
+        and re.search(r"(?:월|month)|\d{4}[-./]\d{1,2}", raw, re.IGNORECASE)
+    )
+
+
+def _annual_claim_contract(row: Mapping[str, Any], query_plan: Mapping[str, Any]) -> bool:
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    measurement = str(fields.get("measurement_type") or "").upper()
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measure = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    absolute = str(measure.get("absolute") or fields.get("period_absolute") or "")
+    return (
+        measurement in {"LEVEL", "CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"}
+        and str(query_plan.get("prd_se") or "") in {"Y", "A"}
+        and bool(re.fullmatch(r"\d{4}", absolute))
+    )
+
+
+def _annual_change_only_row(row: Mapping[str, Any]) -> bool:
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    measurement = str(fields.get("measurement_type") or "").upper()
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measure = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    absolute = str(measure.get("absolute") or fields.get("period_absolute") or "").strip()
+    return measurement in {"CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"} and bool(
+        re.fullmatch(r"\d{4}", absolute)
+    )
+
+
+def _release_bound_annual_period_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Collapse one source-backed annual YOY duplicate only in release-bound mode."""
+    result = dict(row)
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    measurement = str(fields.get("measurement_type") or "").upper()
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measurement_period = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    current_absolute = str(
+        measurement_period.get("absolute") or fields.get("period_absolute") or ""
+    ).strip()
+    if (
+        measurement not in {"CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"}
+        or period.get("basis") not in {None, "", NO_BASIS}
+        or not re.fullmatch(r"\d{4}", current_absolute)
+    ):
+        return result
+    sentence = str(row.get("sentence_text") or "")
+    generic_basis, _generic_marker, _generic_start = comparison_basis(sentence, measurement)
+    collapsed_basis, marker, marker_start = comparison_basis_monthly_v2h(sentence, measurement)
+    if (
+        generic_basis != NO_BASIS
+        or collapsed_basis != YOY
+        or marker_start is None
+        or not marker
+    ):
+        return result
+    marker_end = marker_start + len(marker)
+    if sentence[marker_start:marker_end] != marker:
+        return result
+    baseline_absolute = str(int(current_absolute) - 1)
+    receipt = {
+        "rule_id": "release-bound-annual-yoy-same-span-collapse-v1",
+        "rule_version": 1,
+        "source_span": {
+            "start": marker_start,
+            "end": marker_end,
+            "text": sentence[marker_start:marker_end],
+        },
+        "collapsed_bases": ["YOY", "PERIOD_TO_PERIOD"],
+        "selected_basis": YOY,
+        "measurement_absolute": current_absolute,
+        "baseline_absolute": baseline_absolute,
+    }
+    normalized_period = {
+        **dict(period),
+        "basis": YOY,
+        "baseline": {"raw": marker, "absolute": baseline_absolute},
+        "release_bound_basis_receipt": receipt,
+    }
+    result["retrieval_fields"] = {**dict(fields), "period": normalized_period}
+    result["release_bound_annual_period_receipt"] = receipt
+    return result
+
+
+def _annual_change_projection_core(row: Mapping[str, Any]) -> ClaimCore:
+    """Project an annual change claim against a LEVEL item's series unit.
+
+    A percent/difference claim is an operation over two official LEVEL cells;
+    its claim unit must not be used as the profile ITEM unit during binding.
+    The original claim unit remains in the atom provenance for audit, while
+    the projection-facing unit atom is intentionally UNKNOWN.
+    """
+    core = build_claim_core_v2(row)
+    if not _annual_change_only_row(row):
+        return core
+    atoms = dict(core.atoms)
+    period_atom = atoms.get("period")
+    period_receipt = row.get("release_bound_annual_period_receipt")
+    if period_atom is not None and isinstance(period_receipt, Mapping):
+        atoms["period"] = ClaimAtom(
+            period_atom.role,
+            period_atom.surface,
+            period_atom.status,
+            {
+                **dict(period_atom.provenance),
+                "release_bound_period_basis_receipt": dict(period_receipt),
+            },
+        )
+    unit_atom = atoms.get("unit")
+    if unit_atom is None:
+        return core
+    unit_provenance = {
+        **dict(unit_atom.provenance),
+        "projection_unit_policy": "ANNUAL_CHANGE_USES_LEVEL_ITEM_UNIT",
+        "claim_unit": str(unit_atom.surface or ""),
+    }
+    atoms["unit"] = ClaimAtom("unit", "", "UNKNOWN", unit_provenance)
+    proposal = {**core.proposal_view, "unit": ""}
+    data = {
+        "atoms": {name: asdict(atom) for name, atom in atoms.items()},
+        "proposal_view": proposal,
+        "provenance": core.provenance,
+        "contract_version": core.contract_version,
+    }
+    digest = hashlib.sha256(canonical_bytes(data)).hexdigest()
+    return ClaimCore(atoms, proposal, core.provenance, core.contract_version, digest)
+
+
+def _profile_item_unit(profile: Mapping[str, Any] | None, item_id: Any) -> str:
+    if not isinstance(profile, Mapping):
+        return ""
+    expected = str(item_id or "")
+    for item in profile.get("items") or ():
+        if isinstance(item, Mapping) and str(item.get("itm_id") or "") == expected:
+            return str(item.get("unit_nm") or item.get("unit_name") or "")
+    return ""
+
+
+def _evidence_family_key(row: Mapping[str, Any]) -> tuple[str, Any, str, str]:
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    sentence_id = row.get("article_sentence_id", row.get("sentence_id"))
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measurement = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    period_absolute = str(measurement.get("absolute") or fields.get("period_absolute") or "")
+    family = indicator_family_key(str(fields.get("indicator") or row.get("indicator_label") or ""))
+    return (str(row.get("article_idx") or ""), sentence_id, family, period_absolute)
+
+
+def _evidence_family_groups(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, Any, str, str], tuple[Mapping[str, Any], ...]]:
+    groups: dict[tuple[str, Any, str, str], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+        if str(fields.get("measurement_type") or "") not in {"LEVEL", "CHANGE_RATE", "CHANGE_POINT"}:
+            continue
+        groups.setdefault(_evidence_family_key(row), []).append(row)
+    return {key: tuple(value) for key, value in groups.items()}
+
+
+def _annual_range_claim(sentence: str) -> bool:
+    """Recognize range/ranking language without assigning a value to it."""
+    return bool(re.search(r"(?:\d+년\s*만에|\d{4}년\s*이후|역대\s*\d+번째|\d+년\s*연속)", sentence))
+
+
+def _evidence_first_ledger_projection(
+    top50: Any, *, target_id: str, article_date_limitation: str,
+) -> dict[str, Any]:
+    """Project monthly-only receipt fields without weakening generic identity."""
+    return {
+        "target_id": target_id,
+        "article_date_limitation": article_date_limitation,
+        "profile_receipts": list(getattr(top50, "profile_receipts", ()) or ()),
+        "membership_receipt_sha256": getattr(top50, "membership_receipt_sha256", None),
+    }
 
 
 ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H = (
@@ -1730,6 +2323,7 @@ def run_new_articles_v2(
         tuple(MappingProxyType(dict(row)) for row in routed if isinstance(row, Mapping))
         if evidence_first_statistics_shadow else ()
     )
+    evidence_family_groups = _evidence_family_groups(routed_evidence_snapshot)
     primary_info: dict[str, Any] | None = None
     primary_selection_error: str | None = None
     if evidence_first_statistics_shadow:
@@ -1774,13 +2368,27 @@ def run_new_articles_v2(
         }
         if intent_clarification:
             query_selection = {**claim_query_selection, **primary_audit}
-        elif primary_info is None:
+        elif primary_info is None or claim_query is None and len(evidence_family_groups) != 1:
             query_fallback_selected = (
                 claim_query is not None
                 and len(routed) == 1
                 and claim_query_selection.get("status") == "SELECTED"
             )
-            if query_fallback_selected:
+            if claim_query is None and (primary_info is None or len(evidence_family_groups) != 1):
+                routed = [dict(row) for row in routed_evidence_snapshot]
+                query_selection = {
+                    **claim_query_selection,
+                    **primary_audit,
+                    "status": "FAMILY_TARGETS_PRESERVED",
+                    "value_used": False,
+                    "family_count": len(evidence_family_groups),
+                    "family_keys": [list(key) for key in sorted(evidence_family_groups, key=str)],
+                    "target_ids": [
+                        _target_id(row)
+                        for row in routed_evidence_snapshot
+                    ],
+                }
+            elif query_fallback_selected:
                 selected = dict(routed[0])
                 selected_value_span_id = str(selected.get("value_span_id") or "")
                 query_selection = {
@@ -1886,7 +2494,8 @@ def run_new_articles_v2(
                     item["sentence_id"]: item["text"]
                     for item in sentence_offset_map(article_text)
                 }
-                row = attach_indicator_evidence_monthly_v2h(row, article_text)
+                if _uses_monthly_claim_contract(row):
+                    row = attach_indicator_evidence_monthly_v2h(row, article_text)
             else:
                 row["article_date_provenance"] = _bounded_article_date_provenance(article, article_text)
         routing_class = str(row.get("routing_class") or "")
@@ -1919,7 +2528,10 @@ def run_new_articles_v2(
             })
             continue
         monthly_core = None
-        if evidence_first_statistics_shadow:
+        monthly_contract = evidence_first_statistics_shadow and _uses_monthly_claim_contract(row)
+        if release_bound_mode and not monthly_contract:
+            row = _release_bound_annual_period_row(row)
+        if monthly_contract:
             try:
                 monthly_core = build_claim_core_monthly_v2h(row)
             except MonthlyClaimProvenanceError as exc:
@@ -1956,12 +2568,11 @@ def run_new_articles_v2(
         }
         source_terms: tuple[dict[str, str], ...] = ()
         if role_aware_dimension_shadow:
-            source_text = source_sentence(article_text, row.get("source_region_sentence_id"))
+            source_id, source_text = _preserve_role_aware_sentence_inventory(
+                row, article_text, sentence,
+            )
             source_terms = extract_source_terms(source_text)
             claim_query["source_terms"] = source_terms
-            source_id = row.get("source_region_sentence_id")
-            current_id = row.get("article_sentence_id", row.get("sentence_id"))
-            row["sentences"] = {current_id: sentence, source_id: source_text}
             period_surface = str(
                 retrieval_fields.get("period_absolute") or row.get("period_raw") or ""
             ).strip()
@@ -2106,15 +2717,26 @@ def run_new_articles_v2(
         prefetch = getattr(profile_provider, "prefetch", None)
         if callable(prefetch):
             prefetch(candidate.table_key for candidate in reranked)
-        core = monthly_core if evidence_first_statistics_shadow else build_claim_core_v2(row)
-        resolver = resolve_top50_monthly_v2j if evidence_first_statistics_shadow else resolve_top50
-        top50 = resolver(
-            core, reranked, profile_provider,
-            profile_transform=infer_profile_units if role_aware_dimension_shadow else None,
-            allow_unqualified_nationwide=role_aware_dimension_shadow,
-            table_context_terms=[
+        core = (
+            monthly_core
+            if monthly_contract
+            else _annual_change_projection_core(row)
+            if release_bound_mode
+            else build_claim_core_v2(row)
+        )
+        resolver = resolve_top50_monthly_v2j if monthly_contract else resolve_top50
+        resolver_kwargs = {
+            "profile_transform": infer_profile_units if role_aware_dimension_shadow else None,
+            "allow_unqualified_nationwide": role_aware_dimension_shadow,
+            "table_context_terms": [
                 term["text"] for term in source_terms if term.get("role") == "report"
             ] if role_aware_dimension_shadow else (),
+        }
+        if not monthly_contract:
+            resolver_kwargs["release_bound_mode"] = release_bound_mode
+        top50 = resolver(
+            core, reranked, profile_provider,
+            **resolver_kwargs,
         )
         if failure_recovery_shadow and failure_recovery["retry_budget"]["used"] == 0:
             failure_recovery = plan_failure_recovery(row, top50)
@@ -2140,15 +2762,20 @@ def run_new_articles_v2(
                         corrected_reranked = rerank_top50(rerank_text, union, correction_passages, reranker)
                     if callable(prefetch):
                         prefetch(candidate.table_key for candidate in corrected_reranked)
+                    corrected_resolver_kwargs = {
+                        "profile_transform": infer_profile_units if role_aware_dimension_shadow else None,
+                        "allow_unqualified_nationwide": role_aware_dimension_shadow,
+                        "table_context_terms": [
+                            term["text"] for term in source_terms if term.get("role") == "report"
+                        ] if role_aware_dimension_shadow else (),
+                    }
+                    if not monthly_contract:
+                        corrected_resolver_kwargs["release_bound_mode"] = release_bound_mode
                     corrected_top50 = resolver(
                         core,
                         corrected_reranked,
                         profile_provider,
-                        profile_transform=infer_profile_units if role_aware_dimension_shadow else None,
-                        allow_unqualified_nationwide=role_aware_dimension_shadow,
-                        table_context_terms=[
-                            term["text"] for term in source_terms if term.get("role") == "report"
-                        ] if role_aware_dimension_shadow else (),
+                        **corrected_resolver_kwargs,
                     )
                     recovered = corrected_top50.resolution.outcome == "QUERY_READY"
                     failure_recovery = {
@@ -2191,18 +2818,13 @@ def run_new_articles_v2(
         official_unit = ""
         profile_sha256 = ""
         release_id = os.getenv("KOSIS_RELEASE_ID", "")
+        annual_requery: dict[str, Any] | None = None
         if top50.resolution.outcome == "QUERY_READY" and assignment is not None:
             chosen_key = str(top50.resolution.chosen_table_key or "")
-            if evidence_first_statistics_shadow:
-                chosen_profile = top50.pinned_raw_profiles.get(chosen_key)
-                validation_profile = top50.pinned_projection_profiles.get(chosen_key)
-            else:
-                chosen_profile = profile_provider(chosen_key)
-                validation_profile = (
-                    infer_profile_units(chosen_profile)
-                    if role_aware_dimension_shadow and chosen_profile is not None
-                    else chosen_profile
-                )
+            # Both generic and monthly resolutions pin the profiles read for
+            # projection.  Selection must not reread the backing DB/provider.
+            chosen_profile = top50.pinned_raw_profiles.get(chosen_key)
+            validation_profile = top50.pinned_projection_profiles.get(chosen_key)
             inventory_errors = (
                 validate_query_plan_inventory(top50.resolution.query_plan or {}, validation_profile, core)
                 if validation_profile is not None
@@ -2216,6 +2838,8 @@ def run_new_articles_v2(
             }
             unit_binding = next((binding for binding in assignment.bindings if binding.axis_kind == "UNIT"), None)
             official_unit = str(unit_binding.evidence.get("profile_label") if unit_binding else "")
+            if not official_unit and _annual_change_only_row(row):
+                official_unit = _profile_item_unit(validation_profile, query_plan.get("itm_id"))
             profile_sha256 = str(chosen_profile.get("profile_sha256") or "") if chosen_profile else ""
             release_id = str((chosen_profile or {}).get("release_id") or release_id)
             if inventory_errors:
@@ -2230,16 +2854,66 @@ def run_new_articles_v2(
                 else:
                     cell_result = fetch_exact_single_cell(query_plan, cell_fetcher)
             if not inventory_errors and cell_result["status"] == "CELL_RESOLVED":
-                comparison = compare_official_cell(
-                    str(row.get("value_text") or ""), str(row.get("value_unit") or ""),
-                    cell_result["cell"], official_unit,
-                )
-                verdict = comparison["verdict"]
-                reason = comparison.get("reason")
+                if _annual_change_only_row(row):
+                    # A CHANGE_RATE claim is not a LEVEL claim.  The current
+                    # cell is only an endpoint for the annual two-cell
+                    # operation below; compare the computed rate there.
+                    verdict, reason = "UNVERIFIABLE", "ANNUAL_REQUERY_PENDING"
+                    comparison = {}
+                else:
+                    comparison = compare_official_cell(
+                        str(row.get("value_text") or ""), str(row.get("value_unit") or ""),
+                        cell_result["cell"], official_unit,
+                    )
+                    verdict = comparison["verdict"]
+                    reason = comparison.get("reason")
             elif not inventory_errors:
                 verdict, reason = "UNVERIFIABLE", cell_result["status"]
         else:
             verdict, reason = "UNVERIFIABLE", top50.resolution.hold_reason or "NO_COMPATIBLE_SERIES"
+        if (
+            release_bound_mode
+            and os.getenv("ANNUAL_REQUERY_SHADOW_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+            and cell_result.get("status") == "CELL_RESOLVED"
+            and assignment is not None
+            and _annual_claim_contract(row, query_plan)
+        ):
+            annual_rows = [
+                _release_bound_annual_period_row(candidate_row)
+                for candidate_row in routed_evidence_snapshot
+                if str(candidate_row.get("article_idx") or "") == article_id
+            ] if evidence_first_statistics_shadow else [
+                _release_bound_annual_period_row(candidate_row)
+                for candidate_row in routed
+                if str(candidate_row.get("article_idx") or "") == article_id
+            ]
+            def annual_cell_fetcher(query: dict[str, Any]) -> list[dict[str, Any]] | dict[str, Any]:
+                if budget_ledger is None:
+                    return cell_fetcher(query)
+                period = str(query.get("start_prd_de") or query.get("end_prd_de") or "")
+                return budget_ledger.execute(
+                    budget_run_id or "audit", "cell", lambda: cell_fetcher(query),
+                    target_id=f"{article_id}:annual:{period}",
+                )
+            try:
+                annual_requery = verify_annual_requery(
+                    rows=annual_rows,
+                    current_plan=query_plan,
+                    current_cell_result=cell_result,
+                    current_target_id=str(row.get("value_span_id") or ""),
+                    cell_fetcher=annual_cell_fetcher,
+                    official_unit=official_unit,
+                )
+                comparison = {**comparison, "annual_requery": annual_requery}
+                verdict = str(annual_requery.get("verdict") or verdict)
+                reason = "ANNUAL_REQUERY_EVALUATED"
+            except AnnualRequeryError as exc:
+                # Annual evidence is additive.  A missing/ambiguous sibling
+                # must not turn a resolved current cell into a fabricated claim.
+                annual_requery = {
+                    "status": "not_evaluated",
+                    "reason": _bounded_annual_requery_reason(exc),
+                }
         binding_payload = asdict(assignment) if assignment is not None else {}
         nationwide_assumption = bool(
             assignment is not None
@@ -2257,6 +2931,13 @@ def run_new_articles_v2(
         if nationwide_assumption:
             limitation_payload["assumption"] = "지역이 명시되지 않아 전국 기준으로 해석했습니다."
             limitation_text = "지역이 명시되지 않아 전국 기준으로 해석했습니다."
+        if _annual_range_claim(sentence) and _annual_claim_contract(row, query_plan):
+            limitation_payload["annual_range"] = (
+                "연간 역사적 범위·순위 주장은 이번 단계에서 지원 범위를 벗어나 별도로 확인하지 않았습니다."
+            )
+            limitation_text = (
+                f"{limitation_text} {limitation_payload['annual_range']}"
+            ).strip()
         if verdict == "UNVERIFIABLE":
             limitation_payload["reason"] = reason
         packet = build_evidence_packet(
@@ -2279,6 +2960,13 @@ def run_new_articles_v2(
         )
         answer = answer_for(packet, target_id, rag=rag_reasoner, use_rag=use_rag)
         answer = {"article_idx": article_id, "target_id": target_id, **answer}
+        if annual_requery and annual_requery.get("verdict"):
+            answer["evidence_answer"] = {
+                "contract_version": annual_requery.get("contract_version"),
+                "text": annual_requery.get("answer"),
+                "verdict": annual_requery.get("verdict"),
+                "annual_requery": annual_requery,
+            }
         if user_intent is not None:
             answer["user_intent"] = user_intent
         answers.append(answer)
@@ -2312,11 +3000,14 @@ def run_new_articles_v2(
             "assignment_provenance": binding_payload,
             "answer": answer,
         }
+        if annual_requery is not None:
+            execution_ledger["annual_requery"] = annual_requery
         if evidence_first_statistics_shadow:
-            execution_ledger["target_id"] = target_id
-            execution_ledger["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
-            execution_ledger["profile_receipts"] = list(top50.profile_receipts)
-            execution_ledger["membership_receipt_sha256"] = top50.membership_receipt_sha256
+            execution_ledger.update(_evidence_first_ledger_projection(
+                top50,
+                target_id=target_id,
+                article_date_limitation=ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H,
+            ))
         ledgers.append(execution_ledger)
     for article_id in sorted(ready_ids - represented_articles):
         set_article_phase(article_id)
@@ -2353,23 +3044,28 @@ def run_new_articles_v2(
                     target_id=f"{_article_id}:evidence:{period}",
                 )
 
-            evidence_result = synthesize_same_series_evidence(
-                article=article,
-                routed_rows=article_routed,
-                ledgers=article_ledgers,
-                answers=article_answers,
-                cell_fetcher=evidence_cell_fetcher,
-                exact_fetcher=fetch_exact_single_cell,
-                feature_enabled=True,
-                release_id=os.getenv("KOSIS_RELEASE_ID", ""),
-            )
-            evidence_result["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
-            evidence_text = str(evidence_result.get("text") or "").strip()
-            if evidence_text and ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H not in evidence_text:
-                evidence_result["text"] = (
-                    f"{evidence_text} {ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H}"
+            family_groups = _evidence_family_groups(article_routed)
+            if not family_groups:
+                family_groups = {("", None, "", ""): article_routed}
+            for family_key, family_rows in family_groups.items():
+                evidence_result = synthesize_same_series_evidence(
+                    article=article,
+                    routed_rows=family_rows,
+                    ledgers=article_ledgers,
+                    answers=article_answers,
+                    cell_fetcher=evidence_cell_fetcher,
+                    exact_fetcher=fetch_exact_single_cell,
+                    feature_enabled=True,
+                    release_id=os.getenv("KOSIS_RELEASE_ID", ""),
                 )
-            evidence_results.append(evidence_result)
+                evidence_result["indicator_family_key"] = family_key[2] or None
+                evidence_result["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
+                evidence_text = str(evidence_result.get("text") or "").strip()
+                if evidence_text and ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H not in evidence_text:
+                    evidence_result["text"] = (
+                        f"{evidence_text} {ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H}"
+                    )
+                evidence_results.append(evidence_result)
     l2_output = l2["manifest"]
     if precomputed_l2 is not None:
         l2_output = {
@@ -2570,6 +3266,7 @@ def run_live_from_files(
     audit_expected_articles: int = 12,
     precomputed_l2_manifest_path: str | Path | None = None,
     precomputed_routed_manifest_path: str | Path | None = None,
+    clarification_context_path: str | Path | None = None,
     pilot_metadata_limit_override: int | None = None,
     role_aware_dimension_shadow: bool = False,
     claim_query: str | None = None,
@@ -2594,7 +3291,7 @@ def run_live_from_files(
     # Article and predecessor validation is deliberately before dotenv/service
     # preflight or adapter construction: malformed trace inputs must be zero-call.
     precomputed_l2 = precomputed_routed = None
-    local_articles = _load_articles_for_clarification(article_path)
+    local_articles = _load_articles_for_clarification(article_path, clarification_context_path)
     expected_article_ids = [str(row.get("article_idx") or "") for row in local_articles]
     if precomputed_l2_manifest_path is not None:
         precomputed_l2 = _discover_precomputed_manifest(Path(precomputed_l2_manifest_path).resolve(), stage="02", article_path=article_path, expected_article_ids=expected_article_ids)

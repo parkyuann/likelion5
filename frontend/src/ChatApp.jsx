@@ -537,6 +537,8 @@ function ChatApp({
     setPendingClarification({
       ...article,
       question: result.question,
+      resumeToken: result.resume_token || null,
+      resumeFromStage: result.resume_from_stage || null,
       clarificationAnswers: article.clarificationAnswers || [],
     });
     setMessages((prev) => [
@@ -729,13 +731,14 @@ function ChatApp({
     date = "",
     dateSource = null,
     clarificationAnswers = [],
+    resumeToken = null,
     requestConversationId = conversationId,
   } = {}) {
     // UI 확인용 목업은 ?mock=1 일 때만 사용합니다(기본은 실제 파이프라인).
     // 새 UX(진행 링·결과 카드·인라인 상세)를 색상/수식/후보까지 그대로 렌더한다.
     if (mockEnabled()) {
       lastRequestRef.current = {
-        kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, requestConversationId,
+        kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, resumeToken, requestConversationId,
       };
       const startTs = startNetworkProgress();
       setLoading(true);
@@ -751,7 +754,7 @@ function ChatApp({
       return;
     }
     lastRequestRef.current = {
-      kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, requestConversationId,
+      kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, resumeToken, requestConversationId,
     };
     const isUrl = inputType === "url" || /^https?:\/\/\S+$/i.test(text.trim());
     const startTs = startNetworkProgress();
@@ -772,6 +775,7 @@ function ChatApp({
             date: doc.published_date || "",
             dateSource: doc.published_date ? "url_metadata" : null,
             clarificationAnswers,
+            resumeToken,
           });
           if (verified?.type === "needs_user_input") {
             requestClarification({
@@ -782,7 +786,8 @@ function ChatApp({
               date: doc.published_date || "",
               dateSource: doc.published_date ? "url_metadata" : null,
               conversationId: prepared.conversation_id || requestConversationId,
-              clarificationAnswers: [],
+              clarificationAnswers,
+              resumeToken: verified?.resume_token || null,
             }, verified);
           } else if (verified?.type === "article") await showArticleResult(verified, startTs);
           else handleResult(verified, focusQuestion);
@@ -798,6 +803,7 @@ function ChatApp({
           date,
           dateSource,
           clarificationAnswers,
+          resumeToken,
         });
         if (verified?.type === "needs_user_input") {
           requestClarification({
@@ -806,7 +812,8 @@ function ChatApp({
             inputType,
             focusQuestion,
             conversationId: requestConversationId,
-            clarificationAnswers: [],
+            clarificationAnswers,
+            resumeToken: verified?.resume_token || null,
           }, verified);
         } else if (verified?.type === "not_article") {
           const routed = await analyzeInput(text, {
@@ -924,6 +931,7 @@ function ChatApp({
         date: article.date || "",
         dateSource: article.dateSource || null,
         clarificationAnswers,
+        resumeToken: article.resumeToken || null,
         requestConversationId: article.conversationId,
       });
       return;
@@ -968,6 +976,7 @@ function ChatApp({
       date: last.date,
       dateSource: last.dateSource,
       clarificationAnswers: last.clarificationAnswers || [],
+      resumeToken: last.resumeToken || null,
       requestConversationId: last.requestConversationId,
     });
   }

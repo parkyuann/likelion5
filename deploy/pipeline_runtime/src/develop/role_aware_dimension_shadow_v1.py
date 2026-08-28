@@ -16,6 +16,7 @@ from src.develop.article_body_sentence_splitter_v1 import iter_article_body_sent
 
 
 CONTRACT_VERSION = "role-aware-dimension-shadow-v1"
+PROFILE_UNIT_INFERENCE_VERSION = 1
 _AGENCY = re.compile(
     r"(?P<name>[가-힣A-Za-z0-9·]{2,40}(?:청|처|부|원|기관|위원회|공단|공사|연구원|협회|은행))"
     r"(?=[이가은는]\s*(?:\d{1,2}일\s*)?(?:발표|공표|공개))"
@@ -32,6 +33,9 @@ _ENGLISH_UNIT_MAP = {
     "case": "건",
     "cases": "건",
     "per 1000 population": "천명당",
+}
+_CANONICAL_ITEM_UNITS = {
+    "합계출산율": "명",
 }
 
 
@@ -90,15 +94,16 @@ def infer_profile_units(profile: Mapping[str, Any]) -> dict[str, Any]:
 def _fill_label_unit(row: dict[str, Any], label_key: str) -> None:
     if str(row.get("unit_nm") or "").strip():
         return
-    match = re.search(r"\(([^()]*)\)\s*$", str(row.get(label_key) or ""))
+    source_label = str(row.get(label_key) or "")
+    match = re.search(r"\(([^()]*)\)\s*$", source_label)
     unit = str(match.group(1) if match else "").strip()
     if unit and _UNIT.fullmatch(unit):
         row["unit_nm"] = unit
         row["unit_id"] = str(row.get("unit_id") or f"LABEL:{unit}")
         row["unit_inference"] = {
             "rule_id": "terminal-parenthetical-unit",
-            "rule_version": 1,
-            "source_label": str(row.get(label_key) or ""),
+            "rule_version": PROFILE_UNIT_INFERENCE_VERSION,
+            "source_label": source_label,
         }
         return
     english_key = {"value_name": "value_name_eng", "itm_nm": "itm_nm_eng"}.get(label_key, "")
@@ -110,9 +115,24 @@ def _fill_label_unit(row: dict[str, Any], label_key: str) -> None:
         row["unit_id"] = str(row.get("unit_id") or f"LABEL_EN:{mapped}")
         row["unit_inference"] = {
             "rule_id": "terminal-parenthetical-english-unit-map",
-            "rule_version": 1,
+            "rule_version": PROFILE_UNIT_INFERENCE_VERSION,
             "source_label": english_label,
         }
+        return
+    if label_key == "itm_nm":
+        base_label = re.sub(r"\([^()]*\)\s*$", "", source_label).strip()
+        canonical_key = re.sub(r"[\s\-_./:]+", "", base_label).casefold()
+        for canonical_label, mapped_unit in _CANONICAL_ITEM_UNITS.items():
+            if canonical_key != re.sub(r"[\s\-_./:]+", "", canonical_label).casefold():
+                continue
+            row["unit_nm"] = mapped_unit
+            row["unit_id"] = str(row.get("unit_id") or f"LABEL:{mapped_unit}")
+            row["unit_inference"] = {
+                "rule_id": "canonical-item-tfr-unit",
+                "rule_version": PROFILE_UNIT_INFERENCE_VERSION,
+                "source_label": source_label,
+            }
+            return
 
 
 def select_query_target(
@@ -182,6 +202,7 @@ def _norm(value: Any) -> str:
 
 
 __all__ = [
-    "CONTRACT_VERSION", "extract_source_terms", "infer_profile_units", "reranker_query",
+    "CONTRACT_VERSION", "PROFILE_UNIT_INFERENCE_VERSION", "extract_source_terms",
+    "infer_profile_units", "reranker_query",
     "select_query_target", "source_sentence",
 ]

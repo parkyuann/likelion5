@@ -542,6 +542,164 @@ def _project_segments(out_root: Path, body: str, *, live: bool) -> list[dict[str
     return segments
 
 
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _receipt_sha256(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _routed_target_keys(row: dict[str, Any]) -> tuple[str, ...]:
+    article_idx = str(row.get("article_idx") or "")
+    value_span_id = str(row.get("value_span_id") or row.get("sentence_id") or "target")
+    values = [str(row.get("target_id") or ""), f"{article_idx}:{value_span_id}", value_span_id]
+    return tuple(value for value in values if value)
+
+
+def _strict_iso_date(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = calendar_date.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.isoformat() if parsed.isoformat() == value else None
+
+
+def _official_cell_evidence(target_id: str, ledger: dict[str, Any]) -> tuple[bool, str | None]:
+    """Accept only a complete, target-bound canonical cell receipt."""
+    resolution = ledger.get("resolution")
+    selected = ledger.get("selected_table")
+    cell = ledger.get("cell")
+    query_plan = ledger.get("query_plan")
+    call_ledger = ledger.get("call_ledger")
+    expected_release_id = os.getenv("KOSIS_RELEASE_ID", "")
+    if not expected_release_id:
+        return False, "RELEASE_ID_UNAVAILABLE"
+    if not isinstance(resolution, dict) or resolution.get("outcome") != "QUERY_READY":
+        return False, "QUERY_NOT_READY"
+    if not isinstance(selected, dict) or not str(selected.get("table_key") or ""):
+        return False, "SELECTED_TABLE_MISSING"
+    if str(selected.get("release_id") or "") != expected_release_id:
+        return False, "RELEASE_ID_MISMATCH"
+    profile_sha = str(selected.get("profile_sha256") or "")
+    if not _SHA256_RE.fullmatch(profile_sha):
+        return False, "PROFILE_RECEIPT_INVALID"
+    if _strict_iso_date(selected.get("send_de")) is None:
+        return False, "SEND_DE_INVALID"
+    if not isinstance(query_plan, dict):
+        return False, "CELL_SELECTOR_MISSING"
+    required_selector = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de", "obj_levels")
+    if any(not query_plan.get(key) for key in required_selector) or not isinstance(query_plan.get("obj_levels"), dict):
+        return False, "CELL_SELECTOR_MISSING"
+    query_sha = _receipt_sha256(query_plan)
+    if str(selected.get("query_plan_sha256") or "") != query_sha:
+        return False, "CELL_SELECTOR_IDENTITY_INVALID"
+    if str(ledger.get("target_id") or "") != target_id:
+        return False, "TARGET_IDENTITY_INVALID"
+    if not isinstance(call_ledger, dict) or not isinstance(call_ledger.get("cell_api"), int) or call_ledger["cell_api"] < 1:
+        return False, "CELL_CALL_RECEIPT_MISSING"
+    if not isinstance(cell, dict) or cell.get("status") != "CELL_RESOLVED":
+        return False, "CELL_NOT_RESOLVED"
+    if not _SHA256_RE.fullmatch(str(cell.get("response_sha256") or "")):
+        return False, "CELL_RESPONSE_RECEIPT_INVALID"
+    if not isinstance(cell.get("query"), dict) or _receipt_sha256(cell["query"]) != query_sha:
+        return False, "CELL_SELECTOR_IDENTITY_INVALID"
+    official_cell = cell.get("cell")
+    if not isinstance(official_cell, dict) or str(official_cell.get("DT") or "").strip() == "":
+        return False, "OFFICIAL_VALUE_MISSING"
+    if not str(ledger.get("official_unit") or "").strip():
+        return False, "OFFICIAL_UNIT_MISSING"
+    return True, None
+
+
+def _target_receipts(out_root: Path) -> list[dict[str, Any]]:
+    """Project one bounded, public receipt for every routed live target."""
+    routed = _read_jsonl(out_root / "03_routed.jsonl")
+    ledgers = _read_jsonl(out_root / "04_stage_ledger.jsonl")
+    by_target: dict[str, dict[str, Any]] = {}
+    for ledger in ledgers:
+        for key in _routed_target_keys(ledger):
+            by_target[key] = ledger
+
+    receipts: list[dict[str, Any]] = []
+    for row in routed:
+        keys = _routed_target_keys(row)
+        target_id = keys[1] if len(keys) > 1 else (keys[0] if keys else "")
+        ledger = next((by_target[key] for key in keys if key in by_target), {})
+        fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), dict) else {}
+        resolution = ledger.get("resolution")
+        outcome = resolution.get("outcome") if isinstance(resolution, dict) else None
+        cell = ledger.get("cell") if isinstance(ledger.get("cell"), dict) else {}
+        retrieval = ledger.get("retrieval") if isinstance(ledger.get("retrieval"), dict) else {}
+        candidates = retrieval.get("candidate_membership") or retrieval.get("candidate_table_keys") or []
+        if not isinstance(candidates, list):
+            candidates = []
+        query_plan = ledger.get("query_plan") if isinstance(ledger.get("query_plan"), dict) else {}
+        selected = ledger.get("selected_table") if isinstance(ledger.get("selected_table"), dict) else {}
+        call_ledger = ledger.get("call_ledger") if isinstance(ledger.get("call_ledger"), dict) else {}
+        ledger_target_id = str(ledger.get("target_id") or target_id)
+        official, limitation_code = _official_cell_evidence(ledger_target_id, ledger)
+        receipts.append({
+            "article_idx": str(row.get("article_idx") or ""),
+            "target_id": ledger_target_id,
+            "sentence_id": row.get("article_sentence_id"),
+            "value_span_id": row.get("value_span_id"),
+            "measurement_type": fields.get("measurement_type") or row.get("measurement_type"),
+            "indicator": fields.get("indicator") or row.get("indicator") or row.get("indicator_label"),
+            "period": fields.get("period") or fields.get("period_absolute") or row.get("period_raw"),
+            "unit": fields.get("unit") or fields.get("unit_raw") or row.get("value_unit"),
+            "region": fields.get("region") or fields.get("region_raw"),
+            "retrieval": {
+                "calls": retrieval.get("calls") if isinstance(retrieval.get("calls"), int) else None,
+                "candidate_table_keys": [str(value) for value in candidates],
+            },
+            "metadata_binding": {
+                "calls": ledger.get("metadata_api_calls") if isinstance(ledger.get("metadata_api_calls"), int) else None,
+                "compatible_table_keys": [str(value) for value in (resolution.get("compatible_series") or [])]
+                if isinstance(resolution, dict) else [],
+            },
+            "selected_table_key": selected.get("table_key"),
+            "send_de": selected.get("send_de"),
+            "release_id": selected.get("release_id"),
+            "profile_sha256": selected.get("profile_sha256"),
+            "query_ready": outcome == "QUERY_READY",
+            "cell": {
+                "calls": call_ledger.get("cell_api") if isinstance(call_ledger.get("cell_api"), int) else 0,
+                "response_sha256": cell.get("response_sha256"),
+                "official_value": (cell.get("cell") or {}).get("DT") if isinstance(cell.get("cell"), dict) else None,
+                "official_unit": ledger.get("official_unit"),
+                "period": query_plan.get("start_prd_de") or query_plan.get("end_prd_de"),
+                "status": cell.get("status"),
+            },
+            "official_cell_evidence": official,
+            "terminal_status": "official_cell" if official else str(
+                (resolution.get("hold_reason") or resolution.get("outcome"))
+                if isinstance(resolution, dict) else resolution or "UNVERIFIABLE"
+            ),
+            "limitation_code": limitation_code or (
+                None if official else str(
+                    (resolution.get("hold_reason") or resolution.get("outcome"))
+                    if isinstance(resolution, dict) else resolution or "UNVERIFIABLE"
+                )
+            ),
+        })
+    return receipts
+
+
+def _live_status(out_root: Path) -> tuple[str, list[dict[str, Any]]]:
+    """Derive the article status from per-target official-cell evidence."""
+    receipts = _target_receipts(out_root)
+    official = sum(1 for row in receipts if row["official_cell_evidence"])
+    if official == len(receipts) and official > 0:
+        return "completed", receipts
+    if official > 0:
+        return "completed_with_limits", receipts
+    return "unverifiable", receipts
+
+
 def verify_article_develop(
     text: str,
     title: str = "",
@@ -643,6 +801,8 @@ def verify_article_develop(
         )
         resume_from_stage = ""
     preserve_workdir = False
+    live_status = "structured_only"
+    target_receipts: list[dict[str, Any]] = []
 
     def _value_claim_count() -> int:
         rows = _read_jsonl(out_root / "01_value_candidates.jsonl")
@@ -675,7 +835,11 @@ def verify_article_develop(
             live_kwargs: dict[str, Any] = {}
             if stage == "live":
                 live_kwargs = {
-                    "claim_query": _deterministic_claim_query_from_routed(out_root),
+                    # An article is a multi-target request.  Do not select a
+                    # representative LEVEL/change claim before operational
+                    # execution; explicit single-query routes may still use
+                    # the deterministic selector directly.
+                    "claim_query": None,
                     "role_aware_dimension_shadow": True,
                 }
             if resume_token:
@@ -689,6 +853,8 @@ def verify_article_develop(
                 **live_kwargs,
             )
         segments = _project_segments(out_root, body, live=live)
+        if live:
+            live_status, target_receipts = _live_status(out_root)
         if live and len(clarification_history) < 3:
             pending = _pending_article_date_from_live(
                 out_root, body=body, article_date=article_date,
@@ -772,12 +938,13 @@ def verify_article_develop(
 
     return {
         "type": "article",
-        "status": "completed" if live else "structured_only",
+        "status": live_status,
         "live": live,
         "title": title,
         "date": article_date,
         "date_source": article_date_source,
         "clarification_history": clarification_history,
         "summary": counts,
+        "target_receipts": target_receipts,
         "results": segments,
     }

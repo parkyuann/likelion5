@@ -8,7 +8,7 @@ metadata refresh, cache write, or cell-value lookup path.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import os
@@ -68,6 +68,23 @@ def _row_value(row: Mapping[str, Any], *names: str, default: Any = None) -> Any:
         if name in row and row[name] is not None:
             return row[name]
     return default
+
+
+def _strict_send_de(value: Any) -> str:
+    raw = _text(value)
+    try:
+        parsed = date.fromisoformat(raw)
+    except (TypeError, ValueError):
+        raise _fail(
+            "METADATA_PROFILE_CONTRACT_MISMATCH",
+            "canonical send_de가 ISO 날짜가 아닙니다.",
+        ) from None
+    if parsed.isoformat() != raw:
+        raise _fail(
+            "METADATA_PROFILE_CONTRACT_MISMATCH",
+            "canonical send_de 형식이 YYYY-MM-DD가 아닙니다.",
+        )
+    return parsed.isoformat()
 
 
 def _assert_snapshot(row: Mapping[str, Any], release_id: str) -> None:
@@ -292,6 +309,7 @@ class CanonicalMetadataProfileProvider:
             "org_id": org_id,
             "tbl_id": tbl_id,
             "stat_id": _text(table.get("stat_id")),
+            "send_de": _strict_send_de(table.get("send_de")),
             "tbl_name": _text(table.get("title_raw")),
             "org_name": _text(table.get("org_name_raw")),
             "items": item_profile,

@@ -103,11 +103,15 @@ def _projection(assignment: CandidateAssignment) -> CandidateProjection:
     )
 
 
-def _profile(table_key: str, cardinality: int, projection: CandidateProjection) -> dict:
+def _profile(
+    table_key: str, cardinality: int, projection: CandidateProjection,
+    *, send_de: str | None = "2026-08-01",
+) -> dict:
     return {
         "table_key": table_key,
         "dimensions": [{"obj_id": "REGION", "values": [{"value_id": str(i)} for i in range(cardinality)]}],
         "_projection": projection,
+        **({"send_de": send_de} if send_de is not None else {}),
     }
 
 
@@ -172,6 +176,101 @@ def test_resolve_top50_dominance_is_opt_in(monkeypatch):
     assert default.resolution.hold_reason == "MULTIPLE_COMPATIBLE_SERIES"
     assert opted_in.resolution.outcome == "QUERY_READY"
     assert opted_in.resolution.chosen_table_key == "org:coarse"
+
+
+def test_release_bound_dominance_prefers_latest_send_de_when_selector_is_tied():
+    g = _assignment("101:DT_1B8000G", specific_item=True)
+    h = _assignment("101:DT_1B8000H", specific_item=True)
+    g_projection = _projection(g)
+    h_projection = _projection(h)
+    base = validate_target_v2([g_projection, h_projection])
+
+    resolved = operational._apply_release_bound_evidence_specificity_dominance(
+        base,
+        [g_projection, h_projection],
+        {
+            "101:DT_1B8000G": _profile(
+                "101:DT_1B8000G", 385, g_projection, send_de="2026-07-29",
+            ),
+            "101:DT_1B8000H": _profile(
+                "101:DT_1B8000H", 19, h_projection, send_de="2026-03-19",
+            ),
+        },
+    )
+
+    assert resolved.outcome == "QUERY_READY"
+    assert resolved.chosen_table_key == "101:DT_1B8000G"
+    receipt = resolved.audit["release_bound_evidence_specificity_dominance"]
+    assert receipt["latest_send_de_decision"] == {
+        "status": "CHOSEN",
+        "latest_send_de": "2026-07-29",
+        "reason": "SEMANTIC_PERIOD_SELECTOR_TIE",
+    }
+    assert {
+        (row["table_key"], row["send_de"])
+        for row in receipt["candidates"]
+    } == {
+        ("101:DT_1B8000G", "2026-07-29"),
+        ("101:DT_1B8000H", "2026-03-19"),
+    }
+
+
+def test_release_bound_dominance_fails_closed_for_missing_or_invalid_send_de():
+    g = _assignment("101:DT_1B8000G", specific_item=True)
+    h = _assignment("101:DT_1B8000H", specific_item=True)
+    g_projection = _projection(g)
+    h_projection = _projection(h)
+    base = validate_target_v2([g_projection, h_projection])
+
+    for bad_send_de in (None, "not-a-date"):
+        resolved = operational._apply_release_bound_evidence_specificity_dominance(
+            base,
+            [g_projection, h_projection],
+            {
+                "101:DT_1B8000G": _profile(
+                    "101:DT_1B8000G", 19, g_projection, send_de="2026-07-29",
+                ),
+                "101:DT_1B8000H": _profile(
+                    "101:DT_1B8000H", 385, h_projection, send_de=bad_send_de,
+                ),
+            },
+        )
+
+        assert resolved.outcome == "HOLD"
+        assert resolved.hold_reason == "MULTIPLE_COMPATIBLE_SERIES"
+        receipt = resolved.audit["release_bound_evidence_specificity_dominance"]
+        assert receipt["chosen_table"] is None
+        assert receipt["latest_send_de_decision"] == {
+            "status": "FAIL_CLOSED",
+            "latest_send_de": None,
+            "reason": "SEND_DE_MISSING_OR_INVALID",
+        }
+        assert receipt["candidates"][1]["send_de_valid"] is False
+
+
+def test_release_bound_dominance_applies_geo_only_inside_latest_send_de_tie():
+    newest_coarse = _assignment("org:newest-coarse", specific_item=True)
+    newest_fine = _assignment("org:newest-fine", specific_item=True)
+    older = _assignment("org:older", specific_item=True)
+    newest_coarse_projection = _projection(newest_coarse)
+    newest_fine_projection = _projection(newest_fine)
+    older_projection = _projection(older)
+    base = validate_target_v2([newest_coarse_projection, newest_fine_projection, older_projection])
+
+    resolved = operational._apply_release_bound_evidence_specificity_dominance(
+        base,
+        [newest_coarse_projection, newest_fine_projection, older_projection],
+        {
+            "org:newest-coarse": _profile("org:newest-coarse", 19, newest_coarse_projection, send_de="2026-07-29"),
+            "org:newest-fine": _profile("org:newest-fine", 385, newest_fine_projection, send_de="2026-07-29"),
+            "org:older": _profile("org:older", 1, older_projection, send_de="2026-03-19"),
+        },
+    )
+
+    assert resolved.outcome == "QUERY_READY"
+    assert resolved.chosen_table_key == "org:newest-coarse"
+    receipt = resolved.audit["release_bound_evidence_specificity_dominance"]
+    assert receipt["latest_send_de_decision"]["status"] == "CHOSEN_COARSER_GEO"
 
 
 def test_release_bound_annual_gate_collapses_only_same_span_yoy_duplicate():

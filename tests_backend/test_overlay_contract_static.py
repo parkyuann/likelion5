@@ -54,7 +54,10 @@ def test_routes_are_api_namespaced_and_capabilities_are_fail_closed():
     assert not any("/v1/auth" in path for _, path, _ in routes)
     source = (BACKEND / "app.py").read_text(encoding="utf-8")
     assert source.count("Depends(require_pipeline_runtime)") == 0
-    assert source.count("require_pipeline_runtime()") == 2
+    # Article, URL, and image entry points all fail closed before invoking an
+    # adapter. URL and image support add two guarded call sites to the original
+    # article-only pair.
+    assert source.count("require_pipeline_runtime()") == 4
     verify_start = source.index("def verify_develop")
     analyze_start = source.index("def analyze(")
     assert "require_pipeline_runtime()" in source[verify_start:analyze_start]

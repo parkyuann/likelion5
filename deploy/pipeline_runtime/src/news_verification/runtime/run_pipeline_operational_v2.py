@@ -1489,6 +1489,19 @@ def _release_bound_geo_cardinality(
     return tuple(cardinalities) if cardinalities else None
 
 
+def _release_bound_send_de(profile: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(profile, Mapping):
+        return None
+    raw = profile.get("send_de")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = calendar_date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed.isoformat() if parsed.isoformat() == raw else None
+
+
 def _release_bound_candidate_receipt(
     assignment: CandidateAssignment, profile: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -1496,9 +1509,12 @@ def _release_bound_candidate_receipt(
     geo_bindings = [binding for binding in assignment.bindings if _release_bound_geo_binding(binding)]
     dimension_bindings = [binding for binding in assignment.bindings if binding.axis_kind == "DIMENSION"]
     cardinality = _release_bound_geo_cardinality(assignment, profile)
+    send_de = _release_bound_send_de(profile)
     return {
         "table_key": assignment.table_key,
         "signature": str(assignment.signature),
+        "send_de": send_de,
+        "send_de_valid": send_de is not None,
         "item_specificity": item,
         "components": {
             "non_geo_semantic_signature": str(_release_bound_semantic_signature(assignment)),
@@ -1537,9 +1553,15 @@ def _apply_release_bound_evidence_specificity_dominance(
         "score_components": [
             "item_source_specificity",
             "coarser_geo_cardinality",
+            "latest_send_de",
         ],
         "chosen_table": None,
         "decision": "NOT_UNIQUE",
+        "latest_send_de_decision": {
+            "status": "NOT_APPLIED",
+            "latest_send_de": None,
+            "reason": "EVIDENCE_SPECIFICITY_NOT_TIED",
+        },
     }
     if not records:
         return resolution
@@ -1563,22 +1585,74 @@ def _apply_release_bound_evidence_specificity_dominance(
             row["receipt"]["components"]["all_geographic_axes_disclosed_nationwide"]
             for row in considered
         )
-        cardinalities = [
-            _release_bound_geo_cardinality(
-                row["assignment"], profiles_by_table.get(row["assignment"].table_key)
+        chosen = None
+        selector_groups = {
+            (
+                _release_bound_semantic_signature(row["assignment"]),
+                _release_bound_geo_signature(row["assignment"]),
             )
             for row in considered
-        ]
-        valid_cardinalities = all(value is not None and len(value) == 1 for value in cardinalities)
-        chosen = None
-        if len(semantic_groups) == 1 and len(geo_groups) == 1 and all_nationwide and valid_cardinalities:
-            minimum = min(value[0] for value in cardinalities if value is not None)
-            winners = [
-                row for row, value in zip(considered, cardinalities)
-                if value is not None and value[0] == minimum
-            ]
-            if len(winners) == 1:
-                chosen = winners[0]["assignment"]
+        }
+
+        # Publication date is usable only inside one already-compatible
+        # semantic/cell-selector group.  It deliberately precedes the
+        # geographic cardinality rule: a newer compatible table must win even
+        # when its geographic inventory is finer.
+        date_pool = considered
+        send_dates = [row["receipt"].get("send_de") for row in date_pool]
+        valid_send_dates = all(
+            isinstance(value, str)
+            and _release_bound_send_de({"send_de": value}) == value
+            for value in send_dates
+        )
+        if len(selector_groups) == 1 and all_nationwide:
+            if not valid_send_dates:
+                receipt["latest_send_de_decision"] = {
+                    "status": "FAIL_CLOSED",
+                    "latest_send_de": None,
+                    "reason": "SEND_DE_MISSING_OR_INVALID",
+                }
+            else:
+                latest = max(send_dates)
+                latest_rows = [
+                    row for row in date_pool
+                    if row["receipt"].get("send_de") == latest
+                ]
+                latest_decision = "CHOSEN" if len(latest_rows) == 1 else "TIE_SUBSET"
+                receipt["latest_send_de_decision"] = {
+                    "status": latest_decision,
+                    "latest_send_de": latest,
+                    "reason": "SEMANTIC_PERIOD_SELECTOR_TIE",
+                }
+                if len(latest_rows) == 1:
+                    chosen = latest_rows[0]["assignment"]
+                else:
+                    # If publication dates tie, apply coarser geography only
+                    # within that tied subset; never let an older candidate
+                    # participate in this specificity decision.
+                    latest_cardinalities = [
+                        _release_bound_geo_cardinality(
+                            row["assignment"], profiles_by_table.get(row["assignment"].table_key)
+                        )
+                        for row in latest_rows
+                    ]
+                    if all(value is not None and len(value) == 1 for value in latest_cardinalities):
+                        minimum = min(value[0] for value in latest_cardinalities if value is not None)
+                        winners = [
+                            row for row, value in zip(latest_rows, latest_cardinalities)
+                            if value is not None and value[0] == minimum
+                        ]
+                        if len(winners) == 1:
+                            chosen = winners[0]["assignment"]
+                            receipt["latest_send_de_decision"]["status"] = "CHOSEN_COARSER_GEO"
+                        else:
+                            receipt["latest_send_de_decision"]["status"] = "NOT_UNIQUE"
+        elif len(selector_groups) == 1:
+            receipt["latest_send_de_decision"] = {
+                "status": "FAIL_CLOSED",
+                "latest_send_de": None,
+                "reason": "SEND_DE_NOT_APPLICABLE_OR_GEOGRAPHY_NOT_NATIONWIDE",
+            }
 
     if chosen is None:
         return TargetResolution(
@@ -2316,9 +2390,10 @@ def run_new_articles_v2(
     else:
         routed = list(precomputed_routed.get("rows") or [])
         stack_recomputed = False
-    # Keep the stack result as an immutable evidence-only snapshot.  Claim
-    # selection is allowed to narrow the execution target below, but evidence
-    # synthesis must still see the complete LEVEL/change sibling population.
+    # Keep the stack result as an immutable evidence-only snapshot.  Article
+    # mode (claim_query is None) executes every routed target; primary
+    # selection is evidence-synthesis audit only.  Explicit query mode may
+    # still narrow membership below.
     routed_evidence_snapshot = (
         tuple(MappingProxyType(dict(row)) for row in routed if isinstance(row, Mapping))
         if evidence_first_statistics_shadow else ()
@@ -2366,29 +2441,26 @@ def run_new_articles_v2(
             "user_intent": user_intent,
             "primary_selection_source": "value_span_id_same_series_group",
         }
-        if intent_clarification:
+        if claim_query is None:
+            routed = [dict(row) for row in routed_evidence_snapshot]
+            query_selection = {
+                **claim_query_selection,
+                **primary_audit,
+                "status": "FAMILY_TARGETS_PRESERVED",
+                "value_used": False,
+                "family_count": len(evidence_family_groups),
+                "family_keys": [list(key) for key in sorted(evidence_family_groups, key=str)],
+                "target_ids": [_target_id(row) for row in routed_evidence_snapshot],
+            }
+        elif intent_clarification:
             query_selection = {**claim_query_selection, **primary_audit}
-        elif primary_info is None or claim_query is None and len(evidence_family_groups) != 1:
+        elif primary_info is None:
             query_fallback_selected = (
                 claim_query is not None
                 and len(routed) == 1
                 and claim_query_selection.get("status") == "SELECTED"
             )
-            if claim_query is None and (primary_info is None or len(evidence_family_groups) != 1):
-                routed = [dict(row) for row in routed_evidence_snapshot]
-                query_selection = {
-                    **claim_query_selection,
-                    **primary_audit,
-                    "status": "FAMILY_TARGETS_PRESERVED",
-                    "value_used": False,
-                    "family_count": len(evidence_family_groups),
-                    "family_keys": [list(key) for key in sorted(evidence_family_groups, key=str)],
-                    "target_ids": [
-                        _target_id(row)
-                        for row in routed_evidence_snapshot
-                    ],
-                }
-            elif query_fallback_selected:
+            if query_fallback_selected:
                 selected = dict(routed[0])
                 selected_value_span_id = str(selected.get("value_span_id") or "")
                 query_selection = {
@@ -2811,6 +2883,8 @@ def run_new_articles_v2(
                 failure_recovery["question"] = post_retry["question"]
         assignment = assignment_for_resolution(top50)
         cell_result: dict[str, Any] = {}
+        cell_calls_before = getattr(cell_fetcher, "calls", None)
+        cell_calls_before = cell_calls_before if isinstance(cell_calls_before, int) else None
         comparison: dict[str, Any] = {}
         inventory_validation: dict[str, Any] = {"status": "NOT_APPLICABLE", "errors": []}
         query_plan = dict(top50.resolution.query_plan or {})
@@ -2871,6 +2945,13 @@ def run_new_articles_v2(
                 verdict, reason = "UNVERIFIABLE", cell_result["status"]
         else:
             verdict, reason = "UNVERIFIABLE", top50.resolution.hold_reason or "NO_COMPATIBLE_SERIES"
+        cell_calls_after = getattr(cell_fetcher, "calls", None)
+        cell_calls_after = cell_calls_after if isinstance(cell_calls_after, int) else None
+        current_cell_calls = (
+            max(0, cell_calls_after - cell_calls_before)
+            if cell_calls_before is not None and cell_calls_after is not None
+            else 0
+        )
         if (
             release_bound_mode
             and os.getenv("ANNUAL_REQUERY_SHADOW_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -2972,6 +3053,7 @@ def run_new_articles_v2(
         answers.append(answer)
         execution_ledger = {
             "article_idx": row.get("article_idx"),
+            "target_id": target_id,
             "value_span_id": row.get("value_span_id"),
             "retrieval": retrieval_audit,
             "role_aware_shadow": {
@@ -2997,6 +3079,14 @@ def run_new_articles_v2(
             "official_unit": official_unit,
             "profile_sha256": profile_sha256,
             "release_id": release_id,
+            "selected_table": {
+                "table_key": top50.resolution.chosen_table_key,
+                "send_de": _release_bound_send_de(chosen_profile),
+                "release_id": release_id,
+                "profile_sha256": profile_sha256,
+                "query_plan_sha256": hashlib.sha256(canonical_bytes(query_plan)).hexdigest(),
+            },
+            "call_ledger": {"cell_api": current_cell_calls},
             "assignment_provenance": binding_payload,
             "answer": answer,
         }
@@ -3020,6 +3110,17 @@ def run_new_articles_v2(
         answer = {"article_idx": article_id, "target_id": f"article:{article_id}", **answer_for(packet, f"article:{article_id}", rag=rag_reasoner, use_rag=use_rag)}
         answers.append(answer)
         ledgers.append({"article_idx": article_id, "resolution": "NO_ROUTED_TARGETS", "answer": answer})
+    target_ids_by_span = {
+        (str(row.get("article_idx") or ""), str(row.get("value_span_id") or "")): _target_id(row)
+        for row in routed
+    }
+    for ledger in ledgers:
+        if ledger.get("target_id"):
+            continue
+        key = (str(ledger.get("article_idx") or ""), str(ledger.get("value_span_id") or ""))
+        target_id = target_ids_by_span.get(key)
+        if target_id:
+            ledger["target_id"] = target_id
     evidence_results: list[dict[str, Any]] = []
     if evidence_first_statistics_shadow:
         for article in articles:

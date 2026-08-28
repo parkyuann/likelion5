@@ -1,4 +1,6 @@
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
+export const APP_RELEASE_SHA = import.meta.env.VITE_APP_RELEASE_SHA || "unknown";
+const RELEASE_SHA_RE = /^[0-9a-f]{40}$/;
 
 export class ApiError extends Error {
   constructor(message, { status, code, detail } = {}) {
@@ -39,6 +41,24 @@ async function parseResponse(response) {
   return payload;
 }
 
+export async function checkReleaseVersion() {
+  const payload = await parseResponse(await apiFetch("/version"));
+  const serverSha = payload?.release_sha || "unknown";
+  if (!RELEASE_SHA_RE.test(APP_RELEASE_SHA) || !RELEASE_SHA_RE.test(serverSha)) {
+    throw new ApiError(
+      "배포 버전 정보를 확인할 수 없습니다. 새로고침 후 다시 시도해 주세요.",
+      { status: 503, code: "DEPLOYMENT_VERSION_UNAVAILABLE" },
+    );
+  }
+  if (APP_RELEASE_SHA !== serverSha) {
+    throw new ApiError(
+      "프론트엔드와 백엔드 배포 버전이 일치하지 않습니다. 새로고침 후 다시 시도해 주세요.",
+      { status: 409, code: "DEPLOYMENT_VERSION_MISMATCH" },
+    );
+  }
+  return payload;
+}
+
 export async function analyzeInput(text, {
   conversationId,
   inputType = "auto",
@@ -70,6 +90,7 @@ export async function verifyArticleDevelop(text, {
   clarificationAnswers = [],
   resumeToken = null,
 } = {}) {
+  await checkReleaseVersion();
   const response = await apiFetch("/v1/verify/develop", {
     method: "POST",
     body: JSON.stringify({
@@ -86,6 +107,7 @@ export async function verifyArticleDevelop(text, {
 }
 
 export async function analyzeImage(file, { conversationId, focusQuestion = "" } = {}) {
+  await checkReleaseVersion();
   const form = new FormData();
   form.append("file", file);
   if (conversationId) form.append("conversation_id", conversationId);

@@ -188,3 +188,39 @@ commit SHA: RECORDED_IN_HANDOFF_RESPONSE
 - focused 결과: canonical 238 passed, backend 3 passed. 외부 HCX/KOSIS/metadata 호출은 없었다.
 - 추가 server-only gate: `EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED=false`를 기본으로 유지한다.
 - PENDING: full differential comparator, actual live, server-issued date clarification challenge, EC2 활성화, commit/push.
+
+## 2026-08-29 single-SHA application integration
+
+- 기준 설계: `deploy/DESIGN_EC2_SINGLE_SHA_PIPELINE_INTEGRATION_V1_20260829.md`.
+- `origin/develop@5c33ac2` 위에 EC2 input-adapter commit 4개를 commit 단위로 이식했다. EC2의 dirty
+  worktree 파일은 통합 정본으로 사용하지 않았다.
+- URL/text/image 입력은 동일한 resumable article verifier에 연결되며 frontend와 backend가 opaque
+  `resume_token`을 왕복한다. 재개 시 저장된 L1/L2 bytes를 사용하고 기록된 `layers|live` stage부터
+  실행한다.
+- 기사 경로는 대표 LEVEL 한 건을 고르지 않고 routed target 전체를 operational runtime으로 전달한다.
+  명시적인 단일 질의 경로만 기존 target selection을 사용할 수 있다.
+- 결과 status는 완전한 official-cell receipt를 기준으로 `completed`, `completed_with_limits`,
+  `unverifiable`, `needs_user_input`, `structured_only`를 구분한다. Cell API 호출이 0이면
+  `completed`가 될 수 없다.
+- canonical profile은 `statistics_table.send_de`를 strict ISO 날짜로 보존한다. 의미·기간·단위·지역·
+  selector가 호환된 후보 집합에서만 최신 `send_de`를 우선하며 누락·형식 오류·semantic 혼합은
+  fail-closed한다.
+- API와 Nginx/frontend는 필수 `APP_RELEASE_SHA` build arg와 OCI revision label을 공유한다. frontend는
+  text/URL/image 검증 전에 `/api/version`의 server SHA와 build SHA를 비교하고 불일치·unknown을 차단한다.
+- `deploy/release_manifest.py`는 clean HEAD, untracked 0건, tracked bytes=HEAD, runtime closure 74/74,
+  api/nginx image digest와 Compose path를 모두 확인해야 manifest를 생성한다. manifest output은 release
+  checkout 밖의 server-only receipt 경로에 기록한다.
+- Compose application service는 `api`, `nginx`, internal-only `bge-query-encoder`뿐이다. PostgreSQL,
+  OpenSearch, Qdrant, redis-session은 기존 external service를 읽으며 새 service/volume을 만들지 않는다.
+- 구현 후보 focused test **27 passed**, release clean-worktree blocker focused **3 passed**, frontend
+  production build PASS, Compose service set `bge-query-encoder/api/nginx`, runtime closure **74/74**, diff-check
+  PASS다. 실제 commit SHA, image digest, release manifest와 EC2 E2E 결과는 배포 receipt에서 기록한다.
+
+PENDING until the EC2 promotion gate completes:
+
+- clean immutable release checkout에서 api/nginx image build 및 digest 봉인
+- API와 Nginx만 동일 SHA로 recreate
+- 날짜 재질의 resume에서 L1/HCX-L2 추가 호출 0 확인
+- 대표 복합 기사에서 target별 Retrieval/metadata binding/Cell API `> 0` 및 공식값 답변 확인
+- 배포 전후 PostgreSQL/OpenSearch/Qdrant/Redis/BGE container/data 불변 확인
+- historical range/rank operator의 별도 고도화

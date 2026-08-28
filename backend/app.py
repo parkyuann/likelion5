@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
@@ -184,6 +186,26 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _release_version() -> dict[str, str]:
+    manifest_path = Path(
+        os.getenv("PIPELINE_RUNTIME_MANIFEST_PATH", "/app/pipeline_runtime/manifest.json")
+    )
+    manifest_sha = os.getenv("RUNTIME_MANIFEST_SHA256", "")
+    if not manifest_sha and manifest_path.is_file():
+        manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    return {
+        "release_sha": os.getenv("APP_RELEASE_SHA", "unknown"),
+        "runtime_manifest_sha256": manifest_sha,
+        "release_id": os.getenv("KOSIS_RELEASE_ID", ""),
+    }
+
+
+@app.get("/api/version")
+def version() -> dict[str, str]:
+    """Return non-secret application/runtime provenance for deployment checks."""
+    return _release_version()
+
+
 @app.post("/api/auth/signup", status_code=201, response_model=UserResponse, dependencies=[Depends(require_csrf)])
 def signup(req: SignupRequest) -> dict:
     return {"user": auth_service.register_user(req.email, req.password, req.display_name)}
@@ -319,8 +341,8 @@ def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> 
 @app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf)])
 async def analyze_image(file: UploadFile = File(...), conversation_id: str | None = Form(None), focus_question: str = Form(""), user: dict | None = Depends(optional_user)) -> dict:
     del conversation_id, focus_question, user
-    require_pipeline_runtime()
     require_pipeline_image()
+    require_pipeline_runtime()
     from backend.develop_verify_service import verify_article_develop
     from backend.image_ocr_service import prepare_image_article
 

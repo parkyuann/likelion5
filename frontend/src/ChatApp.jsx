@@ -346,19 +346,25 @@ function isValidArticleDate(value) {
 // ── 진행 말풍선: 원형 링(%) + 문장별 진행 로그 ─────────
 // 완료 후에도 대화에 그대로 남으며, 완료 시 문장별 내역은 토글로 접는다.
 function ProgressBubble({ progress }) {
-  const { done = false, pct = 0, elapsedS = 0, logs = [] } = progress || {};
+  const { done = false, pct = 0, elapsedS = 0, logs = [], status = "" } = progress || {};
   const [openLog, setOpenLog] = useState(false);
   const percent = done ? 100 : Math.round(pct);
+  const completion = {
+    completed: { label: "검증 완료", marker: "✓", className: "done" },
+    completed_with_limits: { label: "일부 근거 확인 · 추가 확인 필요", marker: "!", className: "limited" },
+    unverifiable: { label: "공식 통계 근거를 확인하지 못함", marker: "i", className: "limited" },
+    structured_only: { label: "구조화 완료 · 공식 대조 미실행", marker: "i", className: "limited" },
+  }[status] || { label: "검증 완료", marker: "✓", className: "done" };
   // 진행 중엔 항상 보이고, 완료 후엔 토글로 열 때만 보인다.
   const showLog = logs.length > 0 && (!done || openLog);
   return (
     <div className="c-progress">
       <div className="c-progress-top">
-        <div className={`c-ring ${done ? "done" : "loading"}`} style={{ "--pct": percent }}>
-          <span className="c-ring-num">{done ? "✓" : `${percent}%`}</span>
+        <div className={`c-ring ${done ? completion.className : "loading"}`} style={{ "--pct": percent }}>
+          <span className="c-ring-num">{done ? completion.marker : `${percent}%`}</span>
         </div>
         <div className="c-progress-meta">
-          <strong>{done ? "검증 완료" : "검증 중…"}</strong>
+          <strong>{done ? completion.label : "검증 중…"}</strong>
           <span className="c-elapsed">전체 {elapsedS.toFixed(1)}s</span>
         </div>
         {done && logs.length > 0 && (
@@ -718,7 +724,10 @@ function ChatApp({
       {
         role: "assistant",
         kind: "progress",
-        progress: { done: true, pct: 100, elapsedS: info.elapsedS, logs: info.logs },
+        progress: {
+          done: true, pct: 100, elapsedS: info.elapsedS, logs: info.logs,
+          status: verified.status || "unverifiable",
+        },
       },
       { role: "assistant", kind: "article", segments },
     ]);

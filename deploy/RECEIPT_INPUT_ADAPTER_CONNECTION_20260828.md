@@ -34,6 +34,7 @@
 | URL adapter smoke | 통과: `202606242055015`에서 날짜 `2026-06-24`, 본문 756자 |
 | URL API TestClient | 통과: supported URL 200, unsupported `example.com` 422 |
 | Public HTTPS URL API | 통과: `https://news-verify.52.25.84.163.nip.io/api/v1/analyze` 200 |
+| Public URL → existing verification API | 통과: 추출한 제목·발행일·본문을 `/api/v1/verify/develop`에 전달해 HTTP 200 |
 | valid PNG image API | OCR 설정 부재를 정확히 `OCR_NOT_CONFIGURED` 503으로 반환 |
 | DB/index/vector write | 0건 |
 | 재시작 | API·Nginx만 재생성, BGE encoder 및 data services 재시작 없음 |

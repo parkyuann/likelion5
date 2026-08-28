@@ -568,6 +568,11 @@ def _strict_iso_date(value: Any) -> str | None:
     return parsed.isoformat() if parsed.isoformat() == value else None
 
 
+def _bounded_public_error_code(value: Any) -> str | None:
+    code = str(value or "")
+    return code if re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", code) else None
+
+
 def _official_cell_evidence(target_id: str, ledger: dict[str, Any]) -> tuple[bool, str | None]:
     """Accept only a complete, target-bound canonical cell receipt."""
     resolution = ledger.get("resolution")
@@ -634,14 +639,97 @@ def _target_receipts(out_root: Path) -> list[dict[str, Any]]:
         outcome = resolution.get("outcome") if isinstance(resolution, dict) else None
         cell = ledger.get("cell") if isinstance(ledger.get("cell"), dict) else {}
         retrieval = ledger.get("retrieval") if isinstance(ledger.get("retrieval"), dict) else {}
-        candidates = retrieval.get("candidate_membership") or retrieval.get("candidate_table_keys") or []
-        if not isinstance(candidates, list):
-            candidates = []
+        top_level_candidates = ledger.get("candidate_membership")
+        if isinstance(top_level_candidates, list):
+            candidates = top_level_candidates
+        else:
+            candidates = retrieval.get("candidate_membership")
+            if not isinstance(candidates, list):
+                candidates = retrieval.get("candidate_table_keys")
+            if not isinstance(candidates, list):
+                candidates = []
+        candidate_table_keys = []
+        for candidate in candidates:
+            table_key = (
+                candidate
+                if isinstance(candidate, str)
+                else candidate.get("table_key") if isinstance(candidate, dict)
+                else getattr(candidate, "table_key", None)
+            )
+            text = str(table_key or "").strip()
+            if text:
+                candidate_table_keys.append(text)
+        retrieval_calls = retrieval.get("calls")
+        retrieval_calls = retrieval_calls if isinstance(retrieval_calls, int) and not isinstance(retrieval_calls, bool) else None
+        channel_calls = retrieval.get("channel_calls")
+        if isinstance(channel_calls, dict):
+            channel_calls = {
+                str(key): value
+                for key, value in channel_calls.items()
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            }
+        else:
+            channel_calls = {}
+        raw_channel_audits = retrieval.get("channel_audits")
+        channel_audits: dict[str, list[dict[str, Any]]] = {}
+        if isinstance(raw_channel_audits, dict):
+            for name, raw_events in raw_channel_audits.items():
+                if not isinstance(raw_events, list):
+                    continue
+                bounded_events: list[dict[str, Any]] = []
+                for raw_event in raw_events:
+                    if not isinstance(raw_event, dict):
+                        continue
+                    query_sha256 = raw_event.get("query_sha256")
+                    status = raw_event.get("boundary_status")
+                    if not isinstance(query_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", query_sha256):
+                        continue
+                    if status not in {"CLOSED", "DROPPED_UNCLOSED_CUTOFF_TIE"}:
+                        continue
+                    event: dict[str, Any] = {"query_sha256": query_sha256, "boundary_status": status}
+                    for key in ("cutoff_score", "observed_tied_count", "requested_window"):
+                        value = raw_event.get(key)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            event[key] = value
+                    expansions = raw_event.get("expansions")
+                    if isinstance(expansions, list) and all(
+                        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                        for value in expansions
+                    ):
+                        event["expansions"] = expansions[:16]
+                    if set(event) == {
+                        "query_sha256", "boundary_status", "cutoff_score",
+                        "observed_tied_count", "requested_window", "expansions",
+                    }:
+                        bounded_events.append(event)
+                if bounded_events:
+                    channel_audits[str(name)] = sorted(
+                        bounded_events,
+                        key=lambda event: json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    )
+        metadata_calls = ledger.get("metadata_api_calls")
+        metadata_calls = metadata_calls if isinstance(metadata_calls, int) and not isinstance(metadata_calls, bool) and metadata_calls >= 0 else None
+        metadata_lookups = ledger.get("metadata_lookups")
+        metadata_lookups = metadata_lookups if isinstance(metadata_lookups, int) and not isinstance(metadata_lookups, bool) and metadata_lookups >= 0 else None
+        failure = ledger.get("failure") if isinstance(ledger.get("failure"), dict) else {}
+        failure_code = _bounded_public_error_code(failure.get("error_code"))
         query_plan = ledger.get("query_plan") if isinstance(ledger.get("query_plan"), dict) else {}
         selected = ledger.get("selected_table") if isinstance(ledger.get("selected_table"), dict) else {}
         call_ledger = ledger.get("call_ledger") if isinstance(ledger.get("call_ledger"), dict) else {}
         ledger_target_id = str(ledger.get("target_id") or target_id)
         official, limitation_code = _official_cell_evidence(ledger_target_id, ledger)
+        limitation = {
+            "error_code": failure_code,
+            "call_delta": {
+                "retrieval": retrieval_calls,
+                "channel_calls": channel_calls,
+                "metadata_api": metadata_calls,
+                "metadata_lookups": metadata_lookups,
+            },
+        } if not official and (
+            failure_code or retrieval_calls is not None or channel_calls
+            or metadata_calls is not None or metadata_lookups is not None
+        ) else None
         receipts.append({
             "article_idx": str(row.get("article_idx") or ""),
             "target_id": ledger_target_id,
@@ -653,11 +741,14 @@ def _target_receipts(out_root: Path) -> list[dict[str, Any]]:
             "unit": fields.get("unit") or fields.get("unit_raw") or row.get("value_unit"),
             "region": fields.get("region") or fields.get("region_raw"),
             "retrieval": {
-                "calls": retrieval.get("calls") if isinstance(retrieval.get("calls"), int) else None,
-                "candidate_table_keys": [str(value) for value in candidates],
+                "calls": retrieval_calls,
+                "channel_calls": channel_calls,
+                "channel_audits": channel_audits,
+                "candidate_table_keys": candidate_table_keys,
             },
             "metadata_binding": {
-                "calls": ledger.get("metadata_api_calls") if isinstance(ledger.get("metadata_api_calls"), int) else None,
+                "calls": metadata_calls,
+                "lookups": metadata_lookups,
                 "compatible_table_keys": [str(value) for value in (resolution.get("compatible_series") or [])]
                 if isinstance(resolution, dict) else [],
             },
@@ -685,6 +776,7 @@ def _target_receipts(out_root: Path) -> list[dict[str, Any]]:
                     if isinstance(resolution, dict) else resolution or "UNVERIFIABLE"
                 )
             ),
+            "limitation": limitation,
         })
     return receipts
 

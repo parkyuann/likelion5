@@ -124,6 +124,123 @@ from src.news_verification.runtime.release_bound_live_adapters_v1 import (
     build_release_bound_runtime,
     release_runtime_enabled,
 )
+
+
+def _snapshot_target_call_counts(
+    search_channels: Mapping[str, Callable[..., Any]],
+    profile_provider: Any,
+) -> dict[str, Any]:
+    """Capture only integer counters at the start of one routed target."""
+    channel_calls: dict[str, int | None] = {}
+    audit_cursors: dict[str, int | None] = {}
+    for name, channel in search_channels.items():
+        value = getattr(channel, "calls", None)
+        channel_calls[str(name)] = value if isinstance(value, int) and not isinstance(value, bool) else None
+        cursor_method = getattr(channel, "audit_cursor", None)
+        cursor = cursor_method() if callable(cursor_method) else None
+        audit_cursors[str(name)] = cursor if isinstance(cursor, int) and not isinstance(cursor, bool) and cursor >= 0 else None
+    metadata_calls = getattr(profile_provider, "metadata_api_calls", None)
+    metadata_lookups = getattr(profile_provider, "lookups", None)
+    return {
+        "channel_calls": channel_calls,
+        "audit_cursors": audit_cursors,
+        "metadata_api_calls": metadata_calls
+        if isinstance(metadata_calls, int) and not isinstance(metadata_calls, bool)
+        else None,
+        "metadata_lookups": metadata_lookups
+        if isinstance(metadata_lookups, int) and not isinstance(metadata_lookups, bool)
+        else None,
+    }
+
+
+def _bounded_channel_audit_events(raw_events: Any) -> list[dict[str, Any]]:
+    """Validate and order every release dense audit event without dropping one."""
+    if not isinstance(raw_events, Sequence) or isinstance(raw_events, (str, bytes)):
+        raise OperationalPipelineError("DENSE_AUDIT_EVENTS_INVALID")
+    events: list[dict[str, Any]] = []
+    for raw in raw_events:
+        if not isinstance(raw, Mapping):
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        query_sha256 = raw.get("query_sha256")
+        status = raw.get("boundary_status")
+        if not isinstance(query_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", query_sha256):
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        if status not in {"CLOSED", "DROPPED_UNCLOSED_CUTOFF_TIE"}:
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        event: dict[str, Any] = {"query_sha256": query_sha256, "boundary_status": status}
+        for key in ("cutoff_score", "observed_tied_count", "requested_window"):
+            value = raw.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+            event[key] = value
+        expansions = raw.get("expansions")
+        if not isinstance(expansions, Sequence) or isinstance(expansions, (str, bytes)) or len(expansions) > 16:
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in expansions):
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        event["expansions"] = list(expansions)
+        events.append(event)
+    return sorted(events, key=lambda event: json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _target_call_deltas(
+    snapshot: Mapping[str, Any],
+    search_channels: Mapping[str, Callable[..., Any]],
+    profile_provider: Any,
+) -> dict[str, Any]:
+    """Return bounded non-negative per-target counter deltas."""
+    before_channels = snapshot.get("channel_calls")
+    if not isinstance(before_channels, Mapping):
+        before_channels = {}
+    channel_calls: dict[str, int] = {}
+    for name, channel in search_channels.items():
+        before = before_channels.get(str(name))
+        after = getattr(channel, "calls", None)
+        if (
+            isinstance(before, int) and not isinstance(before, bool)
+            and isinstance(after, int) and not isinstance(after, bool)
+        ):
+            channel_calls[str(name)] = max(0, after - before)
+    channel_audits: dict[str, list[dict[str, Any]]] = {}
+    before_cursors = snapshot.get("audit_cursors")
+    if not isinstance(before_cursors, Mapping):
+        before_cursors = {}
+    for name, call_delta in channel_calls.items():
+        if call_delta <= 0:
+            continue
+        channel = search_channels[name]
+        cursor = before_cursors.get(name)
+        events_method = getattr(channel, "audits_since", None)
+        if not isinstance(cursor, int) or isinstance(cursor, bool) or not callable(events_method):
+            continue
+        events = _bounded_channel_audit_events(events_method(cursor))
+        if events:
+            channel_audits[name] = events
+    before_metadata = snapshot.get("metadata_api_calls")
+    after_metadata = getattr(profile_provider, "metadata_api_calls", None)
+    metadata_calls = (
+        max(0, after_metadata - before_metadata)
+        if isinstance(before_metadata, int) and not isinstance(before_metadata, bool)
+        and isinstance(after_metadata, int) and not isinstance(after_metadata, bool)
+        else None
+    )
+    before_lookups = snapshot.get("metadata_lookups")
+    after_lookups = getattr(profile_provider, "lookups", None)
+    metadata_lookups = (
+        max(0, after_lookups - before_lookups)
+        if isinstance(before_lookups, int) and not isinstance(before_lookups, bool)
+        and isinstance(after_lookups, int) and not isinstance(after_lookups, bool)
+        else None
+    )
+    return {
+        "retrieval": {
+            "calls": sum(channel_calls.values()),
+            "channel_calls": channel_calls,
+            "channel_audits": channel_audits,
+        },
+        "metadata_api_calls": metadata_calls,
+        "metadata_lookups": metadata_lookups,
+    }
 from src.news_verification.runtime.bge_reranker_v2_service import HttpRerankerClient
 from src.news_verification.runtime.adapters.shadow_compat import role_aware_dimension_api
 
@@ -2543,7 +2660,35 @@ def run_new_articles_v2(
         answers.append(answer)
         ledgers.append({"article_idx": article_id, "resolution": "L2_UNAVAILABLE", "answer": answer})
         represented_articles.add(article_id)
+    def append_target_ledger(
+        payload: Mapping[str, Any],
+        *,
+        target_call_snapshot: Mapping[str, Any],
+        candidate_membership: Sequence[Any] = (),
+        retrieval_audit: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Attach bounded per-target call receipts to every routed ledger."""
+        ledger = dict(payload)
+        membership = []
+        for value in candidate_membership:
+            table_key = getattr(value, "table_key", None)
+            if table_key is None and isinstance(value, Mapping):
+                table_key = value.get("table_key")
+            text = str(table_key or "").strip()
+            if text:
+                membership.append(text)
+        audit = dict(retrieval_audit) if isinstance(retrieval_audit, Mapping) else {}
+        deltas = _target_call_deltas(target_call_snapshot, search_channels, profile_provider)
+        audit.update(deltas["retrieval"])
+        audit["candidate_membership"] = membership
+        ledger["retrieval"] = audit
+        ledger["candidate_membership"] = membership
+        ledger["metadata_api_calls"] = deltas["metadata_api_calls"]
+        ledger["metadata_lookups"] = deltas["metadata_lookups"]
+        ledgers.append(ledger)
+
     for row in routed:
+        target_call_snapshot = _snapshot_target_call_counts(search_channels, profile_provider)
         article_id = str(row.get("article_idx"))
         set_article_phase(article_id)
         target_id = f"{article_id}:{row.get('value_span_id') or row.get('sentence_id') or 'target'}"
@@ -2586,7 +2731,7 @@ def run_new_articles_v2(
                 **answer_for(packet, target_id),
             }
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": article_id,
                 "value_span_id": row.get("value_span_id"),
                 "l1_l5": {
@@ -2597,7 +2742,7 @@ def run_new_articles_v2(
                 "resolution": gate_reason,
                 "user_intent_shadow": user_intent,
                 "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot)
             continue
         monthly_core = None
         monthly_contract = evidence_first_statistics_shadow and _uses_monthly_claim_contract(row)
@@ -2623,14 +2768,14 @@ def run_new_articles_v2(
                     **answer_for(packet, target_id),
                 }
                 answers.append(answer)
-                ledgers.append({
+                append_target_ledger({
                     "article_idx": article_id,
                     "target_id": target_id,
                     "value_span_id": row.get("value_span_id"),
                     "resolution": asdict(preprojection_resolution),
                     "article_date_limitation": ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H,
                     "answer": answer,
-                })
+                }, target_call_snapshot=target_call_snapshot)
                 continue
         retrieval_fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
         claim_query = {
@@ -2689,11 +2834,11 @@ def run_new_articles_v2(
             )
             answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": article_id, "value_span_id": row.get("value_span_id"),
                 "resolution": reason, "failure": retrieval_failure,
                 "user_intent_shadow": user_intent, "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot)
             continue
         if not candidates and failure_recovery_shadow:
             failure_recovery = plan_failure_recovery(row, None)
@@ -2735,12 +2880,12 @@ def run_new_articles_v2(
             answer = answer_for(packet, target_id, rag=rag_reasoner, use_rag=use_rag)
             answer = {"article_idx": article_id, "target_id": target_id, **answer}
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": row.get("article_idx"), "value_span_id": row.get("value_span_id"),
                 "retrieval": retrieval_audit, "resolution": "NO_CANDIDATES",
                 "failure_recovery_shadow": failure_recovery,
                 "user_intent_shadow": user_intent, "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
             continue
         if release_bound_mode:
             candidate_records = ()
@@ -2779,12 +2924,12 @@ def run_new_articles_v2(
             )
             answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": article_id, "value_span_id": row.get("value_span_id"),
                 "retrieval": retrieval_audit, "resolution": reason,
                 "failure": reranker_failure, "user_intent_shadow": user_intent,
                 "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
             continue
         prefetch = getattr(profile_provider, "prefetch", None)
         if callable(prefetch):
@@ -3098,7 +3243,12 @@ def run_new_articles_v2(
                 target_id=target_id,
                 article_date_limitation=ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H,
             ))
-        ledgers.append(execution_ledger)
+        append_target_ledger(
+            execution_ledger,
+            target_call_snapshot=target_call_snapshot,
+            candidate_membership=top50.candidate_membership,
+            retrieval_audit=retrieval_audit,
+        )
     for article_id in sorted(ready_ids - represented_articles):
         set_article_phase(article_id)
         article = article_index[article_id]

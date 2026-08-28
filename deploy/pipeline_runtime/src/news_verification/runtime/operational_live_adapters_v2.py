@@ -363,6 +363,16 @@ class CountingAdapter:
         self.calls += 1
         return self.inner(*args, **kwargs)
 
+    def audit_cursor(self) -> int | None:
+        method = getattr(self.inner, "audit_cursor", None)
+        value = method() if callable(method) else None
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    def audits_since(self, cursor: int) -> list[dict[str, Any]]:
+        method = getattr(self.inner, "audits_since", None)
+        value = method(cursor) if callable(method) else []
+        return [dict(event) for event in value if isinstance(event, Mapping)] if isinstance(value, Sequence) else []
+
 
 class CountingEncoder:
     def __init__(self, client: Any) -> None:
@@ -470,7 +480,4 @@ __all__ = [
     "OperationalProfileProvider", "RunProfileProvider", "V6CatalogPassageStore", "load_live_articles", "sha256_file",
     "write_live_outputs",
 ]
-
-
-
 

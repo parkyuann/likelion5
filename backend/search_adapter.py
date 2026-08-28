@@ -35,6 +35,8 @@ REQUIRED_QDRANT_FIELDS = REQUIRED_OPENSEARCH_FIELDS - {"text"}
 CANDIDATE_AUTHORITY = "CANDIDATE_GENERATION_ONLY"
 SEARCH_CHANNEL_TOP_K = 100
 SEARCH_WINDOW_MAX = 1000
+DENSE_BOUNDARY_CLOSED = "CLOSED"
+DENSE_BOUNDARY_DROPPED_UNCLOSED_CUTOFF_TIE = "DROPPED_UNCLOSED_CUTOFF_TIE"
 
 
 class SearchAdapter(Protocol):
@@ -517,22 +519,61 @@ class QdrantDenseAdapter:
                 grouped.append((table_key, point_id, candidate))
             grouped.sort(key=lambda item: (-float(item[2]["score"]), item[0], item[1]))
             boundary_closed = len(grouped) <= SEARCH_CHANNEL_TOP_K
+            cutoff_score: float | None = None
             if len(grouped) > SEARCH_CHANNEL_TOP_K:
                 cutoff_score = float(grouped[SEARCH_CHANNEL_TOP_K - 1][2]["score"])
                 boundary_closed = float(grouped[SEARCH_CHANNEL_TOP_K][2]["score"]) < cutoff_score
             if boundary_closed:
                 break
             if requested_window >= SEARCH_WINDOW_MAX:
-                raise _fail("DENSE_BOUNDARY_TIE_UNRESOLVED", "dense Top-100 경계 동률을 결정할 수 없습니다.")
+                # A collection can expose more than SEARCH_CHANNEL_TOP_K groups
+                # with the same score at the cutoff.  There is no safe way to
+                # choose 100 representatives from that set without an explicit
+                # tie-break contract, so keep only the strictly-better groups.
+                # This is a bounded channel degradation; payload/vector/preflight
+                # failures above remain hard errors.
+                if cutoff_score is None:
+                    raise _fail("DENSE_BOUNDARY_TIE_UNRESOLVED", "dense Top-100 경계 동률을 결정할 수 없습니다.")
+                observed_tied_count = sum(
+                    1 for _, _, item in grouped if float(item["score"]) == cutoff_score
+                )
+                candidates = [
+                    item for _, _, item in grouped
+                    if float(item["score"]) > cutoff_score
+                ]
+                boundary_status = DENSE_BOUNDARY_DROPPED_UNCLOSED_CUTOFF_TIE
+                boundary_audit = {
+                    "boundary_status": boundary_status,
+                    "cutoff_score": cutoff_score,
+                    "observed_tied_count": observed_tied_count,
+                    "requested_window": requested_window,
+                    "expansions": list(expansion_windows),
+                }
+                break
             requested_window = min(SEARCH_WINDOW_MAX, max(requested_window * 2, SEARCH_CHANNEL_TOP_K * 2 + 2))
             expansion_windows.append(requested_window)
-        candidates = [item[2] for item in grouped[:SEARCH_CHANNEL_TOP_K]]
+        else:  # pragma: no cover - the loop exits through a boundary decision
+            raise _fail("DENSE_BOUNDARY_TIE_UNRESOLVED", "dense Top-100 경계 동률을 결정할 수 없습니다.")
+        if boundary_closed:
+            candidates = [item[2] for item in grouped[:SEARCH_CHANNEL_TOP_K]]
+            cutoff_score = float(grouped[SEARCH_CHANNEL_TOP_K - 1][2]["score"]) if len(grouped) >= SEARCH_CHANNEL_TOP_K else None
+            boundary_audit = {
+                "boundary_status": DENSE_BOUNDARY_CLOSED,
+                "cutoff_score": cutoff_score,
+                "observed_tied_count": (
+                    sum(1 for _, _, item in grouped if float(item["score"]) == cutoff_score)
+                    if cutoff_score is not None else 0
+                ),
+                "requested_window": requested_window,
+                "expansions": list(expansion_windows),
+            }
         for rank, candidate in enumerate(candidates, start=1):
             candidate["evidence"] = {
                 **candidate["evidence"],
                 "rank": rank,
                 "group_window": requested_window,
                 "group_window_expansions": list(expansion_windows),
+                "boundary_status": boundary_audit["boundary_status"],
             }
         relation = "gte" if len(grouped) == requested_window else "eq"
         return {
@@ -542,4 +583,5 @@ class QdrantDenseAdapter:
             "total_relation": relation,
             "limit": SEARCH_CHANNEL_TOP_K,
             "offset": 0,
+            "audit": boundary_audit,
         }

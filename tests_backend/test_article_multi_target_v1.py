@@ -26,6 +26,7 @@ if "requests" not in sys.modules:
     sys.modules["requests"] = requests
 
 import src.news_verification.runtime.run_pipeline_operational_v2 as operational
+from src.news_verification.runtime.release_bound_live_adapters_v1 import CanonicalMetadataProfileProvider
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -292,3 +293,136 @@ def test_operational_article_mode_preserves_all_same_family_targets(monkeypatch)
         "article:test:level", "article:test:rate", "article:test:point",
     ]
     assert result["claim_query_selection"]["status"] == "FAMILY_TARGETS_PRESERVED"
+
+
+def test_routed_target_ledger_records_channel_and_metadata_deltas(monkeypatch) -> None:
+    class CounterChannel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+    class CounterProfile:
+        def __init__(self) -> None:
+            self.metadata_api_calls = 4
+
+        def __call__(self, _table_key):
+            return None
+
+    channels = {name: CounterChannel() for name in ("official", "bm25", "dense")}
+    profile = CounterProfile()
+
+    monkeypatch.setattr(
+        operational,
+        "run_operational_l2",
+        lambda *_args, **_kwargs: {"results": [{"article_idx": "article:test", "status": "L2_READY", "predictions": []}], "manifest": {}},
+    )
+    monkeypatch.setattr(
+        operational,
+        "select_primary_target",
+        lambda rows: {"primary": rows[0], "group_key": ("article:test", 0, "출생아", "2025"), "value_span_ids": ["span:one"]},
+    )
+
+    def fake_retrieve(_claim, channel_map, **_kwargs):
+        channel_map["official"].calls += 1
+        channel_map["bm25"].calls += 2
+        channel_map["dense"].calls += 3
+        profile.metadata_api_calls += 2
+        return (), {"paths": {"indicator:official": 0}}
+
+    monkeypatch.setattr(operational, "retrieve_parallel", fake_retrieve)
+
+    result = operational.run_new_articles_v2(
+        [{"article_idx": "article:test", "title": "기사", "date": "2026-08-26", "article_text": "출생아 수는 10명이다."}],
+        l2_api_key="",
+        search_channels=channels,
+        release_sha256_by_channel={},
+        catalog_records=(),
+        reranker=None,
+        profile_provider=profile,
+        cell_fetcher=lambda _query: [],
+        hcx_answerer=None,
+        stack_runner=lambda *_args: [{
+            "article_idx": "article:test",
+            "value_span_id": "span:one",
+            "sentence_text": "출생아 수는 10명이다.",
+            "value_text": "10",
+            "value_unit": "명",
+            "retrieval_fields": {"indicator": "출생아 수", "measurement_type": "LEVEL"},
+        }],
+        claim_query=None,
+        evidence_first_statistics_shadow=True,
+        release_bound_mode=True,
+    )
+
+    ledger = result["stage_ledger"][0]
+    assert ledger["retrieval"]["calls"] == 6
+    assert ledger["retrieval"]["channel_calls"] == {"official": 1, "bm25": 2, "dense": 3}
+    assert ledger["candidate_membership"] == []
+    assert ledger["metadata_api_calls"] == 2
+
+
+def test_canonical_profile_lookup_delta_is_distinct_from_metadata_api_calls(monkeypatch) -> None:
+    class Connection:
+        def close(self) -> None:
+            return None
+
+    provider = CanonicalMetadataProfileProvider(dsn="postgresql://readonly", release_id="release:test")
+    monkeypatch.setattr(provider, "_connect", lambda: Connection())
+    monkeypatch.setattr(provider, "_release_attestation", lambda _connection: None)
+    monkeypatch.setattr(provider, "_profile", lambda _table_key, _connection: None)
+
+    snapshot = operational._snapshot_target_call_counts({}, provider)
+    assert provider("101:DT_TEST") is None
+    delta = operational._target_call_deltas(snapshot, {}, provider)
+
+    assert provider.metadata_api_calls == 0
+    assert provider.lookups == 1
+    assert delta["metadata_api_calls"] == 0
+    assert delta["metadata_lookups"] == 1
+
+
+def test_public_target_receipt_prefers_top_level_membership_and_exposes_bounded_failure_delta(
+    tmp_path: Path,
+) -> None:
+    _write_jsonl(
+        tmp_path / "03_routed.jsonl",
+        [{"article_idx": "article:test", "target_id": "target:one", "value_span_id": "span:one"}],
+    )
+    _write_jsonl(
+        tmp_path / "04_stage_ledger.jsonl",
+        [{
+            "article_idx": "article:test",
+            "target_id": "target:one",
+            "resolution": "QDRANT_UNAVAILABLE",
+            "candidate_membership": ["top-level-table"],
+            "retrieval": {
+                "candidate_membership": ["nested-table"],
+                "calls": 6,
+                "channel_calls": {"official": 1, "bm25": 2, "dense": 3},
+            },
+            "metadata_api_calls": 2,
+            "metadata_lookups": 3,
+            "failure": {"error_code": "QDRANT_UNAVAILABLE", "error_type": "RuntimeError"},
+            "cell": {"status": "NO_CELL"},
+        }],
+    )
+
+    status, receipts = service._live_status(tmp_path)
+
+    assert status == "unverifiable"
+    assert receipts[0]["retrieval"] == {
+        "calls": 6,
+        "channel_calls": {"official": 1, "bm25": 2, "dense": 3},
+        "channel_audits": {},
+        "candidate_table_keys": ["top-level-table"],
+    }
+    assert receipts[0]["metadata_binding"]["calls"] == 2
+    assert receipts[0]["metadata_binding"]["lookups"] == 3
+    assert receipts[0]["limitation"] == {
+        "error_code": "QDRANT_UNAVAILABLE",
+        "call_delta": {
+            "retrieval": 6,
+            "channel_calls": {"official": 1, "bm25": 2, "dense": 3},
+            "metadata_api": 2,
+            "metadata_lookups": 3,
+        },
+    }

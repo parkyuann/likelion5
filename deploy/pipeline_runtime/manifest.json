@@ -248,8 +248,8 @@
     },
     {
       "path": "news_verification/runtime/operational_live_adapters_v2.py",
-      "sha256": "26d74be20910a5880b1f480a19b093030c9cefb39be44e30df067ad24cbb367e",
-      "size": 19968
+      "sha256": "15925b427173e33660a62a09bb028d63bf4b9d1230e8946eae3bc72b3423312e",
+      "size": 20527
     },
     {
       "path": "news_verification/runtime/operational_retrieval_v2.py",
@@ -303,8 +303,8 @@
     },
     {
       "path": "news_verification/runtime/release_bound_live_adapters_v1.py",
-      "sha256": "2b184203420160e45f47d6cfe057b9402504f3764d20f93286daffee251f5257",
-      "size": 22613
+      "sha256": "868d7f7a82c488192f26f8fa0341aa05ae804f0a2f6479ea0478b29b5db94f72",
+      "size": 24209
     },
     {
       "path": "news_verification/runtime/run_layer_stack.py",
@@ -318,8 +318,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "a49553a9cb93063e810a42e9fdc016c7c4791bc60765a916e95bbe5669255c7d",
-      "size": 187142
+      "sha256": "fe8e11bf6a7bfc41360cb327c9ec037e68af4b96a89ee3a41625020d9daa9107",
+      "size": 194752
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

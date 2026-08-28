@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 import hashlib
 import json
 import os
+from threading import Lock
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from backend.errors import BackendError
@@ -411,6 +412,10 @@ class ReleaseBoundDenseChannel:
     def __init__(self, adapter: QdrantDenseAdapter, encoder: Callable[[str], Sequence[float] | tuple[Sequence[float], Mapping[str, Any]]]) -> None:
         self.adapter = adapter
         self.encoder = encoder
+        # A runtime is instantiated for one operational request.  Preserve every
+        # dense audit for that request rather than retaining a lossy last value.
+        self._audit_lock = Lock()
+        self._audit_events: list[dict[str, Any]] = []
 
     @staticmethod
     def _encoded(value: Any) -> tuple[Sequence[float], Mapping[str, Any]]:
@@ -419,11 +424,25 @@ class ReleaseBoundDenseChannel:
         return value, {}
 
     def __call__(self, query: Any, fields: Sequence[str], top_k: int) -> Iterable[Mapping[str, Any]]:
-        vector, encoder_evidence = self._encoded(self.encoder(query.text))
+        query_text = str(query.text)
+        query_sha256 = hashlib.sha256(query_text.encode("utf-8")).hexdigest()
+        vector, encoder_evidence = self._encoded(self.encoder(query_text))
         result = self.adapter.search_grouped_by_table(vector, fields=fields, limit=100)
+        raw_audit = result.get("audit") if isinstance(result, Mapping) else None
+        audit = {
+            key: raw_audit[key]
+            for key in (
+                "boundary_status", "cutoff_score", "observed_tied_count",
+                "requested_window", "expansions",
+            )
+            if isinstance(raw_audit, Mapping) and key in raw_audit
+        }
+        with self._audit_lock:
+            self._audit_events.append({"query_sha256": query_sha256, **audit})
+        candidates: list[dict[str, Any]] = []
         for candidate in result.get("candidates") or []:
             evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), Mapping) else {}
-            yield {
+            candidates.append({
                 "record_id": _text(evidence.get("record_id")),
                 "table_key": _text(candidate.get("table_key")),
                 "field": _text(evidence.get("field")),
@@ -432,7 +451,20 @@ class ReleaseBoundDenseChannel:
                 "snapshot_id": _text(candidate.get("release_id")),
                 "source": "qdrant_dense",
                 "evidence": {**dict(evidence), "encoder": dict(encoder_evidence)},
-            }
+            })
+        return candidates
+
+    def audit_cursor(self) -> int:
+        with self._audit_lock:
+            return len(self._audit_events)
+
+    def audits_since(self, cursor: int) -> list[dict[str, Any]]:
+        if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
+            raise _fail("DENSE_AUDIT_CURSOR_INVALID", "dense audit cursor가 올바르지 않습니다.")
+        with self._audit_lock:
+            if cursor > len(self._audit_events):
+                raise _fail("DENSE_AUDIT_CURSOR_INVALID", "dense audit cursor가 현재 범위를 벗어났습니다.")
+            return [dict(event) for event in self._audit_events[cursor:]]
 
 
 @dataclass

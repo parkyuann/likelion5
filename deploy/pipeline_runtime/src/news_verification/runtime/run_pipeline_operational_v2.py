@@ -62,6 +62,10 @@ from src.news_verification.runtime.operational_live_adapters_v2 import (
     write_live_outputs,
 )
 from src.news_verification.runtime.audit_budget_v1 import BudgetedCallable, HttpAttemptBudgetLedger
+from src.develop.l2_segmentation import (
+    CANONICAL_L2_STATUSES,
+    DOWNSTREAM_L2_ELIGIBLE as DOWNSTREAM_L2_ELIGIBLE_STATUSES,
+)
 from src.news_verification.runtime.l1_value_candidates import build_span_candidates, sentence_offset_map
 from src.news_verification.runtime.l3_role_assignment import attach_indicator_evidence_monthly_v2h
 from src.news_verification.runtime.adapters.shadow_compat import failure_recovery_api, user_intent_api
@@ -879,13 +883,6 @@ _TRACE_SPAN_ERROR_CODES = {
     "OCCURRENCE_INDEX_INVALID",
     "UNKNOWN",
 }
-CANONICAL_L2_STATUSES = frozenset({
-    "L2_READY", "REPAIRED_SOURCE_EXACT", "HOLD_NOT_FOUND",
-    "HOLD_AMBIGUOUS", "L2_UNAVAILABLE",
-})
-DOWNSTREAM_L2_ELIGIBLE_STATUSES = frozenset({"L2_READY", "REPAIRED_SOURCE_EXACT"})
-
-
 def _trace_safe_error(error: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(error, Mapping):
         raise OperationalPipelineError("L2_RESPONSE_INVALID")

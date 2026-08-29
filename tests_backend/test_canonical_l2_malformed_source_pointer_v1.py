@@ -1,26 +1,87 @@
 from __future__ import annotations
 
+import ast
+import json
 from pathlib import Path
 import sys
-import types
+from typing import Any, Callable, Iterator, Mapping
 
 RUNTIME_ROOT = Path(__file__).parents[1] / "deploy" / "pipeline_runtime"
 if str(RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_ROOT))
-if "pandas" not in sys.modules:
-    pandas = types.ModuleType("pandas")
-    pandas.Series = object
-    pandas.DataFrame = object
-    sys.modules["pandas"] = pandas
 
 from src.develop.l2_segmentation import (  # noqa: E402
     DOWNSTREAM_L2_ELIGIBLE,
     resolve_prediction,
 )
 from src.news_verification.runtime.l1_value_candidates import iter_sentence_spans  # noqa: E402
+from src.news_verification.runtime.run_pipeline_operational_v2 import (  # noqa: E402
+    materialize_operational_l2,
+)
 
 
 ARTICLE = "2025년 전국 출생아 수는 25만4341명이다."
+
+
+def _isolated_trace_stage_functions() -> dict[str, Any]:
+    """Execute only the two changed trace functions without importing its graph.
+
+    Other collection modules intentionally replace the legacy operational
+    wrapper with a small test seam.  Importing the complete trace module here
+    would bind to that unrelated global seam, so this follows the existing
+    AST-isolation pattern used by the resume tests and supplies only the
+    direct dependencies of stage 02 and stage 03.
+    """
+    source = (RUNTIME_ROOT / "src" / "develop" / "run_article_body_pipeline_trace_v1.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in {"run_l2_stage", "run_layers_stage"}
+    }
+    assert set(wanted) == {"run_l2_stage", "run_layers_stage"}
+
+    def _atomic_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+        path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    namespace: dict[str, Any] = {
+        "Any": Any,
+        "Callable": Callable,
+        "Iterator": Iterator,
+        "Mapping": Mapping,
+        "Path": Path,
+        "json": json,
+        "DOWNSTREAM_L2_ELIGIBLE": DOWNSTREAM_L2_ELIGIBLE,
+        "iter_article_body_sentence_spans": iter_sentence_spans,
+        "L2ReceiptError": RuntimeError,
+        "OperationalPipelineError": RuntimeError,
+        "TraceStageError": type("TraceStageError", (RuntimeError,), {}),
+        "env_api_key": lambda: "",
+        "materialize_operational_l2": materialize_operational_l2,
+        "project_trace_operational_l2": lambda value: value,
+        "enforce_call_limits": lambda value: dict(value),
+        "_atomic_jsonl": _atomic_jsonl,
+        "_emit_log": lambda *_args, **_kwargs: None,
+        "_sha_file": lambda _path: "0" * 64,
+        "_manifest": lambda **_kwargs: {},
+        "_publish_manifest": lambda *_args, **_kwargs: None,
+        "_STAGE_FILES": {
+            "02": ({"02_l2_predictions.jsonl", "02_l2_results.jsonl"}, {"02_trace.log"}),
+            "03": ({"03_routed.jsonl"}, {"03_trace.log"}),
+        },
+    }
+    exec(
+        compile(
+            ast.Module(body=[wanted["run_l2_stage"], wanted["run_layers_stage"]], type_ignores=[]),
+            "run_article_body_pipeline_trace_v1.py",
+            "exec",
+        ),
+        namespace,
+    )
+    return namespace
 
 
 def _prediction(
@@ -248,3 +309,161 @@ def test_another_registered_source_less_metric_is_repaired():
     assert result["sentences"][0]["indicator_scopes"][0]["span_status"] == "RESOLVED"
     assert result["repair_receipts"][0]["exact_indicator_count"] == 1
     assert result["repair_receipts"][0]["owned_l1_value_count"] == 1
+
+
+def test_operational_and_article_trace_consumers_preserve_and_route_new_status(
+    tmp_path,
+):
+    article = {"article_idx": "a", "article_text": ARTICLE}
+    canonical = _resolve()
+    prediction = {"article_idx": "a", **canonical["sentences"][0]}
+    raw_manifest = {
+        "contract_version": "test-l2-receipt-v1",
+        "producer": "focused-regression",
+        "articles": 1,
+        "sentences_predicted": 1,
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "total_tokens": 2,
+        "latency_ms_total": 1.0,
+        "article_runs": [{
+            "article_idx": "a",
+            "attempts": 1,
+            "status": canonical["canonical_status"],
+            "reason_code": canonical["canonical_reason_code"],
+            "resolver_version": canonical["resolver_version"],
+            "repair_reason_code": canonical["repair_reason_code"],
+            "raw_prediction_sha256": canonical["raw_envelope"]["raw_prediction_sha256"],
+            "canonical_l2_sha256": canonical["canonical_l2_sha256"],
+        }],
+        "errors": [],
+        "generation_config": None,
+        "hcx_l2_calls": 1,
+    }
+
+    materialized = materialize_operational_l2(
+        [article],
+        [prediction],
+        raw_manifest,
+        external_model_calls=1,
+        sentence_span_iterator=iter_sentence_spans,
+    )
+    assert materialized["results"] == [{
+        "article_idx": "a",
+        "status": "REPAIRED_SOURCE_NOT_PROVIDED",
+        "predictions": [prediction],
+        "canonical_status": "REPAIRED_SOURCE_NOT_PROVIDED",
+        "canonical_reason_code": "MALFORMED_SOURCE_POINTER_WITHOUT_EXACT_EVIDENCE",
+        "resolver_version": canonical["resolver_version"],
+        "repair_reason_code": "MALFORMED_SOURCE_POINTER_WITHOUT_EXACT_EVIDENCE",
+        "raw_prediction_sha256": canonical["raw_envelope"]["raw_prediction_sha256"],
+        "canonical_l2_sha256": canonical["canonical_l2_sha256"],
+    }]
+
+    article_path = tmp_path / "articles.jsonl"
+    article_path.write_text(json.dumps(article, ensure_ascii=False) + "\n", encoding="utf-8")
+    run_root = tmp_path / "trace"
+    run_root.mkdir()
+    trace = _isolated_trace_stage_functions()
+    trace["run_l2"] = lambda *_args, **_kwargs: ([prediction], raw_manifest)
+    trace["run_l2_stage"](
+        [article],
+        article_path,
+        run_root,
+        api_key="focused-test-key",
+        sentence_span_iterator=iter_sentence_spans,
+    )
+    saved_predictions = [
+        json.loads(line)
+        for line in (run_root / "02_l2_predictions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    saved_results = [
+        json.loads(line)
+        for line in (run_root / "02_l2_results.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert saved_predictions == [prediction]
+    assert saved_results == [{
+        "article_idx": "a",
+        "status": "REPAIRED_SOURCE_NOT_PROVIDED",
+        "prediction_row_start": 0,
+        "prediction_row_end": 1,
+    }]
+
+    routed_input: dict[str, object] = {}
+
+    def _capture_run_stack(articles, rows, **_kwargs):
+        routed_input["articles"] = articles
+        routed_input["rows"] = rows
+        return [{
+            "article_idx": "a",
+            "value_span_id": "s0:value_unit:18-26",
+            "routing_class": "KOSIS",
+            "retrieval_queries": [],
+        }]
+
+    trace["run_stack"] = _capture_run_stack
+    trace["run_layers_stage"](
+        [article],
+        article_path,
+        run_root,
+        sentence_span_iterator=iter_sentence_spans,
+    )
+    assert routed_input["articles"] == [article]
+    assert routed_input["rows"] == [prediction]
+
+    for hold_status in ("HOLD_NOT_FOUND", "HOLD_AMBIGUOUS", "L2_UNAVAILABLE"):
+        hold_manifest = {
+            **raw_manifest,
+            "article_runs": [{
+                **raw_manifest["article_runs"][0],
+                "status": hold_status,
+            }],
+        }
+        materialized_hold = materialize_operational_l2(
+            [article],
+            [prediction],
+            hold_manifest,
+            external_model_calls=1,
+            sentence_span_iterator=iter_sentence_spans,
+        )
+        assert materialized_hold["results"][0]["status"] == hold_status
+        assert materialized_hold["results"][0]["predictions"] == []
+
+        trace["run_l2"] = lambda *_args, _manifest=hold_manifest, **_kwargs: ([prediction], _manifest)
+        trace["run_l2_stage"](
+            [article],
+            article_path,
+            run_root,
+            api_key="focused-test-key",
+            sentence_span_iterator=iter_sentence_spans,
+        )
+        assert (run_root / "02_l2_predictions.jsonl").read_text(encoding="utf-8") == ""
+        hold_results = [
+            json.loads(line)
+            for line in (run_root / "02_l2_results.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert hold_results == [{
+            "article_idx": "a",
+            "status": hold_status,
+            "prediction_row_start": 0,
+            "prediction_row_end": 0,
+        }]
+
+        blocked_input: dict[str, object] = {}
+
+        def _capture_blocked_stack(articles, rows, **_kwargs):
+            blocked_input["articles"] = articles
+            blocked_input["rows"] = rows
+            return []
+
+        trace["run_stack"] = _capture_blocked_stack
+        trace["run_layers_stage"](
+            [article],
+            article_path,
+            run_root,
+            sentence_span_iterator=iter_sentence_spans,
+        )
+        assert blocked_input == {"articles": [], "rows": []}

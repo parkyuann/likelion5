@@ -73,8 +73,8 @@
     },
     {
       "path": "develop/run_article_body_pipeline_trace_v1.py",
-      "sha256": "8e304c531548910c5767c064d3de35c48dfcc88d4e8301e3d2134e39a8e6eb71",
-      "size": 46668
+      "sha256": "98d5725685c6eea00a46f2f2e1c2122c77b0309c11e53f8a7f2642be3c706126",
+      "size": 46690
     },
     {
       "path": "develop/run_l2_segmentation.py",
@@ -318,8 +318,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "b6c1b77cc4f9a9d8170e2e3ce07384dec38b7b1623484f1d7c6e0037e6606379",
-      "size": 255116
+      "sha256": "da7f585585b4fef4f4f1e47e7c6b4afb8736d2588b9d8b88f40872eddc1e8b49",
+      "size": 255027
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

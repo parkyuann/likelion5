@@ -1319,7 +1319,11 @@ def verify_article_develop(
             prepare_resume = getattr(run_trace, "_prepare_resume", None)
             if prepare_resume is None:
                 raise BackendError("RESUME_CHECKPOINT_UNSUPPORTED", "현재 pipeline runtime은 재개를 지원하지 않습니다.", status_code=409)
-            prepare_resume(out_root, resume_from_stage)
+            prepare_resume(
+                out_root,
+                resume_from_stage,
+                clarification_context_path=checkpoint.context_path,
+            )
             # The trace has one physical live envelope.  A binding checkpoint
             # supplies its sealed continuation bundle to that envelope, where
             # retrieval/reranking/profile transport calls are bypassed.

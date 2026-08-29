@@ -134,7 +134,7 @@ def test_resume_uses_checkpoint_without_repeating_l1_l2(monkeypatch, tmp_path):
         elif stage == "l2":
             _write_fake_outputs(output, final=False)
 
-    fake_run_trace._prepare_resume = lambda *_args: None
+    fake_run_trace._prepare_resume = lambda *_args, **_kwargs: None
     monkeypatch.setattr(service, "_load_trace_runner", lambda: (fake_run_trace, FakeTraceError))
 
     first = service.verify_article_develop(BODY)

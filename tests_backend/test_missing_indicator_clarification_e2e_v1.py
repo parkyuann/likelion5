@@ -11,6 +11,7 @@ if str(RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_ROOT))
 
 from src.news_verification.runtime import run_pipeline_operational_v2 as operational  # noqa: E402
+from src.develop import run_article_body_pipeline_trace_v1 as trace  # noqa: E402
 from src.news_verification.runtime.article_body_sentence_splitter_v1 import (  # noqa: E402
     SPLITTER_MODE,
     splitter_source_sha256,
@@ -253,6 +254,22 @@ def test_backend_early_gate_does_not_repeat_answered_indicator(tmp_path):
     )
 
     assert pending is None
+
+
+def test_retrieval_resume_rebinds_predecessor_context(tmp_path):
+    root = tmp_path / "out"
+    root.mkdir()
+    context = tmp_path / "clarification_context.json"
+    context.write_text(json.dumps({"contract_version": "clarification-context-v2"}), encoding="utf-8")
+    (root / "03_manifest.json").write_text(
+        json.dumps({"stage": "03", "clarification_context_sha256": "old-context-sha"}),
+        encoding="utf-8",
+    )
+
+    trace.prepare_resume(root, "retrieval", clarification_context_path=context)
+
+    manifest = json.loads((root / "03_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["clarification_context_sha256"] == hashlib.sha256(context.read_bytes()).hexdigest()
 
 
 def test_indicator_answer_resumes_from_retrieval_without_l1_l2_or_layers(monkeypatch):

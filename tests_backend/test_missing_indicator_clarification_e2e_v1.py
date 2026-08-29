@@ -18,6 +18,11 @@ from src.news_verification.runtime.article_body_sentence_splitter_v1 import (  #
 )
 from src.news_verification.runtime.l1_value_candidates import iter_sentence_spans  # noqa: E402
 from src.develop.l2_segmentation import resolve_prediction  # noqa: E402
+from src.news_verification.runtime.r4c1_claim_core_v2 import build_claim_core_v2  # noqa: E402
+from src.news_verification.runtime.r4c1_projection_v2 import (  # noqa: E402
+    project_candidate_v2,
+    validate_target_v2,
+)
 from backend.develop_verify_service import (  # noqa: E402
     _pre_live_clarification_plan,
     _project_failure_recovery_clarification,
@@ -333,3 +338,55 @@ def test_indicator_answer_resumes_from_retrieval_without_l1_l2_or_layers(monkeyp
     assert all(answer.get("verdict") != "CLARIFICATION_REQUIRED" for answer in result["answers"])
     assert merged_rows[0]["retrieval_fields"]["indicator"] == "합계출산율"
     assert merged_rows[0]["user_clarifications"]["indicator"]["source"] == "USER_CLARIFICATION"
+
+
+def test_indicator_clarification_binds_item_without_fabricating_article_span():
+    row = operational._merge_user_clarifications(
+        _routed_row(),
+        {
+            **ARTICLE,
+            "clarification_answers": [{
+                "question_id": "clarify-indicator-answered",
+                "role": "indicator",
+                "value": "합계출산율",
+            }],
+        },
+    )
+    core = build_claim_core_v2(row)
+    profile = {
+        "table_key": "101:DT_TEST",
+        "org_id": "101",
+        "tbl_id": "DT_TEST",
+        "items": [{"itm_id": "TFR", "itm_nm": "합계출산율", "unit_nm": "명"}],
+        "dimensions": [{
+            "obj_id": "A",
+            "obj_nm": "행정구역",
+            "obj_order": 1,
+            "values": [{"value_id": "00", "value_name": "전국", "unit_nm": ""}],
+        }],
+        "periods": [{"PRD_SE": "년", "STRT_PRD_DE": "1990", "END_PRD_DE": "2025"}],
+    }
+
+    projection = project_candidate_v2(
+        core, profile, allow_unqualified_nationwide=True,
+    )
+    resolution = validate_target_v2([projection])
+
+    assert resolution.outcome == "QUERY_READY"
+    assert resolution.query_plan == {
+        "org_id": "101",
+        "tbl_id": "DT_TEST",
+        "itm_id": "TFR",
+        "prd_se": "Y",
+        "start_prd_de": "2025",
+        "end_prd_de": "2025",
+        "obj_levels": {"objL1": "00"},
+    }
+    indicator_binding = next(
+        binding for binding in projection.assignments[0].bindings
+        if binding.axis_kind == "ITEM"
+    )
+    assert indicator_binding.binding_basis == "USER_CLARIFICATION_EXACT"
+    assert indicator_binding.evidence["claim_provenance"]["evidence_basis"] == "USER_CLARIFICATION"
+    assert indicator_binding.evidence["claim_provenance"]["start"] is None
+    assert indicator_binding.evidence["claim_provenance"]["user_clarification"]["role"] == "indicator"

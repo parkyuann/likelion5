@@ -73,8 +73,8 @@
     },
     {
       "path": "develop/run_article_body_pipeline_trace_v1.py",
-      "sha256": "98d5725685c6eea00a46f2f2e1c2122c77b0309c11e53f8a7f2642be3c706126",
-      "size": 46690
+      "sha256": "10c72203e34a252447d2bc03cc7506acbaa9257c62e977df99b1a1e1b5a213e9",
+      "size": 47903
     },
     {
       "path": "develop/run_l2_segmentation.py",

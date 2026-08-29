@@ -851,8 +851,20 @@ def run_live_stage(
         ) from exc
 
 
-def prepare_resume(root: str | Path, resume_from_stage: str) -> None:
-    """Remove only downstream outputs before continuing a sealed checkpoint."""
+def prepare_resume(
+    root: str | Path,
+    resume_from_stage: str,
+    *,
+    clarification_context_path: str | Path | None = None,
+) -> None:
+    """Remove downstream outputs and rebind the live predecessor context.
+
+    Retrieval/item/indicator clarification deliberately resumes after the
+    sealed L3-L5 artifacts.  In that path the stage-03 manifest is reused, so
+    its context digest must be advanced to the newly persisted user answer
+    before the live stage validates the predecessor.  Date/period
+    clarification reruns stage 03 and gets a fresh manifest instead.
+    """
     path = Path(root).resolve()
     if resume_from_stage not in {"layers", "retrieval", "binding", "live"}:
         raise TraceStageError("RESUME_STAGE_INVALID")
@@ -866,6 +878,20 @@ def prepare_resume(root: str | Path, resume_from_stage: str) -> None:
                 target.unlink()
     for tmp in path.parent.glob(".rt04.*.tmp"):
         _remove_runtime_temp(tmp)
+    if resume_from_stage != "layers" and clarification_context_path is not None:
+        manifest_path = path / "03_manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError
+            context_sha = _sha_file(Path(clarification_context_path).resolve())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from exc
+        manifest["clarification_context_sha256"] = context_sha
+        _atomic_bytes(
+            manifest_path,
+            (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        )
 
 
 def run_trace(

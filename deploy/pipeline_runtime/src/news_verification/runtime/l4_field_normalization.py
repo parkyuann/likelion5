@@ -32,6 +32,11 @@ try:
 except ImportError:  # pragma: no cover - direct script execution
     from value_direction import extract_value_direction
 
+try:
+    from .lexical_rules import _REGION_PATTERN
+except ImportError:  # pragma: no cover - direct script execution
+    from lexical_rules import _REGION_PATTERN
+
 
 LEVEL = "LEVEL"
 CHANGE_RATE = "CHANGE_RATE"
@@ -139,7 +144,7 @@ _POPULATION_RE = re.compile(
     r"주민|학생|환자|사업체|기업|농가|어가|청년|고령자|노인|외국인)"
 )
 _DIMENSION_RE = re.compile(
-    r"(?:대기업|중견기업|중소기업|수도권|비수도권|서울|경기|전국|남성|여성|"
+    rf"(?:{_REGION_PATTERN.pattern}|대기업|중견기업|중소기업|비수도권|남성|여성|"
     r"청년층|고령층|제조업|서비스업|건설업|농림어업|공공부문|민간부문)"
 )
 

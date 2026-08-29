@@ -22,7 +22,7 @@ import json
 import hashlib
 import re
 from copy import deepcopy
-from typing import Any, Iterator, Callable
+from typing import Any, Iterator, Callable, Mapping, Sequence
 
 try:
     from .hcx_client import call_hcx_json as _call_hcx_json
@@ -462,6 +462,42 @@ def _indicator_evidence_decision(
     }
 
 
+def _recover_single_exact_indicator(
+    sentence_text: str,
+    sentence_values: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Recover one omitted indicator from a uniquely exact source surface.
+
+    HCX may return an empty ``indicator_scopes`` array even when the sentence
+    contains one ordinary statistical indicator. This recovery is deliberately
+    narrower than semantic inference: it requires exactly one L1 value, exactly
+    one entry in the versioned terminology registry, and the indicator must
+    precede that value in the same sentence. It never selects an item, table,
+    dimension, period, or cell.
+    """
+    if not isinstance(sentence_text, str) or len(sentence_values) != 1:
+        return None
+    proposals = propose_exact_statistical_indicator_matches(sentence_text)
+    if len(proposals) != 1:
+        return None
+    proposal = proposals[0]
+    value_start = sentence_values[0].get("char_start")
+    if not isinstance(value_start, int) or proposal.end > value_start:
+        return None
+    return {
+        "indicator_label": proposal.text,
+        "source_span_text": proposal.text,
+        "source_char_start": proposal.start,
+        "source_char_end": proposal.end,
+        "span_status": "RESOLVED",
+        "indicator_evidence_status": "RESOLVED",
+        "indicator_evidence_reason": "EXACT_REGISTRY_SOURCE_RECOVERY",
+        "offset_provenance": "L2_EXACT_INDICATOR_REGISTRY_RECOVERY",
+        "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
+        "recovery_rule_id": "l2-single-exact-indicator-recovery-v1",
+    }
+
+
 def find_hcx_model_span_matches(sentence_text: str, span_text: str) -> list[int]:
     """Return offsets for exact source text only."""
     _validate_hcx_model_span_inputs(sentence_text, span_text)
@@ -821,24 +857,61 @@ def resolve_prediction(
             if value.get("kind") == "value_unit"
         ]
         if sentence_values and not scopes:
-            indicator_clarification = True
-            indicator_evidence_receipts.append({
-                "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
-                "decision": "MISSING",
-                "reason_code": "MODEL_INDICATOR_LABEL_NOT_GROUNDED",
-                "indicator_label": "",
-                "exact_label_in_source_span_count": 0,
-                "exact_label_in_sentence_count": 0,
-                "exact_registry_match_count": 0,
-                "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
-                "owned_l1_value_count": len(sentence_values),
-                "period_context_preserved": bool(
-                    item.get("period_context")
-                    or any(value.get("kind") == "time" for value in candidates_by_sentence.get(int(sentence_id), []))
-                ),
-                "sentence_id": int(sentence_id),
-                "value_span_ids": [value.get("span_id") for value in sentence_values],
-            })
+            # Do not let exact indicator recovery mask an invalid HCX source
+            # pointer.  That pointer is an independent hard-failure contract
+            # and must remain visible to the canonical L2 status.
+            raw_region = dict(item.get("source_region") or {})
+            raw_region_span = str(raw_region.get("source_span_text") or "").strip()
+            source_pointer_is_valid = True
+            if raw_region_span:
+                try:
+                    resolve_hcx_model_span(text, raw_region_span)
+                except SpanResolutionError:
+                    source_pointer_is_valid = False
+            recovered_indicator = (
+                _recover_single_exact_indicator(text, sentence_values)
+                if source_pointer_is_valid else None
+            )
+            if recovered_indicator is not None:
+                scopes = [recovered_indicator]
+                proposal = propose_exact_statistical_indicator_matches(text)[0]
+                indicator_evidence_receipts.append({
+                    "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
+                    "decision": "RESOLVED",
+                    "reason_code": "EXACT_REGISTRY_SOURCE_RECOVERY",
+                    "indicator_label": proposal.text,
+                    "exact_label_in_source_span_count": 1,
+                    "exact_label_in_sentence_count": 1,
+                    "exact_registry_match_count": 1,
+                    "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
+                    "owned_l1_value_count": len(sentence_values),
+                    "period_context_preserved": bool(
+                        item.get("period_context")
+                        or any(value.get("kind") == "time" for value in candidates_by_sentence.get(int(sentence_id), []))
+                    ),
+                    "sentence_id": int(sentence_id),
+                    "value_span_ids": [value.get("span_id") for value in sentence_values],
+                    "recovery_rule_id": "l2-single-exact-indicator-recovery-v1",
+                })
+            else:
+                indicator_clarification = True
+                indicator_evidence_receipts.append({
+                    "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
+                    "decision": "MISSING",
+                    "reason_code": "MODEL_INDICATOR_LABEL_NOT_GROUNDED",
+                    "indicator_label": "",
+                    "exact_label_in_source_span_count": 0,
+                    "exact_label_in_sentence_count": 0,
+                    "exact_registry_match_count": 0,
+                    "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
+                    "owned_l1_value_count": len(sentence_values),
+                    "period_context_preserved": bool(
+                        item.get("period_context")
+                        or any(value.get("kind") == "time" for value in candidates_by_sentence.get(int(sentence_id), []))
+                    ),
+                    "sentence_id": int(sentence_id),
+                    "value_span_ids": [value.get("span_id") for value in sentence_values],
+                })
         region = dict(item.get("source_region") or {})
         # Derive the category from the pointer so downstream code and the
         # evaluator keep one vocabulary regardless of how the model answered.
@@ -1053,6 +1126,16 @@ def resolve_prediction(
     elif "HOLD_NOT_FOUND" in exact_repair_statuses and not resolved:
         canonical_status = "HOLD_NOT_FOUND"
         reason_code = "MISSING_SENTENCE_EXACT_INDICATOR_NOT_FOUND"
+    elif indicator_clarification and (malformed_source_pointer_receipts or source_not_provided_receipts):
+        # A malformed source pointer is a hard L2 hold even when the same row
+        # also lacks an indicator.  Do not downgrade the malformed-pointer
+        # evidence into a clarification-only result.
+        canonical_status = "HOLD_NOT_FOUND"
+        reason_code = (
+            "MALFORMED_SOURCE_POINTER_WITHOUT_EXACT_EVIDENCE"
+            if malformed_source_pointer_receipts
+            else "SOURCE_REGION_OPEN_WITHOUT_EXACT_SPAN"
+        )
     elif indicator_clarification:
         canonical_status = "L2_CLARIFICATION_REQUIRED"
         reason_code = "INDICATOR_EVIDENCE_MISSING"

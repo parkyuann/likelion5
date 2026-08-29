@@ -452,7 +452,13 @@ def build_claim_core_v2(routed_value: Mapping[str, Any]) -> ClaimCore:
             region_span = None
     else:
         region_span = None
-    region_status = "EXPLICIT" if region_evidence and region_surface and region_span and region_sentence_id is not None else "UNKNOWN"
+    region_status = (
+        "AMBIGUOUS"
+        if region_evidence and region_evidence.get("status") == "AMBIGUOUS"
+        else "EXPLICIT"
+        if region_evidence and region_surface and region_span and region_sentence_id is not None
+        else "UNKNOWN"
+    )
     region_prov = _claim_provenance(row, sentence_id=region_sentence_id, span=region_span, span_path="region_evidence.span" if region_span else None)
     if region_sentence:
         region_prov["sentence_text"] = region_sentence

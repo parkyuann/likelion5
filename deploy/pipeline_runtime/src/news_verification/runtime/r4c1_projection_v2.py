@@ -1106,7 +1106,7 @@ def project_candidate_v2(
         if (
             not options
             and allow_unqualified_nationwide
-            and _get(region_atom, "status") != "EXPLICIT"
+            and _get(region_atom, "status") not in {"EXPLICIT", "AMBIGUOUS"}
         ):
             nationwide = _geographic_nationwide_default(
                 indicator_atom, dindex=dindex, dimension=dimension, values=values
@@ -1829,7 +1829,7 @@ def project_candidate_monthly_v2j(
                                 ),
                             ))
         options = _prune_strictly_subsumed_axis_matches(options)
-        if not options and allow_unqualified_nationwide and _get(region_atom, "status") != "EXPLICIT":
+        if not options and allow_unqualified_nationwide and _get(region_atom, "status") not in {"EXPLICIT", "AMBIGUOUS"}:
             nationwide = _geographic_nationwide_default(
                 indicator_atom, dindex=dindex, dimension=dimension, values=values,
             )

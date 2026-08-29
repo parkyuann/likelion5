@@ -7,6 +7,9 @@ from pathlib import Path
 import re
 import sqlite3
 from typing import Any, Callable, Iterable, Mapping, Sequence
+import unicodedata
+
+from dataclasses import replace
 
 import requests
 
@@ -109,6 +112,92 @@ class OfficialKosisSearchChannel:
         return rows
 
 
+def bounded_item_suffixes(value: Any) -> tuple[str, ...]:
+    """Return the preregistered, longest-first bounded ITEM suffixes."""
+    normalized = " ".join(unicodedata.normalize("NFKC", str(value or "")).split())
+    tokens = normalized.split() if normalized else []
+    if len(tokens) <= 2:
+        return ()
+    widest = min(4, len(tokens) - 1)
+    return tuple(" ".join(tokens[-width:]) for width in range(widest, 1, -1))[:3]
+
+
+class ItemOfficialKosisSearchChannel:
+    """KOSIS official search restricted to ITEM candidate membership.
+
+    The official endpoint does not expose a field selector.  This adapter
+    therefore labels its table-key-only results as ``ITEM`` for the strict
+    retrieval contract and optionally issues the bounded suffix set only when
+    the full ITEM query returns fewer than five unique tables.  It never
+    elevates a search hit to a cell or dimension binding.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        timeout_seconds: float = 20.0,
+        min_full_tables: int = 5,
+    ) -> None:
+        self._official = OfficialKosisSearchChannel(api_key, timeout_seconds=timeout_seconds)
+        self.min_full_tables = int(min_full_tables)
+
+    @staticmethod
+    def _as_item_rows(rows: Iterable[Mapping[str, Any]], *, query_id: str, query_text: str) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for rank, row in enumerate(rows, 1):
+            table_key = str(row.get("table_key") or "").strip()
+            if not table_key:
+                continue
+            result.append({
+                **dict(row),
+                "record_id": f"item_official:{query_id}:{rank}:{table_key}",
+                "field": "ITEM",
+                "item_query_text": query_text,
+                "source": "kosis_official_item",
+            })
+        return result
+
+    def __call__(self, query: QuerySpec, fields: Sequence[str], top_k: int) -> Iterable[Mapping[str, Any]]:
+        del fields  # the logical channel fixes the field to ITEM
+        full_text = " ".join(unicodedata.normalize("NFKC", query.text).split())
+        if not full_text:
+            return []
+        full_query = replace(query, text=full_text, query_id=f"{query.query_id}:item_official_full")
+        full_rows = self._as_item_rows(
+            self._official(full_query, ("ITEM",), top_k),
+            query_id=full_query.query_id,
+            query_text=full_text,
+        )
+        unique_tables = {str(row["table_key"]) for row in full_rows}
+        rows = list(full_rows)
+        if len(unique_tables) < self.min_full_tables:
+            for index, suffix in enumerate(bounded_item_suffixes(full_text), 1):
+                suffix_query = replace(
+                    query,
+                    text=suffix,
+                    query_id=f"{query.query_id}:item_official_suffix_{index}",
+                )
+                suffix_rows = self._as_item_rows(
+                    self._official(suffix_query, ("ITEM",), top_k),
+                    query_id=suffix_query.query_id,
+                    query_text=suffix,
+                )
+                rows.extend(suffix_rows)
+        # Fold duplicate table keys deterministically while preserving the
+        # full-query rank ahead of suffix-derived rows.
+        folded: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            key = str(row.get("table_key") or "")
+            if key and key not in seen:
+                seen.add(key)
+                folded.append(row)
+            if len(folded) >= int(top_k):
+                break
+        return folded
+
+
 class V6Bm25Channel:
     def __init__(self, index_path: Path) -> None:
         self.index_path = index_path
@@ -182,8 +271,11 @@ class V6DenseChannel:
         ]
 
 
-__all__ = ["OfficialKosisSearchChannel", "V6Bm25Channel", "V6DenseChannel", "build_bm25_index"]
-
+__all__ = [
+    "OfficialKosisSearchChannel", "ItemOfficialKosisSearchChannel",
+    "bounded_item_suffixes", "V6Bm25Channel", "V6DenseChannel",
+    "build_bm25_index",
+]
 
 
 

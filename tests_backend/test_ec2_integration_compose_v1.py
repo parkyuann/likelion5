@@ -24,8 +24,8 @@ def test_compose_contains_only_application_overlay_services():
         for line in services.splitlines()
         if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":")
     }
-    assert service_names == {"api", "bge-query-encoder", "nginx"}
-    for forbidden in ("postgres", "opensearch", "qdrant", "redis-session", "redis-cache", "reranker", "diffurank"):
+    assert service_names == {"api", "bge-query-encoder", "bge-reranker", "nginx"}
+    for forbidden in ("postgres", "opensearch", "qdrant", "redis-session", "redis-cache", "diffurank"):
         assert f"\n  {forbidden}:" not in services.lower()
 
 
@@ -63,7 +63,21 @@ def test_api_has_both_networks_and_datastore_network_is_external():
     assert "kosis_shadow_internal" in api and "encoder_internal" in api
     assert "external: true" in source
     assert "name: kosis_shadow_internal" in source
-    assert "\n  api:" in source and "\n  nginx:" in source and "\n  bge-query-encoder:" in source
+    assert "\n  api:" in source and "\n  nginx:" in source and "\n  bge-query-encoder:" in source and "\n  bge-reranker:" in source
+
+
+def test_reranker_is_internal_gpu_service_with_pinned_model_mount():
+    source = COMPOSE.read_text(encoding="utf-8")
+    reranker = _section(source, "  bge-reranker:\n", "\n  nginx:")
+    assert "BGE_RERANKER_IMAGE_REF" in reranker
+    assert 'expose: ["8102"]' in reranker
+    assert "encoder_internal" in reranker
+    assert "count: 1" in reranker and "capabilities: [gpu]" in reranker
+    assert "LOCAL_RERANKER_SNAPSHOT" in reranker
+    assert "target: /models/repository" in reranker
+    assert "read_only: true" in reranker
+    assert "cap_drop: [ALL]" in reranker
+    assert "bge-reranker-v2-m3-ko-service-v2" in reranker
 
 
 def test_nginx_has_dev_tls_redirect_and_preserves_api_prefix():
@@ -88,10 +102,10 @@ def test_runtime_pins_hybrid_and_pending_feature_gates():
         "BGE_QUERY_ENCODER_ENABLED=true",
         "BGE_QUERY_ENCODER_MODEL_REVISION=7074d66aa46562342193ca4feb3d89bf9dad71b4",
         "BGE_QUERY_ENCODER_MODEL_RECEIPT_SHA256=e092f65d5520f374e30c647f6f02d8203b4ddc6ddfd5d064acfd87f6bb28dff7",
-        "BGE_RERANKER_ENABLED=false",
+        "BGE_RERANKER_ENABLED=true",
         "KOSIS_REDIS_CACHE_ENABLED=false",
         "PIPELINE_RUNTIME_ENABLED=true",
-        "PIPELINE_LIVE_STAGE_ENABLED=false",
+        "PIPELINE_LIVE_STAGE_ENABLED=true",
         "PIPELINE_NATURAL_QUERY_ENABLED=false",
         "PIPELINE_IMAGE_ENABLED=false",
         "PIPELINE_URL_ENABLED=false",

@@ -88,7 +88,6 @@ def _hybrid_rrf_k() -> int:
         "KOSIS_HYBRID_PATH_TOP_K": str(SEARCH_CHANNEL_TOP_K),
         "KOSIS_HYBRID_FUSION_TOP_K": str(HYBRID_WINDOW_MAX),
         "KOSIS_HYBRID_RRF_K": "60",
-        "BGE_RERANKER_ENABLED": "false",
     }
     if any(os.getenv(name, "").strip() != value for name, value in expected.items()):
         raise BackendError(

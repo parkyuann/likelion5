@@ -13,6 +13,8 @@ services:
     depends_on:
       bge-query-encoder:
         condition: service_healthy
+      bge-reranker:
+        condition: service_healthy
     expose: ["8000"]
     environment:
       APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
@@ -89,6 +91,53 @@ services:
               capabilities: [gpu]
     read_only: true
     tmpfs: ["/tmp:size=256m,noexec,nosuid,nodev"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  bge-reranker:
+    # Content-addressed image and read-only model snapshot; no public port.
+    image: "${BGE_RERANKER_IMAGE_REF:?set the attested BGE reranker image reference}"
+    expose: ["8102"]
+    command: ["python3", "-m", "uvicorn", "src.news_verification.runtime.bge_reranker_v2_service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8102"]
+    environment:
+      LOCAL_RERANKER_SNAPSHOT: /models/repository/snapshots/2aca5884ecac490192af9ebd86836d9073d826cd
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      CUBLAS_WORKSPACE_CONFIG: ":4096:8"
+      BGE_RERANKER_TIMEOUT_MS: "${BGE_RERANKER_TIMEOUT_MS:?set the attested reranker timeout in milliseconds}"
+      BGE_RERANKER_IMAGE_DIGEST: "${BGE_RERANKER_IMAGE_DIGEST:?set the attested BGE reranker image digest}"
+      BGE_RERANKER_MODEL_MANIFEST_SHA256: "${BGE_RERANKER_MODEL_MANIFEST_SHA256:?set the attested BGE reranker model manifest SHA-256}"
+      BGE_RERANKER_SERVICE_SOURCE_SHA256: "${BGE_RERANKER_SERVICE_SOURCE_SHA256:?set the attested BGE reranker service source SHA-256}"
+      CUDA_DRIVER_VERSION: "${CUDA_DRIVER_VERSION:?set the attested CUDA driver version}"
+    volumes:
+      - type: bind
+        source: "${BGE_RERANKER_MODEL_SOURCE:?set the whole BGE reranker repository path}"
+        target: /models/repository
+        read_only: true
+    networks: [encoder_internal]
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import json, urllib.request;
+          body=json.load(urllib.request.urlopen('http://127.0.0.1:8102/health', timeout=3));
+          raise SystemExit(0 if body.get('status') == 'READY' and body.get('contract') == 'bge-reranker-v2-m3-ko-service-v2' else 1)
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    read_only: true
+    tmpfs: ["/tmp:size=512m,noexec,nosuid,nodev", "/run:size=16m,noexec,nosuid,nodev"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped

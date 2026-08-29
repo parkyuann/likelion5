@@ -15,8 +15,8 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 
-CONTRACT_VERSION = "operational-retrieval-v4-isolated-registers"
-QUERY_REGISTER_VERSION = "six-path-v2"
+CONTRACT_VERSION = "operational-retrieval-v5-item-official"
+QUERY_REGISTER_VERSION = "six-path-v3-item-official-optin"
 DISABLED_PATHS = (
     {"path": "sentence:official", "reason": "DISABLED_ZERO_YIELD_BASELINE"},
 )
@@ -36,6 +36,13 @@ def query_register_contract() -> dict[str, Any]:
         "enabled_paths": [
             "indicator:official", "indicator:bm25", "indicator:dense",
             "item:bm25", "item:dense", "sentence:dense",
+        ],
+        "optional_paths": [
+            {
+                "path": "item:item_official",
+                "condition": "claim._include_item_official=true and item != indicator",
+                "authority": "CANDIDATE_GENERATION_ONLY",
+            },
         ],
         "disabled": list(DISABLED_PATHS),
     }
@@ -111,6 +118,13 @@ class Reranker(Protocol):
     def rerank(self, query: str, passages: Sequence[Mapping[str, str]]) -> Sequence[Mapping[str, Any]]: ...
 
 
+def _claim_text(value: Any) -> str:
+    """Normalize scalar or list-shaped routed fields without inventing text."""
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return " ".join(str(part).strip() for part in value if str(part).strip()).strip()
+    return str(value or "").strip()
+
+
 def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
     """Build only the approved default six-path register.
 
@@ -118,8 +132,14 @@ def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
     They have separate registers and can only affect a candidate set through an
     explicitly receipted union in the orchestrator.
     """
-    indicator = str(claim.get("indicator") or "").strip()
-    item = str(claim.get("item") or indicator).strip()
+    indicator = _claim_text(claim.get("indicator"))
+    explicit_item = _claim_text(claim.get("item"))
+    item = explicit_item or indicator
+    include_item_official = bool(
+        claim.get("_include_item_official") is True
+        and explicit_item
+        and explicit_item != indicator
+    )
     sentence = str(claim.get("sentence") or "").strip()
     # The sentence path contributes lexical context, never the asserted number.
     # Strip explicit numeric expressions before both retrieval and reranking.
@@ -137,10 +157,14 @@ def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
             },
         ))
     if item:
+        item_channels = ("bm25", "dense", "item_official") if include_item_official else ("bm25", "dense")
+        item_fields = {"bm25": ("ITEM",), "dense": ("ITEM",)}
+        if include_item_official:
+            item_fields["item_official"] = ("ITEM",)
         queries.append(QuerySpec(
             "item", "item", item,
-            ("bm25", "dense"),
-            {"bm25": ("ITEM",), "dense": ("ITEM",)},
+            item_channels,
+            item_fields,
         ))
     if sentence:
         queries.append(QuerySpec(
@@ -417,15 +441,19 @@ def rerank_top50(
     """Strictly rerank the RRF scope; missing/extra candidates fail closed."""
     if len(candidates) > 100:
         raise ValueError("reranker input exceeds RRF Top-100")
-    expected = [candidate.table_key for candidate in candidates]
-    passage_ids = [str(passage.get("candidate_id") or "") for passage in passages]
+    # The attested Korean service accepts at most 50 candidates.  RRF still
+    # computes the full Top-100 union; only its deterministic leading Top-50
+    # enters the model, preserving the downstream resolver's Top-50 contract.
+    scope = tuple(candidates[:top_k])
+    expected = [candidate.table_key for candidate in scope]
+    passage_ids = [str(passage.get("candidate_id") or "") for passage in passages[:top_k]]
     if passage_ids != expected:
         raise ValueError("reranker passages must exactly follow candidate scope")
-    raw = list(reranker.rerank(query, passages))
+    raw = list(reranker.rerank(query, passages[:top_k]))
     returned = [str(row.get("candidate_id") or "") for row in raw]
     if len(returned) != len(expected) or set(returned) != set(expected):
         raise RuntimeError("RERANKER_INVALID_RESPONSE")
-    rrf = {candidate.table_key: candidate.rrf_score for candidate in candidates}
+    rrf = {candidate.table_key: candidate.rrf_score for candidate in scope}
     normalized = sorted(
         raw,
         key=lambda row: (-float(row["raw_logit"]), str(row["candidate_id"])),

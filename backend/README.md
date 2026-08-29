@@ -1,7 +1,7 @@
 # Backend — EC2 통합 개발 환경
 
 이 overlay는 기존 EC2 data plane을 새로 만들지 않고 참조한다. Compose가 선언하는 application
-service는 `api`, `nginx`, `bge-query-encoder`뿐이며 PostgreSQL, OpenSearch, Qdrant,
+service는 `api`, `nginx`, `bge-query-encoder`, `bge-reranker`이며 PostgreSQL, OpenSearch, Qdrant,
 redis-session, redis-cache는 `kosis_shadow_internal`의 외부 서비스다.
 
 ## 인증
@@ -31,24 +31,27 @@ release_id, analyzer/index, collection/vector dimension, model revision/receipt�
 503 fail-closed 한다. 응답은 `table_key`, `release_id`, `source`, `score`, evidence를 가진
 후보만 반환하며 최종 통계값·cell 검증·진위 판정을 하지 않는다.
 
-encoder는 외부 port 없이 `encoder_internal`에서 API와만 통신한다. token은 Docker secret으로만
-전달하고 query/vector/token은 public response나 일반 로그에 넣지 않는다. reranker는
-`BGE_RERANKER_ENABLED=false`로 유지한다.
+encoder와 reranker는 외부 port 없이 `encoder_internal`에서 API와만 통신한다. encoder token은
+Docker secret으로만 전달하고 query/vector/token은 public response나 일반 로그에 넣지 않는다.
+운영 article pipeline은 `BGE_RERANKER_ENABLED=true`일 때 canonical PostgreSQL profile에서
+후보 passage를 읽어 고정된 BGE reranker 서비스로 Top-50만 재정렬한다. `/api/v1/tables`의
+표 검색은 계속 BM25+dense equal-weight RRF만 사용하며 reranker 결과를 섞지 않는다.
 
 ## Pipeline feature gates
 
-`PIPELINE_RUNTIME_ENABLED=true`일 때 구조화 기사 입력의 application 경로만 준비한다. 현재
-완성되지 않은 live 후단은 `PIPELINE_LIVE_STAGE_ENABLED=false`, natural query는
+`PIPELINE_RUNTIME_ENABLED=true`일 때 구조화 기사 입력의 application 경로만 준비한다. 운영
+배포에서는 BGE와 ITEM 공식검색을 포함한 live 후단을 `PIPELINE_LIVE_STAGE_ENABLED=true`로
+연다. natural query는
 `PIPELINE_NATURAL_QUERY_ENABLED=false`, image/URL은 각각 false로 둔다. 닫힌 경로는 fake
 결과나 local 검색으로 내려가지 않고 명시적 PENDING 503을 반환한다.
 
 다음 기능은 통합 환경 이후 순차 작업이다.
 
-- live-stage와 hybrid retrieval contract v2 결합
+- ITEM 공식검색 후보 채널과 bounded suffix 결합
 - natural query/canonical pipeline 연결
 - image/URL 정식 extractor 연결
 - `002_application_product_state`
-- BGE reranker, redis-cache, DiffuRank
+- redis-cache, DiffuRank
 
 ## Migration 및 운영 금지사항
 

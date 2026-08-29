@@ -135,11 +135,17 @@ from src.news_verification.runtime.adapters.legacy_stages import l2_runner
 def run_hcx_l2(*args: Any, **kwargs: Any) -> Any:
     return l2_runner()(*args, **kwargs)
 from src.news_verification.runtime.run_layer_stack import run_stack
-from src.news_verification.runtime.v6_search_channels import OfficialKosisSearchChannel, V6Bm25Channel, V6DenseChannel
+from src.news_verification.runtime.v6_search_channels import (
+    ItemOfficialKosisSearchChannel,
+    OfficialKosisSearchChannel,
+    V6Bm25Channel,
+    V6DenseChannel,
+)
 from src.news_verification.runtime.release_bound_live_adapters_v1 import (
     RRF_ONLY_ORDERING,
     RRF_ORDER_RERANKER_DISABLED,
     build_release_bound_runtime,
+    reranker_enabled,
     release_runtime_enabled,
 )
 
@@ -3693,10 +3699,18 @@ def run_new_articles_v2(
                 }, target_call_snapshot=target_call_snapshot)
                 continue
         retrieval_fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+        raw_item = retrieval_fields.get("item")
+        if isinstance(raw_item, Sequence) and not isinstance(raw_item, (str, bytes)):
+            item_query = " ".join(str(value).strip() for value in raw_item if str(value).strip()).strip()
+        else:
+            item_query = str(raw_item or "").strip()
+        indicator_query = str(retrieval_fields.get("indicator") or "").strip()
+        item_query = item_query or indicator_query
         claim_query = {
-            "indicator": retrieval_fields.get("indicator") or "",
-            "item": retrieval_fields.get("indicator") or "",
+            "indicator": indicator_query,
+            "item": item_query,
             "sentence": sentence,
+            "_include_item_official": bool(item_query and item_query != indicator_query),
         }
         source_terms: tuple[dict[str, str], ...] = ()
         if role_aware_dimension_shadow:
@@ -3936,8 +3950,11 @@ def run_new_articles_v2(
             }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
             continue
         if release_bound_mode:
-            candidate_records = ()
-            passages = ()
+            candidate_records = (
+                candidate_record_provider([candidate.table_key for candidate in candidates])
+                if candidate_record_provider is not None and reranker is not None else ()
+            )
+            passages = build_candidate_passages(candidates, candidate_records) if reranker is not None else ()
         else:
             candidate_records = (
                 candidate_record_provider([candidate.table_key for candidate in candidates])
@@ -3949,7 +3966,7 @@ def run_new_articles_v2(
             if target_continuation:
                 rerank_text = ""
                 reranked = tuple(RerankedCandidate(key, index, 0.0, 0.0, 0.0) for index, key in enumerate(binding_membership, 1))
-            elif release_bound_mode:
+            elif release_bound_mode and reranker is None:
                 rerank_text = ""
                 reranked = _rrf_only_order(candidates)
             else:
@@ -4026,7 +4043,7 @@ def run_new_articles_v2(
                         register_kind="corrective",
                     )
                     union = merge_candidate_rounds(candidates, round1, limit=100)
-                    if release_bound_mode:
+                    if release_bound_mode and reranker is None:
                         corrected_reranked = _rrf_only_order(union)
                     else:
                         correction_records = (
@@ -4418,7 +4435,11 @@ def run_new_articles_v2(
                 "reranker_query": rerank_text,
                 "unqualified_region_assumption": "NATIONWIDE" if role_aware_dimension_shadow else None,
             },
-            "ranking_mode": RRF_ORDER_RERANKER_DISABLED if release_bound_mode else "MODEL_RERANKER",
+            "ranking_mode": (
+                RRF_ORDER_RERANKER_DISABLED
+                if release_bound_mode and reranker is None
+                else "MODEL_RERANKER"
+            ),
             "failure_recovery_shadow": failure_recovery,
             "user_intent_shadow": user_intent or {
                 "contract_version": "user-intent-router-shadow-v1", "status": "DISABLED",
@@ -4874,7 +4895,17 @@ def run_live_from_files(
     if release_bound_mode:
         assert release_runtime is not None
         encoder_call = release_runtime.encoder.encode
-        reranker_call = None
+        if reranker_enabled():
+            reranker_inner = HttpRerankerClient(
+                service_urls["reranker"],
+                timeout_seconds=float(os.getenv("BGE_RERANKER_TIMEOUT_SECONDS", "30")),
+            )
+            reranker_inner.set_expected_identity(
+                gate["gpu_receipts"]["reranker"]["health"]
+            )
+            reranker_call = reranker_inner.rerank
+        else:
+            reranker_call = None
     else:
         encoder_inner = HttpQueryEncoderClient(service_urls["query_encoder"])
         reranker_inner = HttpRerankerClient(service_urls["reranker"])
@@ -4886,7 +4917,7 @@ def run_live_from_files(
         if reranker_call is not None:
             reranker_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", reranker_call, phase_provider=phase_provider)
     encoder = RequestScopedEncoder(encoder_call) if request_cache_enabled else CountingEncoder(encoder_call)
-    reranker = None if release_bound_mode else CountingReranker(reranker_call)
+    reranker = CountingReranker(reranker_call) if reranker_call is not None else None
     passage_store = None
     seed_cache_path: Path | None = None
     seed_cache_sha_before: str | None = None
@@ -4894,6 +4925,16 @@ def run_live_from_files(
     if budget_ledger is not None:
         official_inner = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", official_inner, phase_provider=lambda: budget_ledger.current_phase(audit_run_id or output_root.name))
     official = CountingAdapter(official_inner)
+    item_official_inner: Any = ItemOfficialKosisSearchChannel(os.environ["KOSIS_API_KEY"])
+    if budget_ledger is not None:
+        item_official_inner = BudgetedCallable(
+            budget_ledger,
+            audit_run_id or output_root.name,
+            "metadata",
+            item_official_inner,
+            phase_provider=lambda: budget_ledger.current_phase(audit_run_id or output_root.name),
+        )
+    item_official = CountingAdapter(item_official_inner)
     if release_bound_mode:
         assert release_runtime is not None
         release_channels = release_runtime.channels(encoder)
@@ -4955,12 +4996,14 @@ def run_live_from_files(
     release_sha = (
         {
             "official": "KOSIS_LIVE",
+            "item_official": "KOSIS_LIVE",
             "bm25": str(gate["release_binding_sha256"]),
             "dense": str(gate["release_binding_sha256"]),
         }
         if release_bound_mode else
         {
             "official": "KOSIS_LIVE",
+            "item_official": "KOSIS_LIVE",
             "bm25": str(gate["v6_bm25_manifest"]["index_sha256"]),
             "dense": str(gate["v6_dense_manifest"]["zip_sha256"]),
         }
@@ -4981,7 +5024,12 @@ def run_live_from_files(
         speculative_started = time.monotonic_ns()
         plan, audit = _speculative_clarification_plan(
             row, article_text=str(article.get("article_text") or ""),
-            search_channels={"official": official, "bm25": bm25, "dense": dense},
+            search_channels={
+                "official": official,
+                "item_official": item_official,
+                "bm25": bm25,
+                "dense": dense,
+            },
             release_sha256_by_channel=release_sha, profile_provider=profile_provider,
             retrieval_cache=retrieval_cache if request_cache_enabled else None,
             deadline_ms=speculative_deadline_ms,
@@ -4993,6 +5041,7 @@ def run_live_from_files(
             "api_calls": {"official_search": official.calls, "bm25": bm25.calls,
                           "query_encoder": encoder.calls, "qdrant_dense": dense.calls,
                           "metadata_api": profile_provider.metadata_api_calls,
+                          "item_official_search": item_official.calls,
                           "cell_api": 0, "hcx_answer": 0},
             "timing": timing.snapshot(),
         }
@@ -5000,10 +5049,19 @@ def run_live_from_files(
     result = run_new_articles_v2(
         articles,
         l2_api_key="" if deterministic_answer_only else os.environ["NCP_CLOVASTUDIO_API_KEY"],
-        search_channels={"official": official, "bm25": bm25, "dense": dense},
+        search_channels={
+            "official": official,
+            "item_official": item_official,
+            "bm25": bm25,
+            "dense": dense,
+        },
         release_sha256_by_channel=release_sha,
         catalog_records=(),
-        candidate_record_provider=None if release_bound_mode else passage_store.records_for_tables,
+        candidate_record_provider=(
+            release_runtime.records_for_tables
+            if release_bound_mode and reranker is not None
+            else (None if release_bound_mode else passage_store.records_for_tables)
+        ),
         reranker=reranker,
         profile_provider=profile_provider,
         cell_fetcher=cell_fetcher,
@@ -5079,7 +5137,8 @@ def run_live_from_files(
         "bm25": bm25.calls,
         "query_encoder": encoder.calls,
         "qdrant_dense": dense.calls,
-        "reranker": 0 if release_bound_mode else reranker.calls,
+        "reranker": 0 if reranker is None else reranker.calls,
+        "item_official_search": item_official.calls,
         "metadata_api": profile_provider.metadata_api_calls,
         "cell_api": cell_fetcher.calls,
         "hcx_answer": 0 if answerer is None else answerer.calls,
@@ -5097,8 +5156,8 @@ def run_live_from_files(
         "query_encoder": encoder.audit() if hasattr(encoder, "audit") else {"enabled": False},
     }
     result["ranking"] = {
-        "mode": RRF_ONLY_ORDERING if release_bound_mode else "MODEL_RERANKER",
-        "reason": RRF_ORDER_RERANKER_DISABLED if release_bound_mode else None,
+        "mode": RRF_ONLY_ORDERING if reranker is None else "MODEL_RERANKER",
+        "reason": RRF_ORDER_RERANKER_DISABLED if reranker is None else None,
     }
     result["runtime"] = {
         "status": "COMPLETE",
@@ -5136,7 +5195,7 @@ def run_live_from_files(
             }
         ),
         "release_runtime": dict(gate) if release_bound_mode else {"enabled": False},
-        "ranking_mode": RRF_ONLY_ORDERING if release_bound_mode else "MODEL_RERANKER",
+        "ranking_mode": RRF_ONLY_ORDERING if reranker is None else "MODEL_RERANKER",
         "release_sha256_by_channel": release_sha,
         "api_calls": calls,
         "article_api_calls": result["article_api_calls"],

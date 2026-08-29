@@ -14,6 +14,7 @@ import json
 import os
 from threading import Lock
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from urllib import request
 
 from backend.errors import BackendError
 from backend.metadata_repository import READ_ONLY_OPTIONS
@@ -22,6 +23,14 @@ from backend.search_adapter import (
     ALLOWED_FIELDS,
     OpenSearchBM25Adapter,
     QdrantDenseAdapter,
+)
+from src.news_verification.runtime.bge_reranker_v2_service import (
+    IDENTITY_FIELDS as RERANKER_IDENTITY_FIELDS,
+    MAX_CANDIDATES as RERANKER_MAX_CANDIDATES,
+    MODEL_ID as RERANKER_MODEL_ID,
+    MODEL_REVISION as RERANKER_MODEL_REVISION,
+    SERVICE_CONTRACT as RERANKER_SERVICE_CONTRACT,
+    validate_endpoint as validate_reranker_endpoint,
 )
 
 try:
@@ -35,6 +44,7 @@ except ImportError:  # pragma: no cover - deployment dependency preflight owns t
 CONTRACT_VERSION = "release-bound-live-adapters-v1"
 RELEASE_RUNTIME_ENV = "KOSIS_RELEASE_DATA_RUNTIME_ENABLED"
 RERANKER_ENABLED_ENV = "BGE_RERANKER_ENABLED"
+RERANKER_URL_ENV = "BGE_RERANKER_URL"
 RRF_ORDER_RERANKER_DISABLED = "RRF_ORDER_RERANKER_DISABLED"
 RRF_ONLY_ORDERING = "RRF_ONLY"
 VECTOR_SIZE = 1024
@@ -49,6 +59,10 @@ PROFILE_TABLES = (
 
 def release_runtime_enabled() -> bool:
     return os.getenv(RELEASE_RUNTIME_ENV, "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def reranker_enabled() -> bool:
+    return os.getenv(RERANKER_ENABLED_ENV, "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _fail(code: str, message: str, status_code: int = 503) -> BackendError:
@@ -102,6 +116,7 @@ class CanonicalMetadataProfileProvider:
         self.lookups = 0
         self.release_attested = False
         self.profile_sha256: dict[str, str] = {}
+        self._profile_cache: dict[str, Mapping[str, Any] | None] = {}
 
     def _connect(self) -> Any:
         if not self.dsn or not self.release_id:
@@ -346,6 +361,8 @@ class CanonicalMetadataProfileProvider:
 
     def __call__(self, table_key: str) -> Mapping[str, Any] | None:
         key = self._table_key(table_key)
+        if key in self._profile_cache:
+            return self._profile_cache[key]
         self.lookups += 1
         connection = self._connect()
         try:
@@ -367,6 +384,7 @@ class CanonicalMetadataProfileProvider:
             connection.close()
         if profile is not None:
             self.profile_sha256[key] = str(profile["profile_sha256"])
+        self._profile_cache[key] = profile
         return profile
 
     def prefetch(self, table_keys: Iterable[str]) -> dict[str, Mapping[str, Any] | None]:
@@ -492,12 +510,58 @@ class ReleaseBoundRuntime:
         return _canonical_sha(payload)
 
     def preflight(self) -> dict[str, Any]:
-        if os.getenv(RERANKER_ENABLED_ENV, "false").strip().lower() in {"1", "true", "yes", "on"}:
-            raise _fail("RERANKER_RUNTIME_PENDING", "release-bound runtime은 현재 reranker 비활성만 지원합니다.")
         self.metadata.preflight()
         self.bm25_adapter.preflight()
         self.dense_adapter.preflight()
         self.encoder.preflight()
+        reranker_url = os.getenv(RERANKER_URL_ENV, "").strip()
+        reranker_health: dict[str, Any] | None = None
+        if reranker_enabled():
+            if not reranker_url:
+                raise _fail("RERANKER_CONFIGURATION_PENDING", "BGE reranker URL이 설정되지 않았습니다.")
+            try:
+                reranker_url = validate_reranker_endpoint(reranker_url)
+            except ValueError as exc:
+                raise _fail("RERANKER_CONFIGURATION_PENDING", "BGE reranker endpoint가 internal DNS가 아닙니다.") from exc
+            reranker_identity_env = {
+                "tokenizer_tree_manifest_sha256": os.getenv("BGE_RERANKER_MODEL_MANIFEST_SHA256", ""),
+                "service_source_sha256": os.getenv("BGE_RERANKER_SERVICE_SOURCE_SHA256", ""),
+                "image_digest": os.getenv("BGE_RERANKER_IMAGE_DIGEST", ""),
+                "driver": os.getenv("CUDA_DRIVER_VERSION", ""),
+            }
+            try:
+                with request.urlopen(reranker_url.rstrip("/") + "/health", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except Exception as exc:
+                raise _fail("RERANKER_UNAVAILABLE", "BGE reranker health 확인에 실패했습니다.") from exc
+            if (
+                not isinstance(payload, Mapping)
+                or payload.get("status") != "READY"
+                or payload.get("contract") != RERANKER_SERVICE_CONTRACT
+                or payload.get("model_id") != RERANKER_MODEL_ID
+                or payload.get("model_revision") != RERANKER_MODEL_REVISION
+                or payload.get("model_manifest_sha256") != os.getenv("BGE_RERANKER_MODEL_MANIFEST_SHA256", "")
+                or str((payload.get("settings") or {}).get("device") or "").lower() != "cuda"
+                or payload.get("max_candidates") != RERANKER_MAX_CANDIDATES
+                or any(not reranker_identity_env[field] or payload.get(field) != reranker_identity_env[field] for field in RERANKER_IDENTITY_FIELDS)
+            ):
+                raise _fail("RERANKER_CONTRACT_MISMATCH", "BGE reranker health 계약이 일치하지 않습니다.")
+            reranker_health = {
+                "status": payload.get("status"),
+                "contract": payload.get("contract"),
+                "model_id": payload.get("model_id"),
+                "model_revision": payload.get("model_revision"),
+                "settings": dict(payload.get("settings") or {}) if isinstance(payload.get("settings"), Mapping) else {},
+                "cuda": payload.get("cuda"),
+                "torch": payload.get("torch"),
+                "tokenizer_tree_manifest_sha256": payload.get("tokenizer_tree_manifest_sha256"),
+                "model_manifest_sha256": payload.get("model_manifest_sha256"),
+                "service_source_sha256": payload.get("service_source_sha256"),
+                "image_digest": payload.get("image_digest"),
+                "driver": payload.get("driver"),
+                "max_candidates": payload.get("max_candidates"),
+            }
+        enabled = reranker_health is not None
         return {
             "status": "READY",
             "contract_version": CONTRACT_VERSION,
@@ -506,7 +570,7 @@ class ReleaseBoundRuntime:
             "service_urls": {
                 "query_encoder": self.encoder.config.url,
                 "qdrant": self.dense_adapter.config.url,
-                "reranker": "",
+                "reranker": reranker_url if enabled else "",
             },
             "gpu_receipts": {
                 "query_encoder": {
@@ -516,7 +580,11 @@ class ReleaseBoundRuntime:
                     "vector_dimension": self.encoder.config.vector_size,
                     "normalized": True,
                 },
-                "reranker": {"enabled": False, "ranking_mode": RRF_ORDER_RERANKER_DISABLED},
+                "reranker": {
+                    "enabled": enabled,
+                    "ranking_mode": "MODEL_RERANKER" if enabled else RRF_ORDER_RERANKER_DISABLED,
+                    **({"health": reranker_health} if reranker_health is not None else {}),
+                },
             },
             "opensearch": {
                 "index": self.bm25_adapter.config.index,
@@ -528,9 +596,38 @@ class ReleaseBoundRuntime:
                 "receipt_sha256": self.dense_adapter.config.receipt_sha256,
             },
             "profile": self.metadata.audit(),
-            "ranking_mode": RRF_ONLY_ORDERING,
+            "ranking_mode": "MODEL_RERANKER" if enabled else RRF_ONLY_ORDERING,
             "read_only": True,
         }
+
+    def records_for_tables(self, table_keys: Sequence[str]) -> list[dict[str, Any]]:
+        """Project read-only canonical profiles into safe reranker passages."""
+        records: list[dict[str, Any]] = []
+        profiles = self.metadata.prefetch(table_keys)
+        for table_key in table_keys:
+            key = str(table_key)
+            profile = profiles.get(key)
+            if not isinstance(profile, Mapping):
+                continue
+            values: list[tuple[str, str]] = [
+                ("TITLE", _text(profile.get("tbl_name"))),
+                ("CATEGORY", _text(profile.get("org_name"))),
+            ]
+            for item in profile.get("items") or []:
+                if isinstance(item, Mapping):
+                    values.append(("ITEM", _text(item.get("itm_nm"))))
+            for dimension in profile.get("dimensions") or []:
+                if isinstance(dimension, Mapping):
+                    values.append(("DIMENSION_AXIS", _text(dimension.get("obj_nm"))))
+            for index, (field_name, text) in enumerate(values, 1):
+                if text:
+                    records.append({
+                        "record_id": f"profile:{key}:{field_name}:{index}",
+                        "table_key": key,
+                        "field": field_name,
+                        "text": text,
+                    })
+        return records
 
     def channels(self, encoder: Callable[[str], Any]) -> dict[str, Any]:
         return {
@@ -558,5 +655,6 @@ __all__ = [
     "ReleaseBoundDenseChannel",
     "ReleaseBoundRuntime",
     "build_release_bound_runtime",
+    "reranker_enabled",
     "release_runtime_enabled",
 ]

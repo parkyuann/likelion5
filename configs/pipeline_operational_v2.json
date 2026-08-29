@@ -37,7 +37,7 @@
     }
   },
   "services": {
-    "reranker": "",
+    "reranker": "http://bge-reranker:8102",
     "query_encoder": "",
     "qdrant": "",
     "qdrant_collection": "kosis_v6_bge_m3_ko_20260821",

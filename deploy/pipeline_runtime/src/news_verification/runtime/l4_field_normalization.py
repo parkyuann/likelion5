@@ -118,7 +118,13 @@ _EXPLICIT_PERIOD_RE = re.compile(
     r"\d{4}년(?:\s*\d+\s*분기|\s*\d+\s*월)?|"
     r"(?:올해|지난해|작년|지난달|이달)|(?<!\d)\d{1,2}월"
 )
-_DURATION_ONLY_RE = re.compile(r"\s*(?:최근|지난)?\s*\d+\s*(?:년|개월|분기|주)\s*(?:간|동안)?\s*")
+# A four-digit ``2025년`` is an annual cell period, not a duration.  Keep
+# genuine spans such as ``5년`` and ``최근 5년`` on the non-cell path while
+# preventing the duration recognizer from erasing an explicit year anchor.
+_DURATION_ONLY_RE = re.compile(
+    r"\s*(?:최근|지난)?\s*(?!(?:19|20)\d{2}\s*년(?:\s|$))"
+    r"\d+\s*(?:년|개월|분기|주)\s*(?:간|동안)?\s*"
+)
 _DURATION_OR_RANGE_RE = re.compile(
     r"^(?:\d+\s*년\s*(?:연속|만에)|\d{4}\s*년\s*(?:이후|이래|부터))$"
 )

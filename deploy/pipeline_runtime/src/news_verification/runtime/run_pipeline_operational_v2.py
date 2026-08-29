@@ -864,8 +864,8 @@ def _preserve_role_aware_sentence_inventory(
 
 
 CONTRACT_VERSION = "kosis-operational-article-verification-v2"
-RELEASE_BOUND_DOMINANCE_RULE_ID = "release-bound-evidence-specificity-dominance-v1"
-RELEASE_BOUND_DOMINANCE_RULE_VERSION = 1
+RELEASE_BOUND_DOMINANCE_RULE_ID = "release-bound-evidence-specificity-dominance-v2"
+RELEASE_BOUND_DOMINANCE_RULE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -2163,29 +2163,75 @@ def _release_bound_geo_binding(binding: Any) -> bool:
     return isinstance(disclosure, Mapping) and disclosure.get("rule_id") == "unqualified-geographic-axis-nationwide"
 
 
-def _release_bound_semantic_signature(assignment: CandidateAssignment) -> tuple[Any, ...]:
-    return tuple(
-        (
-            binding.axis_kind,
-            binding.axis_id,
-            binding.value_id,
-            binding.bound_atom,
+def _release_bound_explicit_geo_binding(binding: Any) -> bool:
+    """Recognize an article-backed region without relying on internal axis IDs."""
+    if getattr(binding, "axis_kind", "") != "DIMENSION":
+        return False
+    if str(getattr(binding, "bound_atom", "")) == "region":
+        return True
+    evidence = getattr(binding, "evidence", {})
+    axis_evidence = evidence.get("axis_evidence") if isinstance(evidence, Mapping) else None
+    axis_label = str(axis_evidence.get("profile_label") or "") if isinstance(axis_evidence, Mapping) else ""
+    return any(token in axis_label for token in ("행정구역", "시도", "시군구", "지역"))
+
+
+def _release_bound_is_geo_binding(binding: Any) -> bool:
+    return _release_bound_geo_binding(binding) or _release_bound_explicit_geo_binding(binding)
+
+
+def _release_bound_public_binding_signature(binding: Any) -> tuple[Any, ...]:
+    """Use public selector evidence so equivalent tables can share send_de policy.
+
+    Internal ITEM/DIMENSION IDs are table-local.  They must not prevent a
+    release-bound freshness comparison when the article-backed labels and
+    selector roles are the same.  If a public label is unavailable, retain the
+    internal identity as a fail-closed discriminator instead of guessing.
+    """
+    evidence = getattr(binding, "evidence", {})
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    if getattr(binding, "axis_kind", "") == "DIMENSION":
+        value_evidence = evidence.get("value_evidence")
+        value_evidence = value_evidence if isinstance(value_evidence, Mapping) else {}
+        label = str(value_evidence.get("profile_label") or evidence.get("profile_label") or "").strip()
+    else:
+        label = str(evidence.get("profile_label") or "").strip()
+    if label:
+        label = re.sub(r"\s+", "", label)
+        signature = (
+            str(getattr(binding, "axis_kind", "")),
+            str(getattr(binding, "bound_atom", "")),
+            "PUBLIC_LABEL",
+            label,
         )
-        for binding in assignment.bindings
-        if not _release_bound_geo_binding(binding)
+        if getattr(binding, "axis_kind", "") == "PERIOD":
+            return (*signature, str(getattr(binding, "value_id", "")))
+        return signature
+    return (
+        str(getattr(binding, "axis_kind", "")),
+        str(getattr(binding, "bound_atom", "")),
+        "INTERNAL_ID_FALLBACK",
+        str(getattr(binding, "axis_id", "")),
+        str(getattr(binding, "value_id", "")),
     )
+
+
+def _release_bound_semantic_signature(assignment: CandidateAssignment) -> tuple[Any, ...]:
+    return tuple(sorted(
+        _release_bound_public_binding_signature(binding)
+        for binding in assignment.bindings
+        if not _release_bound_is_geo_binding(binding)
+    ))
 
 
 def _release_bound_geo_signature(assignment: CandidateAssignment) -> tuple[Any, ...]:
     result: list[tuple[Any, ...]] = []
     for binding in assignment.bindings:
-        if not _release_bound_geo_binding(binding):
+        if not _release_bound_is_geo_binding(binding):
             continue
         evidence = binding.evidence if isinstance(binding.evidence, Mapping) else {}
         value_evidence = evidence.get("value_evidence") if isinstance(evidence.get("value_evidence"), Mapping) else {}
         result.append(
             (
-                binding.value_id,
                 str(value_evidence.get("profile_label") or evidence.get("profile_label") or ""),
             )
         )
@@ -2202,7 +2248,7 @@ def _release_bound_geo_cardinality(
         return None
     cardinalities: list[int] = []
     for binding in assignment.bindings:
-        if not _release_bound_geo_binding(binding):
+        if not _release_bound_is_geo_binding(binding):
             continue
         evidence = binding.evidence if isinstance(binding.evidence, Mapping) else {}
         axis_evidence = evidence.get("axis_evidence") if isinstance(evidence.get("axis_evidence"), Mapping) else {}
@@ -2237,7 +2283,7 @@ def _release_bound_candidate_receipt(
     assignment: CandidateAssignment, profile: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     item = _release_bound_item_specificity(assignment)
-    geo_bindings = [binding for binding in assignment.bindings if _release_bound_geo_binding(binding)]
+    nationwide_geo_bindings = [binding for binding in assignment.bindings if _release_bound_geo_binding(binding)]
     dimension_bindings = [binding for binding in assignment.bindings if binding.axis_kind == "DIMENSION"]
     cardinality = _release_bound_geo_cardinality(assignment, profile)
     send_de = _release_bound_send_de(profile)
@@ -2250,7 +2296,7 @@ def _release_bound_candidate_receipt(
         "components": {
             "non_geo_semantic_signature": str(_release_bound_semantic_signature(assignment)),
             "geo_signature": str(_release_bound_geo_signature(assignment)),
-            "all_geographic_axes_disclosed_nationwide": bool(dimension_bindings) and len(geo_bindings) == len(dimension_bindings),
+            "all_geographic_axes_disclosed_nationwide": bool(dimension_bindings) and len(nationwide_geo_bindings) == len(dimension_bindings),
             "geo_dimension_cardinality": list(cardinality) if cardinality is not None else None,
         },
         "score": {
@@ -2304,18 +2350,6 @@ def _apply_release_bound_evidence_specificity_dominance(
     if len(considered) == 1:
         chosen = considered[0]["assignment"]
     else:
-        semantic_groups = {
-            _release_bound_semantic_signature(row["assignment"])
-            for row in considered
-        }
-        geo_groups = {
-            _release_bound_geo_signature(row["assignment"])
-            for row in considered
-        }
-        all_nationwide = all(
-            row["receipt"]["components"]["all_geographic_axes_disclosed_nationwide"]
-            for row in considered
-        )
         chosen = None
         selector_groups = {
             (
@@ -2336,7 +2370,7 @@ def _apply_release_bound_evidence_specificity_dominance(
             and _release_bound_send_de({"send_de": value}) == value
             for value in send_dates
         )
-        if len(selector_groups) == 1 and all_nationwide:
+        if len(selector_groups) == 1:
             if not valid_send_dates:
                 receipt["latest_send_de_decision"] = {
                     "status": "FAIL_CLOSED",
@@ -2378,12 +2412,6 @@ def _apply_release_bound_evidence_specificity_dominance(
                             receipt["latest_send_de_decision"]["status"] = "CHOSEN_COARSER_GEO"
                         else:
                             receipt["latest_send_de_decision"]["status"] = "NOT_UNIQUE"
-        elif len(selector_groups) == 1:
-            receipt["latest_send_de_decision"] = {
-                "status": "FAIL_CLOSED",
-                "latest_send_de": None,
-                "reason": "SEND_DE_NOT_APPLICABLE_OR_GEOGRAPHY_NOT_NATIONWIDE",
-            }
 
     if chosen is None:
         return TargetResolution(
@@ -3481,7 +3509,10 @@ def run_new_articles_v2(
         ledger = dict(payload)
         membership = []
         for value in candidate_membership:
-            table_key = getattr(value, "table_key", None)
+            if isinstance(value, str):
+                table_key = value
+            else:
+                table_key = getattr(value, "table_key", None)
             if table_key is None and isinstance(value, Mapping):
                 table_key = value.get("table_key")
             text = str(table_key or "").strip()

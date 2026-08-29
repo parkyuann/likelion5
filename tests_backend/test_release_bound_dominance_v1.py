@@ -92,6 +92,49 @@ def _assignment(table_key: str, *, specific_item: bool) -> CandidateAssignment:
     )
 
 
+def _explicit_region_assignment(
+    table_key: str, *, axis_id: str, item_id: str,
+) -> CandidateAssignment:
+    return CandidateAssignment(
+        table_key,
+        (
+            AxisBinding(
+                "ITEM", item_id, None, "indicator", "EXACT_LABEL",
+                {
+                    "profile_label": "합계출산율",
+                    "profile_inventory_path": "items[0].itm_nm",
+                    "consumed_span": _claim_span("합계출산율"),
+                },
+            ),
+            AxisBinding(
+                "PERIOD", "Y", "2025", "period", "PERIOD_RANGE_COMPATIBLE",
+                {
+                    "profile_label": "년",
+                    "profile_inventory_path": "periods[0].PRD_SE",
+                    "consumed_span": _claim_span("2025년"),
+                },
+            ),
+            AxisBinding(
+                "DIMENSION", axis_id, "22", "region", "EXACT_LABEL",
+                {
+                    "profile_label": "대구광역시",
+                    "profile_inventory_path": "dimensions[0].values[0]",
+                    "consumed_span": _claim_span("대구광역시"),
+                    "axis_evidence": {
+                        "profile_inventory_path": "dimensions[0]",
+                        "profile_label": "지역별",
+                    },
+                    "value_evidence": {
+                        "profile_inventory_path": "dimensions[0].values[0]",
+                        "profile_label": "대구광역시",
+                        "profile_id": "22",
+                    },
+                },
+            ),
+        ),
+    )
+
+
 def _projection(assignment: CandidateAssignment) -> CandidateProjection:
     return CandidateProjection(
         assignment.table_key,
@@ -132,7 +175,7 @@ def test_release_bound_dominance_prefers_coarser_nationwide_axis():
     assert resolved.outcome == "QUERY_READY"
     assert resolved.chosen_table_key == "org:coarse"
     receipt = resolved.audit["release_bound_evidence_specificity_dominance"]
-    assert receipt["rule_version"] == 1
+    assert receipt["rule_version"] == 2
     assert receipt["chosen_table"] == "org:coarse"
     assert {row["table_key"] for row in receipt["candidates"]} == {"org:coarse", "org:fine"}
     assert receipt["candidates"][0]["score"]["coarser_geo_cardinality"] in {-19, -385}
@@ -212,6 +255,40 @@ def test_release_bound_dominance_prefers_latest_send_de_when_selector_is_tied():
     } == {
         ("101:DT_1B8000G", "2026-07-29"),
         ("101:DT_1B8000H", "2026-03-19"),
+    }
+
+
+def test_release_bound_dominance_prefers_latest_send_de_for_explicit_region_across_local_ids():
+    coarse = _explicit_region_assignment(
+        "101:DT_1B8000H", axis_id="B", item_id="T12",
+    )
+    fine = _explicit_region_assignment(
+        "101:DT_1B81A23", axis_id="A", item_id="T2",
+    )
+    coarse_projection = _projection(coarse)
+    fine_projection = _projection(fine)
+    base = validate_target_v2([coarse_projection, fine_projection])
+
+    resolved = operational._apply_release_bound_evidence_specificity_dominance(
+        base,
+        [coarse_projection, fine_projection],
+        {
+            "101:DT_1B8000H": _profile(
+                "101:DT_1B8000H", 19, coarse_projection, send_de="2026-03-19",
+            ),
+            "101:DT_1B81A23": _profile(
+                "101:DT_1B81A23", 384, fine_projection, send_de="2026-02-25",
+            ),
+        },
+    )
+
+    assert resolved.outcome == "QUERY_READY"
+    assert resolved.chosen_table_key == "101:DT_1B8000H"
+    receipt = resolved.audit["release_bound_evidence_specificity_dominance"]
+    assert receipt["latest_send_de_decision"] == {
+        "status": "CHOSEN",
+        "latest_send_de": "2026-03-19",
+        "reason": "SEMANTIC_PERIOD_SELECTOR_TIE",
     }
 
 

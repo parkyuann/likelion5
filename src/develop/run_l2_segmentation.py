@@ -107,6 +107,7 @@ def run(
     }
     latency_total = 0.0
     article_runs: list[dict[str, Any]] = []
+    raw_l2_envelopes: list[dict[str, Any]] = []
     for article in articles:
         article_idx = str(article.get("article_idx"))
         title = str(article.get("title") or article.get("기사제목") or "")
@@ -139,8 +140,22 @@ def run(
                 "article_idx": article_idx,
                 "attempts": attempt + 1,
                 "latency_ms": round(latency_ms, 1),
+                "status": str(resolved.get("canonical_status") or "L2_UNAVAILABLE"),
+                "reason_code": resolved.get("canonical_reason_code"),
+                "resolver_version": resolved.get("resolver_version"),
+                "repair_reason_code": resolved.get("repair_reason_code"),
+                "raw_prediction_sha256": (resolved.get("raw_envelope") or {}).get("raw_prediction_sha256"),
+                "canonical_l2_sha256": resolved.get("canonical_l2_sha256"),
                 **article_usage,
             })
+            raw_envelope = resolved.get("raw_envelope")
+            if isinstance(raw_envelope, dict):
+                raw_l2_envelopes.append({
+                    "article_idx": article_idx,
+                    **raw_envelope,
+                    "model": model,
+                    "attempt": attempt + 1,
+                })
             for sentence in resolved["sentences"]:
                 predictions.append({
                     "article_idx": article_idx,
@@ -188,6 +203,7 @@ def run(
         "total_tokens": usage_total["total_tokens"],
         "latency_ms_total": round(latency_total, 1),
         "article_runs": article_runs,
+        "raw_l2_envelopes": raw_l2_envelopes,
         "errors": errors,
         "generation_config": generation_config or {
             "temperature": 0.1,

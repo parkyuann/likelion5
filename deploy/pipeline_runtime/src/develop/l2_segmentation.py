@@ -19,6 +19,8 @@ code in later layers.
 from __future__ import annotations
 
 import json
+import hashlib
+from copy import deepcopy
 from typing import Any, Iterator, Callable
 
 try:
@@ -32,6 +34,21 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 SentenceSpanIterator = Callable[[str], Iterator[tuple[int, int, int, str]]]
+
+RAW_L2_CONTRACT_VERSION = "raw-hcx-l2-v1"
+CANONICAL_L2_CONTRACT_VERSION = "canonical-l2-v1"
+RESOLVER_VERSION = "exact-source-resolver-v1"
+CANONICAL_L2_STATUSES = frozenset({
+    "L2_READY", "REPAIRED_SOURCE_EXACT", "HOLD_NOT_FOUND",
+    "HOLD_AMBIGUOUS", "L2_UNAVAILABLE",
+})
+DOWNSTREAM_L2_ELIGIBLE = frozenset({"L2_READY", "REPAIRED_SOURCE_EXACT"})
+
+
+def _canonical_sha(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def value_candidates_by_sentence(
@@ -109,45 +126,6 @@ class HcxSpanResolutionError(SpanResolutionError):
         self.code = code
 
 
-_HCX_QUOTE_TRANSLATION = str.maketrans({
-    "‘": "'",
-    "’": "'",
-    "ʼ": "'",
-    "“": '"',
-    "”": '"',
-})
-_HCX_CONNECTIVE_PREFIXES = (
-    "는데",
-    "지만",
-    "으며",
-    "면서",
-    "도록",
-    "다가",
-    "고",
-    "서",
-    "아서",
-    "어서",
-    "여서",
-    "라서",
-    "므로",
-    "기에",
-)
-_HCX_TERMINAL_SUFFIXES = {
-    "다",
-    "요",
-    "죠",
-    "니다",
-    "습니다",
-    "이다",
-    "였다",
-    "했다",
-    "한다",
-    "된다",
-    "있다",
-    "없다",
-}
-
-
 def _validate_hcx_model_span_inputs(sentence_text: str, span_text: str) -> None:
     if not isinstance(sentence_text, str) or not sentence_text:
         raise HcxSpanResolutionError("UNKNOWN", "sentence text is empty")
@@ -164,136 +142,19 @@ def _occurrences(sentence_text: str, span_text: str) -> list[int]:
     return starts
 
 
-def _normalized_span_text(text: str, *, ignore_whitespace: bool) -> tuple[str, list[int]]:
-    normalized: list[str] = []
-    offsets: list[int] = []
-    for index, char in enumerate(text.translate(_HCX_QUOTE_TRANSLATION)):
-        if ignore_whitespace and char.isspace():
-            continue
-        normalized.append(char)
-        offsets.append(index)
-    return "".join(normalized), offsets
-
-
-def _find_normalized_matches(
-    sentence_text: str,
-    span_text: str,
-    *,
-    ignore_whitespace: bool,
-) -> tuple[list[int], list[int]]:
-    sentence_normalized, offsets = _normalized_span_text(
-        sentence_text,
-        ignore_whitespace=ignore_whitespace,
-    )
-    span_normalized, _ = _normalized_span_text(
-        span_text,
-        ignore_whitespace=ignore_whitespace,
-    )
-    return _occurrences(sentence_normalized, span_normalized), offsets
-
-
 def find_hcx_model_span_matches(sentence_text: str, span_text: str) -> list[int]:
-    """Return unique-candidate offsets after quote/space normalization."""
+    """Return offsets for exact source text only."""
     _validate_hcx_model_span_inputs(sentence_text, span_text)
-    matches, offsets = _find_normalized_matches(
-        sentence_text,
-        span_text,
-        ignore_whitespace=True,
-    )
-    return [offsets[start] for start in matches]
-
-
-def _morphological_prefix_matches(
-    sentence_text: str,
-    span_text: str,
-) -> list[tuple[int, int, list[int]]]:
-    source_normalized, offsets = _normalized_span_text(
-        sentence_text,
-        ignore_whitespace=True,
-    )
-    model_normalized, _ = _normalized_span_text(
-        span_text.rstrip(" .,!?:;。！？…"),
-        ignore_whitespace=True,
-    )
-    minimum_prefix = max(8, (len(model_normalized) * 3) // 5)
-    candidates: set[tuple[int, int]] = set()
-    for cut in range(len(model_normalized) - 1, minimum_prefix - 1, -1):
-        model_suffix = model_normalized[cut:]
-        if model_suffix not in _HCX_TERMINAL_SUFFIXES:
-            continue
-        prefix = model_normalized[:cut]
-        for start in _occurrences(source_normalized, prefix):
-            source_suffix = source_normalized[start + cut:]
-            if any(source_suffix.startswith(value) for value in _HCX_CONNECTIVE_PREFIXES):
-                candidates.add((start, cut))
-    return [(start, cut, offsets) for start, cut in sorted(candidates)]
+    return _occurrences(sentence_text, span_text)
 
 
 def resolve_hcx_model_span(sentence_text: str, span_text: str) -> dict[str, Any]:
-    """Resolve an HCX span exactly, by quote/space equivalence, or safely by morphology."""
-    _validate_hcx_model_span_inputs(sentence_text, span_text)
-    try:
-        return resolve_span(sentence_text, span_text)
-    except SpanResolutionError:
-        pass
-
-    quote_sentence = sentence_text.translate(_HCX_QUOTE_TRANSLATION)
-    quote_span = span_text.translate(_HCX_QUOTE_TRANSLATION)
-    quote_matches = _occurrences(quote_sentence, quote_span)
-    if len(quote_matches) == 1:
-        start = quote_matches[0]
-        source_span_text = sentence_text[start:start + len(span_text)]
-        if len(source_span_text) == len(span_text):
-            return {
-                "source_span_text": source_span_text,
-                "source_char_start": start,
-                "source_char_end": start + len(source_span_text),
-                "model_source_span_text": span_text,
-                "span_match_mode": "QUOTE_EQUIVALENT",
-                "offset_provenance": "DERIVED_FROM_MODEL_SPAN_QUOTE_EQUIVALENT",
-            }
-    if len(quote_matches) > 1:
-        raise HcxSpanResolutionError("AMBIGUOUS", "source_span_text is ambiguous")
-
-    normalized_matches, offsets = _find_normalized_matches(
-        sentence_text,
-        span_text,
-        ignore_whitespace=True,
-    )
-    if len(normalized_matches) == 1:
-        start = normalized_matches[0]
-        end = offsets[start + len(_normalized_span_text(span_text, ignore_whitespace=True)[0]) - 1] + 1
-        source_span_text = sentence_text[offsets[start]:end]
-        return {
-            "source_span_text": source_span_text,
-            "source_char_start": offsets[start],
-            "source_char_end": end,
-            "model_source_span_text": span_text,
-            "span_match_mode": "WHITESPACE_EQUIVALENT",
-            "offset_provenance": "DERIVED_FROM_MODEL_SPAN_WHITESPACE_EQUIVALENT",
-        }
-    if len(normalized_matches) > 1:
-        raise HcxSpanResolutionError("AMBIGUOUS", "source_span_text is ambiguous")
-
-    morphological_matches = _morphological_prefix_matches(sentence_text, span_text)
-    if len(morphological_matches) == 1:
-        start, length, source_offsets = morphological_matches[0]
-        source_start = source_offsets[start]
-        source_end = source_offsets[start + length - 1] + 1
-        return {
-            "source_span_text": sentence_text[source_start:source_end],
-            "source_char_start": source_start,
-            "source_char_end": source_end,
-            "model_source_span_text": span_text,
-            "span_match_mode": "MORPHOLOGICAL_CONTAINMENT",
-            "offset_provenance": "DERIVED_FROM_MODEL_SPAN_MORPHOLOGICAL_CONTAINMENT",
-        }
-    if len(morphological_matches) > 1:
-        raise HcxSpanResolutionError("AMBIGUOUS", "source_span_text is ambiguous")
-    raise HcxSpanResolutionError(
-        "NOT_FOUND",
-        f"source_span_text not found in sentence: {span_text!r}",
-    )
+    """Resolve an HCX source span using an exact character substring only."""
+    resolved = resolve_span(sentence_text, span_text)
+    resolved["model_source_span_text"] = span_text
+    resolved["span_match_mode"] = "EXACT"
+    resolved["offset_provenance"] = "DERIVED_FROM_MODEL_SPAN_EXACT"
+    return resolved
 
 
 def _apply_hcx_span_resolution(target: dict[str, Any], span: dict[str, Any]) -> None:
@@ -554,7 +415,9 @@ def resolve_prediction(
     *,
     sentence_span_iterator: SentenceSpanIterator | None = None,
 ) -> dict[str, Any]:
-    """Attach derived offsets and record spans the model invented."""
+    """Create a raw envelope and an exact-source canonical L2 envelope."""
+    raw_prediction = deepcopy(prediction)
+    raw_prediction_sha256 = _canonical_sha(raw_prediction)
     sentences = {
         row["sentence_id"]: row["text"]
         for row in (sentence_offset_map(article_text, sentence_span_iterator=sentence_span_iterator) if sentence_span_iterator is not None else sentence_offset_map(article_text))
@@ -563,6 +426,7 @@ def resolve_prediction(
     cross_source_promotions: list[tuple[int, dict[str, Any]]] = []
     unresolved = 0
     unresolved_span_details: list[dict[str, Any]] = []
+    repaired_source_count = 0
     for item in prediction.get("sentences") or []:
         sentence_id = item.get("sentence_id")
         text = sentences.get(sentence_id, "")
@@ -614,7 +478,18 @@ def resolve_prediction(
                 # article-body path accepts only one exact cross-sentence hit.
                 cross_sentence_matches = []
                 if sentence_span_iterator is not None:
-                    for candidate_id, candidate_text in sentences.items():
+                    # A model-provided ownership pointer is a constraint, not
+                    # a hint.  Never search another sentence merely because
+                    # it contains the same exact source surface.
+                    candidate_ids = (
+                        (int(governing),)
+                        if isinstance(governing, int) and governing != sentence_id
+                        else tuple(sentences)
+                    )
+                    for candidate_id in candidate_ids:
+                        candidate_text = sentences.get(candidate_id)
+                        if candidate_text is None:
+                            continue
                         if candidate_id == sentence_id:
                             continue
                         try:
@@ -632,16 +507,22 @@ def resolve_prediction(
                     region["governing_sentence_id"] = source_sentence_id
                     region["dominance"] = "상속"
                     cross_source_promotions.append((source_sentence_id, dict(region)))
+                    repaired_source_count += 1
                 else:
+                    diagnostic = (
+                        HcxSpanResolutionError("AMBIGUOUS", "exact source span ownership is ambiguous")
+                        if len(cross_sentence_matches) > 1
+                        else exc
+                    )
                     region["span_status"] = "UNRESOLVED"
-                    region["span_error"] = str(exc)
+                    region["span_error"] = str(diagnostic)
                     unresolved += 1
                     unresolved_span_details.append(
                         _unresolved_span_detail(
                             sentence_id,
                             "source_region",
                             region_span,
-                            exc,
+                            diagnostic,
                         )
                     )
         resolved.append({
@@ -679,11 +560,46 @@ def resolve_prediction(
         opened["dominance"] = "정의"
         target["source_region"] = opened
     covered = {row["sentence_id"] for row in resolved}
+    missing_sentence_ids = sorted(set(sentences) - covered)
+    error_codes = {str(item.get("span_error_code") or "UNKNOWN") for item in unresolved_span_details}
+    if "AMBIGUOUS" in error_codes:
+        canonical_status = "HOLD_AMBIGUOUS"
+        reason_code = "SOURCE_EXACT_AMBIGUOUS"
+    elif unresolved_span_details:
+        canonical_status = "HOLD_NOT_FOUND"
+        reason_code = "SOURCE_EXACT_NOT_FOUND"
+    elif repaired_source_count:
+        canonical_status = "REPAIRED_SOURCE_EXACT"
+        reason_code = "SOURCE_EXACT_CROSS_SENTENCE"
+    else:
+        canonical_status = "L2_READY"
+        reason_code = None
+    canonical_payload = {
+        "contract_version": CANONICAL_L2_CONTRACT_VERSION,
+        "status": canonical_status,
+        "reason_code": reason_code,
+        "resolver_version": RESOLVER_VERSION,
+        "sentences": resolved,
+        "missing_sentence_ids": missing_sentence_ids,
+        "unresolved_span_details": unresolved_span_details,
+    }
     return {
         "sentences": resolved,
-        "missing_sentence_ids": sorted(set(sentences) - covered),
+        "missing_sentence_ids": missing_sentence_ids,
         "unresolved_spans": unresolved,
         "unresolved_span_details": unresolved_span_details,
+        "raw_envelope": {
+            "contract_version": RAW_L2_CONTRACT_VERSION,
+            "model": None,
+            "raw_prediction": raw_prediction,
+            "raw_prediction_sha256": raw_prediction_sha256,
+            "transport_status": "OK",
+        },
+        "canonical_status": canonical_status,
+        "canonical_reason_code": reason_code,
+        "resolver_version": RESOLVER_VERSION,
+        "repair_reason_code": reason_code,
+        "canonical_l2_sha256": _canonical_sha(canonical_payload),
     }
 
 

@@ -23,8 +23,8 @@
     },
     {
       "path": "develop/annual_requery_shadow_v1.py",
-      "sha256": "f458894b735f06b9aa3611bcb59e95675980a7e02ea1c7f57fd7ed619efdbd50",
-      "size": 12276
+      "sha256": "44ae8edcc04a6497ccbbba8cd41ab5319ba13159b699b4fbc396b702be2fe576",
+      "size": 14622
     },
     {
       "path": "develop/article_body_sentence_splitter_v1.py",
@@ -38,8 +38,8 @@
     },
     {
       "path": "develop/failure_recovery_shadow_v1.py",
-      "sha256": "daa2405b8cbfcd138ab461602c84bd84f95f038e0c6c99ffd5de1b465187a703",
-      "size": 17198
+      "sha256": "e0731c04a84aa4b8b8f43a3915af26482db35fd6f210f4e75443168c3cd8a2e9",
+      "size": 22729
     },
     {
       "path": "develop/hcx_client.py",
@@ -53,8 +53,8 @@
     },
     {
       "path": "develop/l2_segmentation.py",
-      "sha256": "a6285f5295f8252b5add11bc82c918ba33b11046ac6b8192f93b9291a7866db3",
-      "size": 37380
+      "sha256": "a3dc52bfb1aa0eb8fca61dd805ab3d4a97a084e196ded6d17917252e2cbb3f6a",
+      "size": 35281
     },
     {
       "path": "develop/l2_span_resolver.py",
@@ -73,13 +73,13 @@
     },
     {
       "path": "develop/run_article_body_pipeline_trace_v1.py",
-      "sha256": "df6e51ec7211100487bc573753d807c2bc4e7c51433f7e85d53ff1d8cf55bcfd",
-      "size": 46592
+      "sha256": "8e304c531548910c5767c064d3de35c48dfcc88d4e8301e3d2134e39a8e6eb71",
+      "size": 46668
     },
     {
       "path": "develop/run_l2_segmentation.py",
-      "sha256": "03ac5d04b0e8a788a076bf2ddabc5be8d6b8fef95c6770aeda6fb4987798b211",
-      "size": 8897
+      "sha256": "a24a8918075f122e09b358ece401a21ed9f9fbed311e6da79d60363923a858b4",
+      "size": 9802
     },
     {
       "path": "develop/run_layer_stack.py",
@@ -253,8 +253,8 @@
     },
     {
       "path": "news_verification/runtime/operational_retrieval_v2.py",
-      "sha256": "ad6f21735d1b1e4566b0a02e560524b2caba536307052e4e1f70960d56cc18eb",
-      "size": 13316
+      "sha256": "f834e056829e6b254afb953de25fde80dd1214168771f31f97d751139db72831",
+      "size": 18663
     },
     {
       "path": "news_verification/runtime/period_text.py",
@@ -313,13 +313,13 @@
     },
     {
       "path": "news_verification/runtime/same_series_evidence_v1.py",
-      "sha256": "722c6c32c065fd56aa4faf95c915fb1c9f399c37d15a398f28be6bc9062630af",
-      "size": 49474
+      "sha256": "01305691e23bc78c3294c7711883d5dc2842f885e65fd8e1d1da5604ff8be0ec",
+      "size": 50569
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "afbd1386831ebe44727634185ef40e35513a0bd1138a6d07f66b80f6001a9b60",
-      "size": 226824
+      "sha256": "3da99ed7aec7e9d6ad117d3db295ecf1853b096513b0b121e0013d2c1e0f2271",
+      "size": 253068
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

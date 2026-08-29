@@ -188,8 +188,13 @@ def _clarification_response(question: dict[str, Any], reason: str) -> dict[str, 
         "clarification_receipt": {
             "contract_version": "clarification-plan-v2",
             "plan_sha256": str(question.get("plan_sha256") or ""),
+            "clarification_plan_sha256": str(question.get("clarification_plan_sha256") or question.get("plan_sha256") or ""),
             "candidate_membership_sha256": question.get("candidate_membership_sha256"),
             "profile_bundle_sha256": question.get("profile_bundle_sha256"),
+            "candidate_bundle_sha256": question.get("candidate_bundle_sha256"),
+            "option_bundle_sha256": question.get("option_bundle_sha256"),
+            "retrieval_rounds": list(question.get("retrieval_rounds") or []),
+            "query_register_version": question.get("query_register_version"),
             "speculative": bool(question.get("speculative")),
             "cell_api_calls": 0,
             "hcx_answer_calls": 0,
@@ -259,6 +264,8 @@ def _runtime_fingerprint() -> str:
     files = (
         runtime_root / "src" / "develop" / "run_article_body_pipeline_trace_v1.py",
         runtime_root / "src" / "news_verification" / "runtime" / "run_pipeline_operational_v2.py",
+        runtime_root / "src" / "news_verification" / "runtime" / "operational_retrieval_v2.py",
+        runtime_root / "src" / "develop" / "failure_recovery_shadow_v1.py",
         ROOT / "backend" / "verification_checkpoint_store.py",
     )
     if any(not path.is_file() for path in files):
@@ -331,6 +338,8 @@ def _pending_clarification(out_root: Path) -> dict[str, Any] | None:
             question = dict(plan["question"])
             question["candidate_membership_sha256"] = plan.get("candidate_membership_sha256")
             question["profile_bundle_sha256"] = plan.get("profile_bundle_sha256")
+            question["clarification_plan_sha256"] = plan.get("clarification_plan_sha256")
+            question["candidate_bundle_sha256"] = plan.get("candidate_bundle_sha256")
             question["speculative"] = bool(plan.get("speculative"))
             return _clarification_response(question, str(plan.get("reason") or "CLARIFICATION_REQUIRED"))
         recovery = row.get("failure_recovery_shadow")
@@ -1127,7 +1136,18 @@ def verify_article_develop(
         if cp.root != workdir:
             shutil.rmtree(workdir, ignore_errors=True)
         return _with_checkpoint(
-            _clarification_response({**question, "plan_sha256": _receipt_sha256(plan), "speculative": plan.get("speculative")}, str(plan["reason"])),
+            _clarification_response({
+                **question,
+                "plan_sha256": str(plan.get("clarification_plan_sha256") or _receipt_sha256(plan)),
+                "clarification_plan_sha256": plan.get("clarification_plan_sha256"),
+                "candidate_bundle_sha256": plan.get("candidate_bundle_sha256"),
+                "option_bundle_sha256": plan.get("option_bundle_sha256"),
+                "candidate_membership_sha256": plan.get("candidate_membership_sha256"),
+                "profile_bundle_sha256": plan.get("profile_bundle_sha256"),
+                "retrieval_rounds": plan.get("retrieval_rounds"),
+                "query_register_version": plan.get("query_register_version"),
+                "speculative": plan.get("speculative"),
+            }, str(plan["reason"])),
             token=cp.token,
             resume_from_stage=resume_from,
         )

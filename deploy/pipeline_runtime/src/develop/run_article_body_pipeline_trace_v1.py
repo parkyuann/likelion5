@@ -653,7 +653,7 @@ def run_l2_stage(
     result_rows: list[dict[str, Any]] = []
     for result in projected["results"]:
         start = len(flat)
-        selected = list(result.get("predictions") or []) if result.get("status") == "L2_READY" else []
+        selected = list(result.get("predictions") or []) if result.get("status") in {"L2_READY", "REPAIRED_SOURCE_EXACT"} else []
         flat.extend(selected)
         result_rows.append({"article_idx": str(result.get("article_idx") or ""), "status": result.get("status"), "prediction_row_start": start, "prediction_row_end": len(flat)})
     l2_call_ledger = enforce_call_limits({"hcx_l2": 0 if deterministic_query_front else int(raw_manifest.get("articles") or len(articles))})
@@ -684,7 +684,10 @@ def run_layers_stage(
 ) -> dict[str, Any]:
     rows = [json.loads(line) for line in (root / "02_l2_predictions.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     l2_results = [json.loads(line) for line in (root / "02_l2_results.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-    ready_ids = {str(row.get("article_idx") or "") for row in l2_results if row.get("status") == "L2_READY"}
+    ready_ids = {
+        str(row.get("article_idx") or "") for row in l2_results
+        if row.get("status") in {"L2_READY", "REPAIRED_SOURCE_EXACT"}
+    }
     routed = run_stack(
         [article for article in articles if str(article.get("article_idx") or "") in ready_ids],
         rows,

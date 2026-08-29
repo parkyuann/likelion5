@@ -176,3 +176,27 @@ def test_non_cell_expression_accepts_hcx_compound_and_duration_only_variants():
 
     for period_raw, sentence in variants:
         assert l4._period_is_non_cell_expression(period_raw, sentence)
+
+
+def test_four_digit_year_remains_an_annual_measurement_period():
+    row = l4.compose_fields(
+        {
+            "article_idx": "article:test",
+            "article_sentence_id": 0,
+            "sentence_text": "2025년에는 합계출산율 0.80명을 기록했다.",
+            "period_raw": "2025년",
+            "period_source": "LOCAL",
+            "indicator_label": "합계출산율",
+            "value_text": "0.80",
+            "value_unit": "명",
+        },
+        published_at="2026-08-26",
+    )
+
+    assert not l4._period_is_non_cell_expression("2025년", "2025년에는 합계출산율 0.80명을 기록했다.")
+    assert row["retrieval_fields"]["period"] == {
+        "measurement": {"raw": "2025년", "absolute": "2025"},
+        "baseline": {"raw": "", "absolute": ""},
+        "basis": "NONE",
+        "period_expression_role": "MEASUREMENT",
+    }

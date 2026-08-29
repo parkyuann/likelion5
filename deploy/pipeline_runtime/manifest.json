@@ -213,8 +213,8 @@
     },
     {
       "path": "news_verification/runtime/l4_field_normalization.py",
-      "sha256": "cd05b0e357a67fb74dd613994fd09ebc41e63a7b5f73167b557bdc84c3e5e7a6",
-      "size": 36477
+      "sha256": "e1c01d60832c79752b44e8b13a0675d7eeb98ed15aa50faa9830023291a1af16",
+      "size": 36753
     },
     {
       "path": "news_verification/runtime/l5_routing.py",

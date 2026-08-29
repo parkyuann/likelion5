@@ -224,3 +224,43 @@ PENDING until the EC2 promotion gate completes:
 - 대표 복합 기사에서 target별 Retrieval/metadata binding/Cell API `> 0` 및 공식값 답변 확인
 - 배포 전후 PostgreSQL/OpenSearch/Qdrant/Redis/BGE container/data 불변 확인
 - historical range/rank operator의 별도 고도화
+
+## 2026-08-29 canonical L2 · 6-path retrieval · clarification integration
+
+- 구현 commit: `0da32d2fd5a6a181e556096fe86825d1b75c2c3f`
+- 설계: `deploy/DESIGN_CANONICAL_L2_RETRIEVAL_CLARIFICATION_V1_20260829.md`
+- differential baseline: `deploy/BASELINE_CANONICAL_L2_RETRIEVAL_CLARIFICATION_20260829.json`
+- runtime manifest SHA-256: `5d1c28b99f2e7feca1d4784fbf5e99d45ba132867bbb79e74b121ab025e5a827`
+
+포함 범위:
+
+- HCX raw 응답과 canonical L2를 분리하고 exact-only source span repair 및 상태 receipt를 추가했다.
+- `sentence:official`을 비활성화하고 sentence BM25/dense, indicator official/BM25/dense,
+  item official/BM25/dense 중 설계된 6개 기본 경로만 독립 실행·봉인한다.
+- Clarification Plan과 최대 1회의 Corrective Retrieval을 분리한 7-state coordinator,
+  dependency-aware resume, candidate/profile/query-register bundle seal을 연결했다.
+- 서버 봉인 query-register identity를 재계산해 continuation 이중 SHA 위조를 거부한다.
+- `QUERY_READY`의 완전 좌표와 KOSIS 공식 응답의 `ORG_ID`, `TBL_ID`, `ITM_ID`,
+  `PRD_SE`, `PRD_DE`, `C1..Cn`이 모두 일치할 때만 Cell API 결과를 인정한다.
+- frontend는 stale clarification plan 및 candidate selection을 무효화하고 새 plan receipt를 사용한다.
+
+검증 결과:
+
+- 전체 backend: `175 passed / 기존 봉인 6 failed`; 신규 실패 `0`, 기존 통과 감소 `0`.
+- 검색 adapter: `16 passed`.
+- 핵심 반례 focused suite: `22 passed`; 최종 Cell 응답 focused suite: `26 passed`.
+- frontend Vite production build: 성공.
+- overlay/compose/release/runtime 계약: `15 passed`.
+- runtime manifest closure: `74/74`, mismatch `0`.
+- `git diff --check`: 통과. 변경 diff에서 고정 비밀값은 발견되지 않았다.
+- 독립 승인: `APPROVED_FOR_COMMIT_AND_EC2_E2E`.
+
+PENDING:
+
+- 현재 작업 호스트에는 EC2 SSH private key, AWS CLI credential, remote Docker context가 없어
+  application overlay를 직접 recreate할 권한 경로를 확인하지 못했다.
+- 따라서 실제 HCX L2, PostgreSQL/OpenSearch/BGE/Qdrant, KOSIS Cell API를 잇는 EC2 E2E와
+  API/frontend 동일 release SHA 확인은 서버 배포 후 수행해야 한다.
+- 배포 시 기존 PostgreSQL, OpenSearch, Qdrant, redis-session, EBS, index/collection,
+  alias/current pointer는 변경하지 않는다.
+- reranker, redis-cache, `002_application_product_state`, historical range/rank operator는 별도 PENDING이다.

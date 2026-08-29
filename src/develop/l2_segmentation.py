@@ -32,12 +32,30 @@ except ImportError:  # pragma: no cover - direct script execution
     from l1_value_candidates import build_span_candidates, sentence_offset_map
     from l2_span_resolver import SpanResolutionError, resolve_span
 
+try:
+    from .r4c1_binding_proposer_v1 import (
+        EXACT_INDICATOR_REGISTRY_VERSION,
+        propose_exact_statistical_indicator_matches,
+    )
+except ImportError:  # pragma: no cover - packaged runtime mirror
+    try:
+        from ..news_verification.runtime.r4c1_binding_proposer_v1 import (
+            EXACT_INDICATOR_REGISTRY_VERSION,
+            propose_exact_statistical_indicator_matches,
+        )
+    except ImportError:  # pragma: no cover - direct script execution
+        from r4c1_binding_proposer_v1 import (  # type: ignore
+            EXACT_INDICATOR_REGISTRY_VERSION,
+            propose_exact_statistical_indicator_matches,
+        )
+
 
 SentenceSpanIterator = Callable[[str], Iterator[tuple[int, int, int, str]]]
 
 RAW_L2_CONTRACT_VERSION = "raw-hcx-l2-v1"
 CANONICAL_L2_CONTRACT_VERSION = "canonical-l2-v1"
 RESOLVER_VERSION = "exact-source-resolver-v1"
+MISSING_SENTENCE_REPAIR_CONTRACT_VERSION = "l2-missing-sentence-exact-repair-v1"
 CANONICAL_L2_STATUSES = frozenset({
     "L2_READY", "REPAIRED_SOURCE_EXACT", "HOLD_NOT_FOUND",
     "HOLD_AMBIGUOUS", "L2_UNAVAILABLE",
@@ -116,6 +134,114 @@ def _unresolved_span_detail(
         "source_span_text": str(span_text)[:512],
         "span_error_code": code,
     }
+
+
+def _missing_sentence_repair(
+    sentence_id: int,
+    sentence_text: str,
+    value_candidates: list[dict[str, Any]],
+    sentence_char_start: int = 0,
+) -> tuple[dict[str, Any] | None, str, str, dict[str, Any]]:
+    """Attempt the bounded exact-only repair for one absent HCX sentence.
+
+    The only authorities here are the article sentence, the existing L1
+    value candidates, and the versioned exact terminology registry.  A
+    missing match or any ambiguity remains a hold; nothing is inferred from
+    retrieval, metadata, similarity, or another HCX call.
+    """
+    indicators = propose_exact_statistical_indicator_matches(sentence_text)
+    values = [candidate for candidate in value_candidates if candidate.get("kind") == "value_unit"]
+    # An omitted non-claim sentence is not an L2 repair target.  In
+    # particular, source-only lead sentences may be intentionally absent
+    # while their exact source span is promoted from a later sentence.
+    if not indicators and not values:
+        return None, "SKIP", "", {}
+    receipt: dict[str, Any] = {
+        "repair_contract_version": MISSING_SENTENCE_REPAIR_CONTRACT_VERSION,
+        "repair_reason_code": "MISSING_SENTENCE_EXACT_INDICATOR",
+        "sentence_id": int(sentence_id),
+        "value_span_id": None,
+        "value_span_text": None,
+        "value_char_start": None,
+        "value_char_end": None,
+        "indicator_source_span_text": None,
+        "indicator_char_start": None,
+        "indicator_char_end": None,
+        "indicator_source_char_start": None,
+        "indicator_source_char_end": None,
+        "value_source_char_start": None,
+        "value_source_char_end": None,
+        "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
+        "terminology_rule_id": None,
+        "candidate_count": len(indicators),
+        "value_candidate_count": len(values),
+        "raw_prediction_sha256": None,
+        "canonical_l2_sha256": None,
+    }
+    if not indicators:
+        return None, "HOLD_NOT_FOUND", "MISSING_SENTENCE_EXACT_INDICATOR_NOT_FOUND", receipt
+    if len(indicators) != 1 or len(values) != 1:
+        return None, "HOLD_AMBIGUOUS", "MISSING_SENTENCE_EXACT_INDICATOR_AMBIGUOUS", receipt
+
+    indicator = indicators[0]
+    value = values[0]
+    value_start = int(value.get("char_start") or 0)
+    value_end = int(value.get("char_end") or 0)
+    value_local_start = value_start - int(sentence_char_start)
+    indicator_start = int(indicator.start)
+    indicator_end = int(indicator.end)
+    receipt.update({
+        "value_span_id": value.get("span_id"),
+        "value_span_text": value.get("text"),
+        "value_char_start": value_start,
+        "value_char_end": value_end,
+        "indicator_source_span_text": indicator.text,
+        "indicator_char_start": int(sentence_char_start) + indicator_start,
+        "indicator_char_end": int(sentence_char_start) + indicator_end,
+        "indicator_source_char_start": int(sentence_char_start) + indicator_start,
+        "indicator_source_char_end": int(sentence_char_start) + indicator_end,
+        "value_source_char_start": value_start,
+        "value_source_char_end": value_end,
+        "terminology_rule_id": indicator.rule_id,
+    })
+    if indicator_end > value_local_start:
+        return None, "HOLD_AMBIGUOUS", "MISSING_SENTENCE_EXACT_INDICATOR_AMBIGUOUS", receipt
+
+    period_candidates = [candidate for candidate in value_candidates if candidate.get("kind") == "time"]
+    period_context: dict[str, Any] = {}
+    if len(period_candidates) == 1:
+        period = period_candidates[0]
+        period_text = str(period.get("text") or "")
+        period_context = {
+            "period_raw": period_text,
+            "source_span_text": period_text,
+            "source_char_start": int(period.get("char_start") or 0),
+            "source_char_end": int(period.get("char_end") or 0),
+            "span_status": "RESOLVED",
+            "offset_provenance": "L1_EXACT_TIME_CANDIDATE",
+        }
+    row = {
+        "sentence_id": int(sentence_id),
+        "text": sentence_text,
+        "indicator_scopes": [{
+            "indicator_label": indicator.text,
+            "source_span_text": indicator.text,
+            "source_char_start": indicator_start,
+            "source_char_end": indicator_end,
+            "occurrence_index": 0,
+            "match_count": 1,
+            "offset_provenance": "L2_MISSING_SENTENCE_EXACT_REGISTRY",
+            "span_status": "RESOLVED",
+        }],
+        "source_region": {
+            "opens_region": False,
+            "governing_sentence_id": None,
+            "dominance": DOMINANCE_NONE,
+            "span_status": "NOT_PROVIDED",
+        },
+        "period_context": period_context,
+    }
+    return row, "REPAIRED_SOURCE_EXACT", "MISSING_SENTENCE_EXACT_INDICATOR", receipt
 
 
 class HcxSpanResolutionError(SpanResolutionError):
@@ -418,15 +544,19 @@ def resolve_prediction(
     """Create a raw envelope and an exact-source canonical L2 envelope."""
     raw_prediction = deepcopy(prediction)
     raw_prediction_sha256 = _canonical_sha(raw_prediction)
-    sentences = {
-        row["sentence_id"]: row["text"]
-        for row in (sentence_offset_map(article_text, sentence_span_iterator=sentence_span_iterator) if sentence_span_iterator is not None else sentence_offset_map(article_text))
-    }
+    sentence_rows = (
+        sentence_offset_map(article_text, sentence_span_iterator=sentence_span_iterator)
+        if sentence_span_iterator is not None else sentence_offset_map(article_text)
+    )
+    sentences = {row["sentence_id"]: row["text"] for row in sentence_rows}
+    sentence_starts = {row["sentence_id"]: int(row.get("char_start") or 0) for row in sentence_rows}
     resolved: list[dict[str, Any]] = []
     cross_source_promotions: list[tuple[int, dict[str, Any]]] = []
     unresolved = 0
     unresolved_span_details: list[dict[str, Any]] = []
     repaired_source_count = 0
+    exact_repair_receipts: list[dict[str, Any]] = []
+    exact_repair_statuses: list[str] = []
     for item in prediction.get("sentences") or []:
         sentence_id = item.get("sentence_id")
         text = sentences.get(sentence_id, "")
@@ -561,6 +691,32 @@ def resolve_prediction(
         target["source_region"] = opened
     covered = {row["sentence_id"] for row in resolved}
     missing_sentence_ids = sorted(set(sentences) - covered)
+    if missing_sentence_ids:
+        candidates = (
+            build_span_candidates(article_text, sentence_span_iterator=sentence_span_iterator)
+            if sentence_span_iterator is not None else build_span_candidates(article_text)
+        )
+        candidates_by_sentence: dict[int, list[dict[str, Any]]] = {}
+        for candidate in candidates:
+            sentence_key = candidate.get("sentence_id")
+            if isinstance(sentence_key, int):
+                candidates_by_sentence.setdefault(sentence_key, []).append(candidate)
+        for missing_sentence_id in list(missing_sentence_ids):
+            repaired_row, repair_status, repair_reason, repair_receipt = _missing_sentence_repair(
+                missing_sentence_id,
+                sentences[missing_sentence_id],
+                candidates_by_sentence.get(missing_sentence_id, []),
+                sentence_starts.get(missing_sentence_id, 0),
+            )
+            if repair_status == "SKIP":
+                continue
+            repair_receipt["raw_prediction_sha256"] = raw_prediction_sha256
+            exact_repair_receipts.append(repair_receipt)
+            exact_repair_statuses.append(repair_status)
+            if repaired_row is not None:
+                resolved.append(repaired_row)
+        covered = {row["sentence_id"] for row in resolved}
+        missing_sentence_ids = sorted(set(sentences) - covered)
     error_codes = {str(item.get("span_error_code") or "UNKNOWN") for item in unresolved_span_details}
     if "AMBIGUOUS" in error_codes:
         canonical_status = "HOLD_AMBIGUOUS"
@@ -568,6 +724,18 @@ def resolve_prediction(
     elif unresolved_span_details:
         canonical_status = "HOLD_NOT_FOUND"
         reason_code = "SOURCE_EXACT_NOT_FOUND"
+    # A missing, non-repairable sentence must not newly suppress another
+    # independently resolved sentence.  Before this repair path existed,
+    # absent HCX rows did not change the article-level status by themselves.
+    elif "HOLD_AMBIGUOUS" in exact_repair_statuses and not resolved:
+        canonical_status = "HOLD_AMBIGUOUS"
+        reason_code = "MISSING_SENTENCE_EXACT_INDICATOR_AMBIGUOUS"
+    elif "HOLD_NOT_FOUND" in exact_repair_statuses and not resolved:
+        canonical_status = "HOLD_NOT_FOUND"
+        reason_code = "MISSING_SENTENCE_EXACT_INDICATOR_NOT_FOUND"
+    elif "REPAIRED_SOURCE_EXACT" in exact_repair_statuses:
+        canonical_status = "REPAIRED_SOURCE_EXACT"
+        reason_code = "MISSING_SENTENCE_EXACT_INDICATOR"
     elif repaired_source_count:
         canonical_status = "REPAIRED_SOURCE_EXACT"
         reason_code = "SOURCE_EXACT_CROSS_SENTENCE"
@@ -582,7 +750,11 @@ def resolve_prediction(
         "sentences": resolved,
         "missing_sentence_ids": missing_sentence_ids,
         "unresolved_span_details": unresolved_span_details,
+        "repair_receipts": exact_repair_receipts,
     }
+    canonical_l2_sha256 = _canonical_sha(canonical_payload)
+    for receipt in exact_repair_receipts:
+        receipt["canonical_l2_sha256"] = canonical_l2_sha256
     return {
         "sentences": resolved,
         "missing_sentence_ids": missing_sentence_ids,
@@ -599,7 +771,8 @@ def resolve_prediction(
         "canonical_reason_code": reason_code,
         "resolver_version": RESOLVER_VERSION,
         "repair_reason_code": reason_code,
-        "canonical_l2_sha256": _canonical_sha(canonical_payload),
+        "repair_receipts": exact_repair_receipts,
+        "canonical_l2_sha256": canonical_l2_sha256,
     }
 
 

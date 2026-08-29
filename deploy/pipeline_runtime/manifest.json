@@ -53,8 +53,8 @@
     },
     {
       "path": "develop/l2_segmentation.py",
-      "sha256": "a3dc52bfb1aa0eb8fca61dd805ab3d4a97a084e196ded6d17917252e2cbb3f6a",
-      "size": 35281
+      "sha256": "ed9c4747e628c6575658f4fd5126a177dd57cfa4157fb04a2f56c463d3b29919",
+      "size": 43450
     },
     {
       "path": "develop/l2_span_resolver.py",
@@ -273,8 +273,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_binding_proposer_v1.py",
-      "sha256": "802c7a0783af1f2c362d8cdab9334fc1667e0a4a244bb95cd8a267df291d614b",
-      "size": 3745
+      "sha256": "3c2424d3a2c25b38bea62163d66217ac65d71f10a31caff3be543ab384062206",
+      "size": 5218
     },
     {
       "path": "news_verification/runtime/r4c1_claim_core_v2.py",

@@ -264,3 +264,33 @@ PENDING:
 - 배포 시 기존 PostgreSQL, OpenSearch, Qdrant, redis-session, EBS, index/collection,
   alias/current pointer는 변경하지 않는다.
 - reranker, redis-cache, `002_application_product_state`, historical range/rank operator는 별도 PENDING이다.
+
+## 2026-08-29 clarification indicator resume follow-up
+
+- 구현 commit: `bd8e74c5e7108c641160afbce744a9346354ab15`
+- runtime manifest SHA-256: `30981c89ca734ad03771b12abb6bb93e98913e3c2f876ffdfadcaa667663417f`
+- 변경 범위: 원문에 존재하지 않는 지표를 사용자가 보완한 경우, 해당 답변을 원문 span으로 위조하지 않고
+  `USER_CLARIFICATION` provenance로 ITEM binding과 공개된 전국 기본 범위 추론에만 사용한다. 기존 원문 span이
+  있으면 기존 exact/semantic binding을 우선한다.
+- 회귀 테스트: `test_missing_indicator_clarification_e2e_v1.py` 및 관련 기간·검색 suite `19 passed`.
+
+실제 EC2 적용 및 E2E 결과:
+
+- `/api/version`: `bd8e74c5e7108c641160afbce744a9346354ab15`, health `200`.
+- 데이터 계층 container ID와 시작 시각은 배포 전후 동일했다. PostgreSQL, OpenSearch, Qdrant,
+  redis-session, BGE encoder를 재생성·재시작하지 않았다.
+- `2025년에는 0.80명을 기록했다.`는 첫 요청에서 `INDICATOR_REQUIRED`를 반환하고, 사용자가 `합계출산율`을
+  답한 뒤 `resume.used=true`, `resume.from_stage=retrieval`로 재개됐다. Retrieval 6회, metadata binding,
+  Cell API 1회, 공식값 `0.799명`, 최종 status `completed`를 확인했다. 재개 과정에서 L1/L2/Layers는 재실행되지 않았다.
+- 복합 기사 실험은 날짜 재질의와 지표 재질의까지 502 없이 재개됐으나 최종 공식값까지는 실패했다. 첫 주장
+  `6.7%`는 L2가 `LEVEL/%`로 구조화되어 `UNIT_MISMATCH`, 두 번째 합계출산율 주장은
+  `PERIOD_FREQUENCY_MISMATCH`로 종료됐고 두 target 모두 Cell API `0`회였다. 이는 이번 indicator clarification
+  binding 수정의 실패가 아니라 복합 주장별 measurement/period 구조화 및 target-specific clarification의 잔여 병목이다.
+
+PENDING:
+
+- 복합 기사에서 `출생아 수`의 LEVEL 값과 전년 대비 `6.7%` CHANGE_RATE를 주장별로 분리하는 L2/L3 계약 보완
+- 상대 표현 `지난해`의 연간 period와 release-bound profile을 합성하는 target별 period binding 보완
+- 복합 주장마다 지표/항목 재질의를 분리하고, 잘못된 하나의 사용자 답변을 다른 target에 전파하지 않는 clarification scope
+- full suite collection blocker: 기존 `test_annual_requery_user_answer_v1.py`의 전역 `src.develop.run_pipeline_operational_v2`
+  stub이 다른 테스트의 trace import를 가로채는 테스트 격리 문제. 이번 변경에서 production code는 수정하지 않았다.

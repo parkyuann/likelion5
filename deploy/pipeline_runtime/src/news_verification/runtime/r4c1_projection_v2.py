@@ -196,6 +196,40 @@ def _context_provenance(atom: Mapping[str, Any], path: str) -> dict[str, Any] | 
     return result if _complete_span(result) else None
 
 
+def _user_clarification_provenance(
+    atom: Mapping[str, Any], path: str,
+) -> dict[str, Any] | None:
+    """Return non-span provenance for an explicit user-supplied constraint.
+
+    A clarification can resolve a missing selector, but it is not evidence
+    that the article itself used that label.  Keep the distinction explicit
+    so downstream binding may consume the constraint without manufacturing an
+    article span.
+    """
+    provenance = _base_claim_prov(atom)
+    clarification = provenance.get("user_clarification")
+    if not isinstance(clarification, Mapping):
+        return None
+    if (
+        str(clarification.get("source") or "") != "USER_CLARIFICATION"
+        or not str(clarification.get("question_id") or "").strip()
+        or not str(clarification.get("role") or "").strip()
+        or not str(clarification.get("answer_sha256") or "").strip()
+    ):
+        return None
+    return {
+        "article_idx": provenance.get("article_idx"),
+        "article_id": provenance.get("article_id"),
+        "sentence_id": provenance.get("sentence_id"),
+        "span_path": path,
+        "start": None,
+        "end": None,
+        "text": None,
+        "evidence_basis": "USER_CLARIFICATION",
+        "user_clarification": dict(clarification),
+    }
+
+
 def _indicator_subject_context_provenance(
     atom: Mapping[str, Any], path: str,
 ) -> dict[str, Any] | None:
@@ -231,6 +265,8 @@ def _evidence(atom: Mapping[str, Any], *, profile_path: str, profile_label: Any,
             return None
     elif required:
         claim = _context_provenance(atom, path) or {}
+        if not claim:
+            claim = _user_clarification_provenance(atom, path) or {}
         if not claim:
             return None
         claim["consumed_span"] = None
@@ -817,10 +853,10 @@ def _geographic_nationwide_default(
             indicator_atom, "indicator.unqualified_nationwide_scope"
         )
     context_atom = dict(indicator_atom)
-    context_atom["provenance"] = {
-        **dict(_base_claim_prov(indicator_atom)),
-        **({"context_span": context} if context is not None else {}),
-    }
+    context_provenance = dict(_base_claim_prov(indicator_atom))
+    if context is not None:
+        context_provenance["context_span"] = context
+    context_atom["provenance"] = context_provenance
     evidence = _evidence(
         context_atom,
         profile_path=f"dimensions[{dindex}].values[{vindex}]",
@@ -878,15 +914,19 @@ def project_candidate_v2(
     # only for a singleton inventory and has no consumed indicator span.
     item_options: list[tuple[dict[str, Any], dict[str, Any] | None, str]] = []
     for idx, item in enumerate(items):
-        for start, end, text in _submatches(indicator, str(item.get("itm_nm"))):
+        source_matches = _submatches(indicator, str(item.get("itm_nm")))
+        source_bound = False
+        for start, end, text in source_matches:
             prov = _subspan_provenance(indicator_atom, start, end, text, f"indicator.item[{idx}]")
             if prov is not None:
                 item_options.append((item, prov, "indicator_item_subspan"))
-        for proposal in propose_semantic_alias_matches(
+                source_bound = True
+        semantic_proposals = propose_semantic_alias_matches(
             indicator,
             item.get("itm_nm"),
             allow_parenthetical_base=allow_unqualified_nationwide,
-        ):
+        )
+        for proposal in semantic_proposals:
             prov = _subspan_provenance(
                 indicator_atom,
                 proposal.start,
@@ -896,6 +936,16 @@ def project_candidate_v2(
             )
             if prov is not None:
                 item_options.append((item, prov, proposal.rule_id))
+                source_bound = True
+        if (
+            not source_bound
+            and not semantic_proposals
+            and _norm(indicator) == _norm(item.get("itm_nm"))
+            and _user_clarification_provenance(
+                indicator_atom, f"indicator.item[{idx}].user_clarification"
+            ) is not None
+        ):
+            item_options.append((item, None, "USER_CLARIFICATION_EXACT"))
     if not item_options:
         if len(items) == 1:
             context = _context_provenance(indicator_atom, "indicator.generic_item")
@@ -917,7 +967,12 @@ def project_candidate_v2(
         if item_evidence is None:
             reasons.append("CLAIM_PROVENANCE_MISSING")
             continue
-        checked_items.append((item, prov, rule, AxisBinding("ITEM", str(item["itm_id"]), None, "indicator", "EXACT_LABEL" if prov else "SINGLETON_INVENTORY", {
+        binding_basis = (
+            "USER_CLARIFICATION_EXACT"
+            if rule == "USER_CLARIFICATION_EXACT"
+            else "EXACT_LABEL" if prov else "SINGLETON_INVENTORY"
+        )
+        checked_items.append((item, prov, rule, AxisBinding("ITEM", str(item["itm_id"]), None, "indicator", binding_basis, {
             **item_evidence,
             "consumed_span": prov,
         })))

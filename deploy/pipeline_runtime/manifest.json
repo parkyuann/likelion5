@@ -293,8 +293,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_projection_v2.py",
-      "sha256": "f7b4231f236bf4d1f9ca4732c2ab25aabd229a768dfc98bbd53eebdedb98416f",
-      "size": 95573
+      "sha256": "1d76a22911828be7322f421c3257d80e77d93b8f047a8cb338b46aa1b4e2938a",
+      "size": 97699
     },
     {
       "path": "news_verification/runtime/retrieval_query.py",

@@ -146,9 +146,11 @@ reranker는 `deploy_encoder_internal`에만 연결되고 published host port가 
   전체 backend suite는 기존 전역 module-stub collection 충돌과 기존 503 봉인 테스트가
   있어 전체 기준선 통과로 주장하지 않는다. 이번 변경의 focused regression에는
   신규 실패가 없었다.
-- 원래 dirty handoff(`github_handoff_likelion5`)는 읽거나 덮어쓰지 않았고, 사용자가
-  제공한 예비 SHA `8d395...`와 실행 전 fresh source 관측 `bc8b271...`의 차이는
-  사실로 기록만 했다.
+- 원래 dirty handoff(`github_handoff_likelion5`)는 수정·덮어쓰기하지 않았다. 최종
+  관측은 branch `fix/ec2-canonical-runtime-20260828`, SHA
+  `5c33ac2d465efdb5917d317fbff5a212b1e68b46`, tracked modified 3개·untracked 12개로
+  시작 시점과 같은 dirty 경계에 있다. 사용자가 제공한 예비 SHA `8d395...`와 실행 전
+  EC2 source 관측 `bc8b271...`의 차이는 사실로 기록만 했다.
 
 ## 후속 한계
 

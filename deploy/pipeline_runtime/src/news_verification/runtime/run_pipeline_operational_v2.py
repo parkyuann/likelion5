@@ -2670,6 +2670,57 @@ def _target_id(row: Mapping[str, Any]) -> str:
     return f"{row.get('article_idx')}:{row.get('value_span_id') or row.get('sentence_id') or 'target'}"
 
 
+def _cell_budget_target_id(claim_target_id: str, query_plan: Mapping[str, Any]) -> str:
+    """Return a deterministic identity for one claim and one exact cell.
+
+    The ledger's per-target limit remains one attempt.  The target therefore
+    has to distinguish logical claims that happen to read the same period,
+    while still collapsing byte-equivalent duplicate requests.  Annual KOSIS
+    period spellings ``A`` and ``Y`` are the same coordinate for this purpose.
+    """
+    claim_id = str(claim_target_id or "").strip()
+    if not claim_id:
+        raise ValueError("CELL_BUDGET_CLAIM_TARGET_ID_REQUIRED")
+    if not isinstance(query_plan, Mapping):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+
+    required = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de")
+    if any(not str(query_plan.get(key) or "").strip() for key in required):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+    obj_levels = query_plan.get("obj_levels")
+    if not isinstance(obj_levels, Mapping):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+    if any(
+        not isinstance(key, str)
+        or not str(key).strip()
+        or not str(value or "").strip()
+        for key, value in obj_levels.items()
+    ):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+
+    prd_se = str(query_plan["prd_se"])
+    if prd_se.upper() in {"A", "Y"}:
+        prd_se = "Y"
+    coordinate = {
+        "org_id": str(query_plan["org_id"]),
+        "tbl_id": str(query_plan["tbl_id"]),
+        "itm_id": str(query_plan["itm_id"]),
+        "prd_se": prd_se,
+        "start_prd_de": str(query_plan["start_prd_de"]),
+        "end_prd_de": str(query_plan["end_prd_de"]),
+        "obj_levels": {
+            key: str(value) for key, value in sorted(obj_levels.items(), key=lambda item: item[0])
+        },
+    }
+    payload = {
+        "version": "cell-budget-target-v1",
+        "claim_target_id": claim_id,
+        "coordinate": coordinate,
+    }
+    digest = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    return f"cell:v1:{digest}"
+
+
 def _bounded_article_date_provenance(article: Mapping[str, Any], article_text: str) -> dict[str, Any]:
     """Carry the bounded input date provenance into routed evidence."""
     input_provenance = article.get("article_date_provenance")
@@ -4077,7 +4128,7 @@ def run_new_articles_v2(
                             candidate_bundle_sha256=candidate_bundle_sha256,
                             target_call_ledger=cell_call_ledger,
                         ),
-                        target_id=target_id,
+                        target_id=_cell_budget_target_id(target_id, query_plan),
                     )
                 else:
                     cell_result = fetch_exact_single_cell(
@@ -4131,10 +4182,9 @@ def run_new_articles_v2(
             def annual_cell_fetcher(query: dict[str, Any]) -> list[dict[str, Any]] | dict[str, Any]:
                 if budget_ledger is None:
                     return cell_fetcher(query)
-                period = str(query.get("start_prd_de") or query.get("end_prd_de") or "")
                 return budget_ledger.execute(
                     budget_run_id or "audit", "cell", lambda: cell_fetcher(query),
-                    target_id=f"{article_id}:annual:{period}",
+                    target_id=_cell_budget_target_id(target_id, query),
                 )
             try:
                 annual_requery = verify_annual_requery(

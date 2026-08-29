@@ -347,6 +347,8 @@ PENDING:
   `POST /rerank 200`이 확인되었다.
 - Public `/api/v1/tables`는 기존 hybrid RRF를 유지했다. index/collection/alias,
   release pointer, data 적재, Cell API write는 수행하지 않았다.
+- 최종 관련 focused regression 묶음은 **52 passed**, compileall과 `git diff --check`도
+  통과했다. 전체 backend 기준선은 기존 collection/import blocker 때문에 주장하지 않는다.
 - 전체 shadow rerank Recall 재채점과 rerank 후 최종 답변 평가는 별도 PENDING이다.
   상세 receipt/report는 `deploy/RECEIPT_ITEM_OFFICIAL_BGE_PROMOTION_20260829.json`와
   `deploy/ITEM_OFFICIAL_BGE_운영반영_보고서_20260829.md`에 있다.

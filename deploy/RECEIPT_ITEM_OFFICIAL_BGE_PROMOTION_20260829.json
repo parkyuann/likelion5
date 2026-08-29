@@ -76,6 +76,11 @@
     "gold_rows": 100,
     "historical_receipts_modified": false
   },
+  "verification": {
+    "focused_regression_tests_passed": 52,
+    "compileall": "PASS",
+    "git_diff_check": "PASS"
+  },
   "follow_up": {
     "full_set_rerank_recall_replay": "PENDING",
     "final_answer_quality_after_rerank": "PENDING"

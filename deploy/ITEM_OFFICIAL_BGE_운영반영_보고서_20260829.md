@@ -142,7 +142,7 @@ reranker는 `deploy_encoder_internal`에만 연결되고 published host port가 
 - EC2 PostgreSQL/OpenSearch/Qdrant/redis/encoder의 ID·image·start 시각·restart
   count는 배포 전후 동일하다. index/collection/alias/release pointer/data 적재/
   Cell API 쓰기는 수행하지 않았다.
-- clean worktree focused suite: **47 passed**; compileall PASS; `git diff --check` PASS.
+- clean worktree focused suite: **52 passed**; compileall PASS; `git diff --check` PASS.
   전체 backend suite는 기존 전역 module-stub collection 충돌과 기존 503 봉인 테스트가
   있어 전체 기준선 통과로 주장하지 않는다. 이번 변경의 focused regression에는
   신규 실패가 없었다.

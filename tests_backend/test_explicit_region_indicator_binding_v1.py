@@ -84,6 +84,28 @@ def test_broad_hcx_scope_with_empty_label_is_recovered_without_accepting_broad_s
     assert receipt["recovered_from_model_scope"] is True
 
 
+def test_region_prefixed_hcx_indicator_label_is_recovered_from_exact_registry():
+    resolved = resolve_prediction(
+        ARTICLE,
+        {"sentences": [{
+            "sentence_id": 0,
+            "indicator_scopes": [{
+                "indicator_label": "대구광역시 합계출산율",
+                "source_span_text": "2025년 대구광역시의 합계출산율은",
+            }],
+            "source_region": {},
+            "period_context": {"period_raw": "2025년"},
+        }]},
+    )
+
+    assert resolved["canonical_status"] == "L2_READY"
+    scope = resolved["sentences"][0]["indicator_scopes"]
+    assert [(item["indicator_label"], item["source_span_text"]) for item in scope] == [
+        ("합계출산율", "합계출산율"),
+    ]
+    assert resolved["indicator_evidence_receipts"][0]["recovered_from_model_scope"] is True
+
+
 def test_one_explicit_region_is_carried_to_selector_and_query_plan():
     resolved = resolve_prediction(
         ARTICLE,

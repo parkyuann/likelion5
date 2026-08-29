@@ -498,6 +498,31 @@ def _recover_single_exact_indicator(
     }
 
 
+def _model_indicator_label_is_compatible(
+    sentence_text: str,
+    model_indicator_label: str,
+) -> bool:
+    """Allow only an exact registry label with article-grounded context."""
+    proposals = propose_exact_statistical_indicator_matches(sentence_text)
+    label = str(model_indicator_label or "").strip()
+    if len(proposals) != 1 or not label or proposals[0].text not in label:
+        return False
+    residual = label.replace(proposals[0].text, "")
+    allowed = [
+        proposals[0].text,
+        *(
+            str(candidate.get("text") or "")
+            for candidate in build_span_candidates(sentence_text)
+            if candidate.get("kind") in {"dimension", "time"}
+        ),
+    ]
+    for surface in sorted({surface for surface in allowed if surface}, key=len, reverse=True):
+        residual = residual.replace(surface, "")
+    residual = re.sub(r"[\s\W_]+", "", residual)
+    residual = re.sub(r"(?:의|은|는|이|가|을|를|에|에서|별|기준)+$", "", residual)
+    return not residual
+
+
 def find_hcx_model_span_matches(sentence_text: str, span_text: str) -> list[int]:
     """Return offsets for exact source text only."""
     _validate_hcx_model_span_inputs(sentence_text, span_text)
@@ -934,7 +959,12 @@ def resolve_prediction(
                 and len(scopes) == 1
                 and scopes[0].get("span_status") == "RESOLVED"
                 and len(model_indicator_labels) == 1
-                and not model_indicator_labels[0].strip()
+                and (
+                    not model_indicator_labels[0].strip()
+                    or _model_indicator_label_is_compatible(
+                        text, model_indicator_labels[0],
+                    )
+                )
             ):
                 recovered_indicator = _recover_single_exact_indicator(text, sentence_values)
                 if recovered_indicator is not None:

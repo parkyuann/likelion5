@@ -203,12 +203,21 @@ def _clarification_response(question: dict[str, Any], reason: str) -> dict[str, 
 
 
 def _pre_live_clarification_plan(
-    out_root: Path, *, body: str, article_date: str,
+    out_root: Path,
+    *,
+    body: str,
+    article_date: str,
+    clarification_history: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Gate expensive retrieval when routed evidence cannot form a cell target."""
     routed = _read_jsonl(out_root / "03_routed.jsonl")
     if not routed:
         return None
+    answered_roles = {
+        str(answer.get("role") or "").strip()
+        for answer in (clarification_history or [])
+        if isinstance(answer, Mapping) and str(answer.get("value") or "").strip()
+    }
     for row in routed:
         fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), dict) else {}
         period_text = " ".join(str(fields.get(key) or row.get(key) or "") for key in ("period_raw", "period", "period_context"))
@@ -235,8 +244,12 @@ def _pre_live_clarification_plan(
         # Item is retrieval-critical only when L3~L5 marked an explicit item
         # family requirement; a normal indicator-only claim must still flow.
         item_required = bool(fields.get("item_required") or fields.get("requires_item") or row.get("item_required"))
-        if indicator_missing or (item_required and item in (None, "", [], ())):
-            role = "indicator" if indicator_missing else "item"
+        unanswered_indicator = indicator_missing and "indicator" not in answered_roles
+        unanswered_item = (
+            item_required and item in (None, "", [], ()) and "item" not in answered_roles
+        )
+        if unanswered_indicator or unanswered_item:
+            role = "indicator" if unanswered_indicator else "item"
             return {
                 "reason": f"{role.upper()}_REQUIRED",
                 "question": {
@@ -1318,7 +1331,12 @@ def verify_article_develop(
             remaining = ["l2", "layers"] + (["live"] if live else [])
         for stage in remaining:
             if stage == "live" and live and os.getenv("PIPELINE_EARLY_CLARIFICATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
-                pending = _pre_live_clarification_plan(out_root, body=body, article_date=article_date)
+                pending = _pre_live_clarification_plan(
+                    out_root,
+                    body=body,
+                    article_date=article_date,
+                    clarification_history=clarification_history,
+                )
                 if pending is not None:
                     # Indicator/item are the only high-impact Gate-A roles.
                     # Use the release-bound runtime planning path before asking;

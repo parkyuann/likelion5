@@ -318,8 +318,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "5c51a89862a8065b2ce9dbc199be43709c73c0084fdd165c4709a668790a0bc0",
-      "size": 259348
+      "sha256": "fb8c6b05f934bf6482ffa0d4a746c792f8d71d019c9bb7db13d6788556fff58d",
+      "size": 259237
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

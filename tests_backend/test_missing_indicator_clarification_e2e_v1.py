@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 RUNTIME_ROOT = Path(__file__).parents[1] / "deploy" / "pipeline_runtime"
 if str(RUNTIME_ROOT) not in sys.path:
@@ -16,7 +17,10 @@ from src.news_verification.runtime.article_body_sentence_splitter_v1 import (  #
 )
 from src.news_verification.runtime.l1_value_candidates import iter_sentence_spans  # noqa: E402
 from src.develop.l2_segmentation import resolve_prediction  # noqa: E402
-from backend.develop_verify_service import _project_failure_recovery_clarification  # noqa: E402
+from backend.develop_verify_service import (  # noqa: E402
+    _pre_live_clarification_plan,
+    _project_failure_recovery_clarification,
+)
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "integration_article.jsonl"
@@ -189,8 +193,70 @@ def test_first_request_emits_indicator_question_without_authoritative_calls(monk
     assert projected["cell_api_calls"] == 0
 
 
+def test_indicator_speculative_first_plan_resumes_from_retrieval(monkeypatch):
+    class SpeculativeChannel:
+        def speculative(self, *args, **kwargs):
+            return None
+
+    class SpeculativeProfiles:
+        def speculative(self, table_key, *, timeout_seconds):
+            assert table_key == "fixture-table"
+            assert timeout_seconds > 0
+            return {
+                "meta_status": "READY",
+                "profile_sha256": "fixture-profile-sha",
+                "items": [{"itm_id": "TFR", "itm_nm": "합계출산율"}],
+            }
+
+    monkeypatch.setattr(
+        operational,
+        "_retrieve_with_request_cache",
+        lambda *args, **kwargs: (
+            [SimpleNamespace(table_key="fixture-table")],
+            {"all_paths_failed": False, "candidate_membership": ["fixture-table"]},
+        ),
+    )
+    plan, audit = operational._speculative_clarification_plan(
+        _routed_row(),
+        article_text=ARTICLE["article_text"],
+        search_channels={"bm25": SpeculativeChannel()},
+        release_sha256_by_channel={"bm25": "fixture-release-sha"},
+        profile_provider=SpeculativeProfiles(),
+        retrieval_cache=None,
+        deadline_ms=2500,
+    )
+
+    assert audit["status"] == "OPTIONS_READY"
+    assert plan is not None
+    assert plan["reason"] == "INDICATOR_REQUIRED"
+    assert plan["question"]["role"] == "indicator"
+    assert plan["resume_from_stage"] == "retrieval"
+    assert plan["reusable_artifacts"] == ["l1", "l2", "layers"]
+    assert plan["invalidated_stages"] == ["retrieval", "binding", "cell", "answer"]
+
+
+def test_backend_early_gate_does_not_repeat_answered_indicator(tmp_path):
+    (tmp_path / "03_routed.jsonl").write_text(
+        json.dumps(_routed_row(), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    pending = _pre_live_clarification_plan(
+        tmp_path,
+        body=ARTICLE["article_text"],
+        article_date=ARTICLE["date"],
+        clarification_history=[{
+            "question_id": "clarify-indicator-answered",
+            "role": "indicator",
+            "value": "합계출산율",
+        }],
+    )
+
+    assert pending is None
+
+
 def test_indicator_answer_resumes_from_retrieval_without_l1_l2_or_layers(monkeypatch):
-    counters = {"l2": 0, "stack": 0, "retrieval": 0, "cell": 0}
+    counters = {"l1": 0, "l2": 0, "layers": 0, "live": 0, "retrieval": 0, "cell": 0}
     l2, routed = _precomputed()
     merged_rows: list[dict[str, object]] = []
     resumed_article = {
@@ -207,7 +273,7 @@ def test_indicator_answer_resumes_from_retrieval_without_l1_l2_or_layers(monkeyp
         raise AssertionError("resume must not rerun L1/L2")
 
     def unexpected_stack(*args, **kwargs):
-        counters["stack"] += 1
+        counters["layers"] += 1
         raise AssertionError("resume must not rerun layers")
 
     def resumed_retrieval(*args, **kwargs):
@@ -223,6 +289,7 @@ def test_indicator_answer_resumes_from_retrieval_without_l1_l2_or_layers(monkeyp
 
     monkeypatch.setattr(operational, "_binding_or_retrieve_candidates", resumed_retrieval)
     monkeypatch.setattr(operational, "_merge_user_clarifications", capture_merge)
+    counters["live"] += 1
     result = operational.run_new_articles_v2(
         [resumed_article],
         l2_api_key="",
@@ -241,7 +308,11 @@ def test_indicator_answer_resumes_from_retrieval_without_l1_l2_or_layers(monkeyp
     )
 
     ledger = result["stage_ledger"][0]
-    assert counters == {"l2": 0, "stack": 0, "retrieval": 1, "cell": 0}
+    assert counters == {
+        "l1": 0, "l2": 0, "layers": 0, "live": 1, "retrieval": 1, "cell": 0,
+    }
     assert ledger["resolution"] == "NO_CANDIDATES"
+    assert ledger.get("failure_recovery_shadow", {}).get("reason") != "INDICATOR_REQUIRED"
+    assert all(answer.get("verdict") != "CLARIFICATION_REQUIRED" for answer in result["answers"])
     assert merged_rows[0]["retrieval_fields"]["indicator"] == "합계출산율"
     assert merged_rows[0]["user_clarifications"]["indicator"]["source"] == "USER_CLARIFICATION"

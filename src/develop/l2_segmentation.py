@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 from copy import deepcopy
 from typing import Any, Iterator, Callable
 
@@ -57,10 +58,12 @@ CANONICAL_L2_CONTRACT_VERSION = "canonical-l2-v1"
 RESOLVER_VERSION = "exact-source-resolver-v1"
 MISSING_SENTENCE_REPAIR_CONTRACT_VERSION = "l2-missing-sentence-exact-repair-v1"
 CANONICAL_L2_STATUSES = frozenset({
-    "L2_READY", "REPAIRED_SOURCE_EXACT", "HOLD_NOT_FOUND",
+    "L2_READY", "REPAIRED_SOURCE_EXACT", "REPAIRED_SOURCE_NOT_PROVIDED", "HOLD_NOT_FOUND",
     "HOLD_AMBIGUOUS", "L2_UNAVAILABLE",
 })
-DOWNSTREAM_L2_ELIGIBLE = frozenset({"L2_READY", "REPAIRED_SOURCE_EXACT"})
+DOWNSTREAM_L2_ELIGIBLE = frozenset({
+    "L2_READY", "REPAIRED_SOURCE_EXACT", "REPAIRED_SOURCE_NOT_PROVIDED",
+})
 
 
 def _canonical_sha(value: Any) -> str:
@@ -96,6 +99,35 @@ def value_candidates_by_sentence(
 
 SOURCE_SUBTYPES = ("공식집계", "민간조사", "정책목표", "잠정추산", "법정기준")
 DOMINANCE_NONE = "지배 없음"
+MALFORMED_SOURCE_POINTER_REPAIR_CONTRACT_VERSION = "l2-malformed-source-pointer-v1"
+SOURCE_CUE_REGISTRY_VERSION = 1
+
+# These are deliberately bounded source-cue patterns, not an open-ended
+# organization recognizer.  The suffix constraint prevents ordinary words
+# such as "전국" from becoming a source.  The patterns only establish that a
+# source cue is present; they never infer a source, table, or cell.
+SOURCE_CUE_REGISTRY = (
+    {
+        "rule_id": "source-cue-relation-v1",
+        "pattern": (
+            r"[가-힣A-Za-z0-9·()]{2,40}(?:청|처|부|원|위원회|공단|공사|연구원|협회|은행)"
+            r"(?:에\s*따르면|에\s*의하면)"
+        ),
+    },
+    {
+        "rule_id": "source-cue-reporting-v1",
+        "pattern": (
+            r"[가-힣A-Za-z0-9·()]{2,40}(?:청|처|부|원|위원회|공단|공사|연구원|협회|은행)"
+            r"(?:은|는|이|가)\s*(?:\d{1,2}일\s*)?"
+            r"(?:(?:['‘][^'’\n]{0,80}['’])\s*)?(?:에서\s*)?"
+            r"(?:발표한|공표한|조사한|집계한|발표했다|공표했다|조사했다|집계했다|밝혔다)"
+        ),
+    },
+)
+SOURCE_CUE_REGISTRY_SHA256 = _canonical_sha({
+    "version": SOURCE_CUE_REGISTRY_VERSION,
+    "entries": SOURCE_CUE_REGISTRY,
+})
 _SPAN_ERROR_CODES = {
     "EMPTY",
     "NOT_FOUND",
@@ -103,6 +135,37 @@ _SPAN_ERROR_CODES = {
     "OCCURRENCE_INDEX_INVALID",
     "UNKNOWN",
 }
+
+
+def _exact_source_cue_matches(text: str) -> list[dict[str, Any]]:
+    """Return only versioned, exact source-cue registry matches."""
+    matches: list[dict[str, Any]] = []
+    for entry in SOURCE_CUE_REGISTRY:
+        for match in re.finditer(entry["pattern"], text):
+            matches.append({
+                "rule_id": entry["rule_id"],
+                "source_span_text": match.group(0),
+                "char_start": match.start(),
+                "char_end": match.end(),
+            })
+    return sorted(matches, key=lambda item: (item["char_start"], item["char_end"], item["rule_id"]))
+
+
+def _valid_governing_source_cue_matches(
+    sentence_id: Any,
+    region: dict[str, Any],
+    sentences: dict[int, str],
+) -> list[dict[str, Any]]:
+    """Inspect the sentence and only its explicitly valid governing context."""
+    current_text = sentences.get(sentence_id, "")
+    matches = _exact_source_cue_matches(current_text)
+    governing = region.get("governing_sentence_id")
+    if isinstance(governing, int) and governing != sentence_id and governing < int(sentence_id):
+        context_text = sentences.get(governing)
+        if context_text is not None:
+            for match in _exact_source_cue_matches(context_text):
+                matches.append({**match, "context_sentence_id": governing})
+    return matches
 
 
 def _normalize_span_error_code(exc: SpanResolutionError, span_text: str) -> str:
@@ -242,6 +305,91 @@ def _missing_sentence_repair(
         "period_context": period_context,
     }
     return row, "REPAIRED_SOURCE_EXACT", "MISSING_SENTENCE_EXACT_INDICATOR", receipt
+
+
+def _normalize_malformed_source_pointer(
+    sentence_id: int,
+    sentence_text: str,
+    region: dict[str, Any],
+    indicator_scopes: list[dict[str, Any]],
+    owned_values: list[dict[str, Any]],
+    sentences: dict[int, str],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Downgrade one bounded HCX structural pointer to no source evidence.
+
+    This is intentionally narrower than normal span recovery.  A bracketed
+    model pointer is discarded only when the article itself proves one exact
+    indicator and one L1 value, and neither the sentence nor its explicitly
+    governing context contains a registered source cue.  No retrieval,
+    metadata, similarity, reverse inference, or additional HCX call is used.
+    """
+    original_pointer = str(region.get("source_span_text") or "")
+    pointer = original_pointer.strip()
+    if not region.get("opens_region") or not re.fullmatch(r"\[\d+\]", pointer):
+        return None
+
+    governing = region.get("governing_sentence_id")
+    governing_is_self = (
+        isinstance(governing, int)
+        and not isinstance(governing, bool)
+        and governing == sentence_id
+    )
+    exact_source_match_count = len(_occurrences(sentence_text, pointer))
+    source_cue_matches = _valid_governing_source_cue_matches(sentence_id, region, sentences)
+    exact_indicator_scopes = [
+        scope for scope in indicator_scopes if scope.get("span_status") == "RESOLVED"
+    ]
+    exact_indicator_count = len(exact_indicator_scopes)
+    owned_l1_value_count = len(owned_values)
+    ownership_conflict = (
+        len(indicator_scopes) != 1
+        or exact_indicator_count != 1
+        or any(scope.get("span_status") != "RESOLVED" for scope in indicator_scopes)
+        or owned_l1_value_count != 1
+        or len({str(value.get("span_id") or "") for value in owned_values}) != owned_l1_value_count
+    )
+    if (
+        exact_source_match_count != 0
+        or bool(str(region.get("source_subtype") or "").strip())
+        or not governing_is_self
+        or bool(source_cue_matches)
+        or exact_indicator_count != 1
+        or owned_l1_value_count != 1
+        or ownership_conflict
+    ):
+        return None
+
+    normalized = dict(region)
+    for key in (
+        "source_char_start", "source_char_end", "source_sentence_id",
+        "model_source_span_text", "span_match_mode", "offset_provenance",
+        "span_error",
+    ):
+        normalized.pop(key, None)
+    normalized.update({
+        "opens_region": False,
+        "governing_sentence_id": None,
+        "source_subtype": "",
+        "source_span_text": "",
+        "span_status": "NOT_PROVIDED",
+        "dominance": DOMINANCE_NONE,
+    })
+    receipt = {
+        "repair_contract_version": MALFORMED_SOURCE_POINTER_REPAIR_CONTRACT_VERSION,
+        "repair_action": "NORMALIZE_MODEL_POINTER_TO_NOT_PROVIDED",
+        "reason_code": "MALFORMED_SOURCE_POINTER_WITHOUT_EXACT_EVIDENCE",
+        "sentence_id": int(sentence_id),
+        "original_source_span_text": original_pointer,
+        "pointer_artifact_class": "BRACKETED_INTEGER",
+        "exact_source_span_match_count": exact_source_match_count,
+        "exact_source_cue_match_count": len(source_cue_matches),
+        "exact_indicator_count": exact_indicator_count,
+        "owned_l1_value_count": owned_l1_value_count,
+        "ownership_conflict": ownership_conflict,
+        "source_cue_registry_version": SOURCE_CUE_REGISTRY_VERSION,
+        "source_cue_registry_sha256": SOURCE_CUE_REGISTRY_SHA256,
+    }
+    return normalized, receipt
 
 
 class HcxSpanResolutionError(SpanResolutionError):
@@ -550,6 +698,15 @@ def resolve_prediction(
     )
     sentences = {row["sentence_id"]: row["text"] for row in sentence_rows}
     sentence_starts = {row["sentence_id"]: int(row.get("char_start") or 0) for row in sentence_rows}
+    candidates = (
+        build_span_candidates(article_text, sentence_span_iterator=sentence_span_iterator)
+        if sentence_span_iterator is not None else build_span_candidates(article_text)
+    )
+    candidates_by_sentence: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        sentence_key = candidate.get("sentence_id")
+        if isinstance(sentence_key, int):
+            candidates_by_sentence.setdefault(sentence_key, []).append(candidate)
     resolved: list[dict[str, Any]] = []
     cross_source_promotions: list[tuple[int, dict[str, Any]]] = []
     unresolved = 0
@@ -557,6 +714,7 @@ def resolve_prediction(
     repaired_source_count = 0
     exact_repair_receipts: list[dict[str, Any]] = []
     exact_repair_statuses: list[str] = []
+    malformed_source_pointer_receipts: list[dict[str, Any]] = []
     for item in prediction.get("sentences") or []:
         sentence_id = item.get("sentence_id")
         text = sentences.get(sentence_id, "")
@@ -639,6 +797,28 @@ def resolve_prediction(
                     cross_source_promotions.append((source_sentence_id, dict(region)))
                     repaired_source_count += 1
                 else:
+                    malformed_repair = _normalize_malformed_source_pointer(
+                        int(sentence_id),
+                        text,
+                        region,
+                        scopes,
+                        [
+                            candidate for candidate in candidates_by_sentence.get(int(sentence_id), [])
+                            if candidate.get("kind") == "value_unit"
+                        ],
+                        sentences,
+                    )
+                    if malformed_repair is not None:
+                        region, receipt = malformed_repair
+                        malformed_source_pointer_receipts.append(receipt)
+                        resolved.append({
+                            "sentence_id": sentence_id,
+                            "text": text,
+                            "indicator_scopes": scopes,
+                            "source_region": region,
+                            "period_context": item.get("period_context") or {},
+                        })
+                        continue
                     diagnostic = (
                         HcxSpanResolutionError("AMBIGUOUS", "exact source span ownership is ambiguous")
                         if len(cross_sentence_matches) > 1
@@ -692,15 +872,6 @@ def resolve_prediction(
     covered = {row["sentence_id"] for row in resolved}
     missing_sentence_ids = sorted(set(sentences) - covered)
     if missing_sentence_ids:
-        candidates = (
-            build_span_candidates(article_text, sentence_span_iterator=sentence_span_iterator)
-            if sentence_span_iterator is not None else build_span_candidates(article_text)
-        )
-        candidates_by_sentence: dict[int, list[dict[str, Any]]] = {}
-        for candidate in candidates:
-            sentence_key = candidate.get("sentence_id")
-            if isinstance(sentence_key, int):
-                candidates_by_sentence.setdefault(sentence_key, []).append(candidate)
         for missing_sentence_id in list(missing_sentence_ids):
             repaired_row, repair_status, repair_reason, repair_receipt = _missing_sentence_repair(
                 missing_sentence_id,
@@ -733,6 +904,9 @@ def resolve_prediction(
     elif "HOLD_NOT_FOUND" in exact_repair_statuses and not resolved:
         canonical_status = "HOLD_NOT_FOUND"
         reason_code = "MISSING_SENTENCE_EXACT_INDICATOR_NOT_FOUND"
+    elif malformed_source_pointer_receipts:
+        canonical_status = "REPAIRED_SOURCE_NOT_PROVIDED"
+        reason_code = "MALFORMED_SOURCE_POINTER_WITHOUT_EXACT_EVIDENCE"
     elif "REPAIRED_SOURCE_EXACT" in exact_repair_statuses:
         canonical_status = "REPAIRED_SOURCE_EXACT"
         reason_code = "MISSING_SENTENCE_EXACT_INDICATOR"
@@ -750,11 +924,32 @@ def resolve_prediction(
         "sentences": resolved,
         "missing_sentence_ids": missing_sentence_ids,
         "unresolved_span_details": unresolved_span_details,
-        "repair_receipts": exact_repair_receipts,
     }
     canonical_l2_sha256 = _canonical_sha(canonical_payload)
     for receipt in exact_repair_receipts:
         receipt["canonical_l2_sha256"] = canonical_l2_sha256
+    all_repair_receipts = [*exact_repair_receipts, *malformed_source_pointer_receipts]
+    canonicalization_receipt_payload = {
+        "contract_version": CANONICAL_L2_CONTRACT_VERSION,
+        "raw_prediction_sha256": raw_prediction_sha256,
+        "canonical_l2_sha256": canonical_l2_sha256,
+        "resolver_version": RESOLVER_VERSION,
+        "source_cue_registry_version": SOURCE_CUE_REGISTRY_VERSION,
+        "source_cue_registry_sha256": SOURCE_CUE_REGISTRY_SHA256,
+        "repair_receipts": [
+            {
+                key: value
+                for key, value in receipt.items()
+                if key not in {"canonical_l2_sha256", "canonicalization_receipt_sha256"}
+            }
+            for receipt in all_repair_receipts
+        ],
+        "unresolved_span_details": unresolved_span_details,
+    }
+    canonicalization_receipt_sha256 = _canonical_sha(canonicalization_receipt_payload)
+    for receipt in all_repair_receipts:
+        receipt["canonical_l2_sha256"] = canonical_l2_sha256
+        receipt["canonicalization_receipt_sha256"] = canonicalization_receipt_sha256
     return {
         "sentences": resolved,
         "missing_sentence_ids": missing_sentence_ids,
@@ -771,8 +966,9 @@ def resolve_prediction(
         "canonical_reason_code": reason_code,
         "resolver_version": RESOLVER_VERSION,
         "repair_reason_code": reason_code,
-        "repair_receipts": exact_repair_receipts,
+        "repair_receipts": all_repair_receipts,
         "canonical_l2_sha256": canonical_l2_sha256,
+        "canonicalization_receipt_sha256": canonicalization_receipt_sha256,
     }
 
 

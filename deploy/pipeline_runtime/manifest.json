@@ -53,8 +53,8 @@
     },
     {
       "path": "develop/l2_segmentation.py",
-      "sha256": "ed9c4747e628c6575658f4fd5126a177dd57cfa4157fb04a2f56c463d3b29919",
-      "size": 43450
+      "sha256": "766c5185329e375ccd1015e53a5e6a8e90c38cc217dfaea5101b5cc994a196f5",
+      "size": 52047
     },
     {
       "path": "develop/l2_span_resolver.py",

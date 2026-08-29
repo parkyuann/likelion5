@@ -357,6 +357,9 @@ def assign_roles(
     for sentence_id, values in sorted(values_by_sentence.items()):
         entry = layout.get(sentence_id, {})
         scopes = entry.get("indicator_scopes") or []
+        field_states = entry.get("field_states") if isinstance(entry.get("field_states"), dict) else {}
+        indicator_state = field_states.get("indicator") if isinstance(field_states.get("indicator"), dict) else {}
+        indicator_requires_clarification = indicator_state.get("state") in {"MISSING", "AMBIGUOUS"}
         region = resolve_region_chain(layout, sentence_id)
         period = entry.get("period_context") or {}
         sentence_text = sentences.get(sentence_id, "")
@@ -393,7 +396,7 @@ def assign_roles(
             compose = indicator is not None and region is not None and (
                 indicator_is_fragment(indicator.get("indicator_label"))
             )
-            if indicator is None or compose:
+            if (indicator is None or compose) and not indicator_requires_clarification:
                 inherited = _inherited_indicator(
                     layout,
                     sentence_id,
@@ -422,6 +425,10 @@ def assign_roles(
                 "period_source": "LOCAL" if period.get("period_raw") else "NONE",
                 "period_char_start": None,
                 "period_char_end": None,
+                "field_states": {
+                    "indicator": dict(indicator_state),
+                } if indicator_requires_clarification else {},
+                "clarification_required": "indicator" if indicator_requires_clarification else None,
             }
             sentence_period = local_sentence_periods[index] if not period.get("period_raw") else {}
             if not assignment["period_raw"] and sentence_period.get("raw"):

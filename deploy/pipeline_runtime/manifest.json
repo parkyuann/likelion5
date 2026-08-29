@@ -53,8 +53,8 @@
     },
     {
       "path": "develop/l2_segmentation.py",
-      "sha256": "766c5185329e375ccd1015e53a5e6a8e90c38cc217dfaea5101b5cc994a196f5",
-      "size": 52047
+      "sha256": "40998ca387c64edbe2cf6041c49ef588bc917a11027136f0d90e7bf51abc203f",
+      "size": 60039
     },
     {
       "path": "develop/l2_span_resolver.py",
@@ -208,8 +208,8 @@
     },
     {
       "path": "news_verification/runtime/l3_role_assignment.py",
-      "sha256": "1c2fbcfb50420a8a0f6867b16103b9236e46499120d23ac91586e987cfbcd2ef",
-      "size": 20810
+      "sha256": "f03ca6ecb5b62032bf797b1e7726caae897d8c326c07bd1cb752e175895b5858",
+      "size": 21426
     },
     {
       "path": "news_verification/runtime/l4_field_normalization.py",
@@ -218,8 +218,8 @@
     },
     {
       "path": "news_verification/runtime/l5_routing.py",
-      "sha256": "0240471fa1638eb30da5fc08d027b58d61102a41b25906eb5391144e858b3703",
-      "size": 6585
+      "sha256": "0eed8971eeda492d91fbddcb435a29b5e59a21e5425e731a7a7b137725c1717c",
+      "size": 7231
     },
     {
       "path": "news_verification/runtime/lexical_rules.py",
@@ -318,8 +318,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "da7f585585b4fef4f4f1e47e7c6b4afb8736d2588b9d8b88f40872eddc1e8b49",
-      "size": 255027
+      "sha256": "5c51a89862a8065b2ce9dbc199be43709c73c0084fdd165c4709a668790a0bc0",
+      "size": 259348
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

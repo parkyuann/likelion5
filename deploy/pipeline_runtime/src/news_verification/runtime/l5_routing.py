@@ -23,6 +23,7 @@ from typing import Any
 KOSIS_CANDIDATE = "KOSIS_CANDIDATE"
 OUT_OF_SCOPE = "OUT_OF_SCOPE"
 NOT_CLAIM = "NOT_CLAIM"
+CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
 
 OFFICIAL_SUBTYPE = "공식집계"
 OUT_OF_SCOPE_SUBTYPES = frozenset({
@@ -51,6 +52,22 @@ def route_value(assignment: dict[str, Any]) -> dict[str, Any]:
     """Return the routing class, its confidence and the reason."""
     subtype = str(assignment.get("source_subtype") or "").strip()
     indicator = str(assignment.get("indicator_label") or "").strip()
+    field_states = assignment.get("field_states")
+    indicator_state = (
+        field_states.get("indicator", {})
+        if isinstance(field_states, dict) else {}
+    )
+    if (
+        assignment.get("clarification_required") == "indicator"
+        or isinstance(indicator_state, dict)
+        and indicator_state.get("state") in {"MISSING", "AMBIGUOUS"}
+    ):
+        return {
+            "routing_class": CLARIFICATION_REQUIRED,
+            "confidence": 0.0,
+            "reason": "INDICATOR_FIELD_CLARIFICATION_REQUIRED",
+            "authoritative_retrieval_authorized": False,
+        }
 
     if subtype in OUT_OF_SCOPE_SUBTYPES:
         return {
@@ -183,5 +200,3 @@ def evaluate_routing(
         ),
         "confusion": dict(confusion),
     }
-
-

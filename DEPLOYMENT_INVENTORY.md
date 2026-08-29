@@ -294,3 +294,31 @@ PENDING:
 - 복합 주장마다 지표/항목 재질의를 분리하고, 잘못된 하나의 사용자 답변을 다른 target에 전파하지 않는 clarification scope
 - full suite collection blocker: 기존 `test_annual_requery_user_answer_v1.py`의 전역 `src.develop.run_pipeline_operational_v2`
   stub이 다른 테스트의 trace import를 가로채는 테스트 격리 문제. 이번 변경에서 production code는 수정하지 않았다.
+
+## 2026-08-29 immutable release redeploy
+
+- 배포 규칙에 따라 `origin/develop@3a3d2627ebb3ab06967863880e14182d7a86a4a7`에서
+  clean feature worktree를 사용했다. 기능 수정 commit은
+  `f40b5aefd63d322b3be6506572f1a60b9c5df6b6`이며, 일반 push 후 EC2 immutable release로 배포했다.
+- 이번 기능 수정은 release-bound resolver가 내부 ITEM/DIMENSION ID가 다른 동일 공개 지표·지역
+  selector를 같은 호환 그룹으로 묶고 `statistics_table.send_de` 최신값을 적용하도록 보완한 것이다.
+  후보 membership receipt가 문자열 table_key를 누락하던 문제도 함께 수정했다.
+- EC2 Compose 최종 서비스는 `bge-query-encoder`, `api`, `nginx`뿐이며, 실행 명령은
+  `up -d --no-deps api nginx`였다. PostgreSQL, OpenSearch, Qdrant, redis-session, BGE는
+  재생성·재시작·초기화하지 않았다.
+- API/Nginx label과 `/api/version`은 위 release SHA와 일치했고, runtime manifest SHA는
+  `30981c89ca734ad03771b12abb6bb93e98913e3c2f876ffdfadcaa667663417f`였다.
+- 실측 E2E: `2025년 대구광역시의 합계출산율은 0.80명이다.` → L2 `1/1`, retrieval
+  candidate `39`, metadata compatible `2`, selected table `101:DT_1B8000H`,
+  `send_de=2026-03-19`, Cell API `1`회, 공식값 `0.806명`, HTTP `200`, 총 `9.640초`.
+  최종 응답은 공식값을 설명하는 `mismatch` 답변으로 생성됐다.
+- Public HTTP는 HTTPS로 `308` redirect, HTTPS certificate는
+  `news-verify.52.25.84.163.nip.io` / Let's Encrypt 유효 인증서였다. API health는 `200`이었다.
+- 배포 전후 변경 없음: BGE container
+  `288d4c542e8220588910ee5787466f6bb615217b5396eb8fdc1a581ba0d130bd`, PostgreSQL
+  `04a93362057869d71e43537bbb1d9b965c5c2b87a38ef80ab0702a32e6079124`, OpenSearch
+  `592b675a4c74c56088d842368b7e0d631decae5e24e9688b3fc55b7305fa7537`, Qdrant
+  `43e4a947fa8b076b53f60840249f570964b84c1617ae26bc686ed3471f68f668`, redis-session
+  `b6f872a38289bec09e07dd8b4ab51cc8590fc7548eeeb28c2616d7f5e59a207a`.
+- 검증 한계: 변경 관련 focused suite `21 passed`, `git diff --check` 통과. 전체 backend suite는
+  기존 테스트 격리/모듈 import 충돌로 collection 단계에서 중단되어 전체 기준선 통과로 주장하지 않는다.

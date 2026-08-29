@@ -322,3 +322,31 @@ PENDING:
   `b6f872a38289bec09e07dd8b4ab51cc8590fc7548eeeb28c2616d7f5e59a207a`.
 - 검증 한계: 변경 관련 focused suite `21 passed`, `git diff --check` 통과. 전체 backend suite는
   기존 테스트 격리/모듈 import 충돌로 collection 단계에서 중단되어 전체 기준선 통과로 주장하지 않는다.
+
+## 2026-08-29 ITEM 공식검색·BGE reranker 운영 반영
+
+- 사용자 승인에 따른 단일 세션 자체 재검토(`USER_AUTHORIZED_SINGLE_SESSION_SELF_REVIEW`)
+  로 후보 생성 개선을 운영에 반영했다. 독립 Sol 승인으로 주장하지 않는다.
+- 구현·배포 SHA: `049c2c84a6be0fa421812fdb8cd9daa273da8211`.
+  EC2 immutable release worktree가 clean이며 `/api/version`도 같은 SHA를 반환한다.
+- 동결 shadow run `run_20260829T122345Z_item_official_v1`의 D57 후보 Recall은
+  A0 `10/57,17/57,17/57` → A2 `12/57,20/57,21/57`(@20/@50/@100),
+  O48은 A0 `7/48,12/48,12/48` → A2 `8/48,15/48,16/48`로 증가했다.
+  `NO_CANDIDATES`도 양 cohort에서 감소했다. M9 9건은 L2 미가용으로 분모에서 제외했다.
+- shadow 검색 오류 `0`, silent fallback `0`, 권한 위반 `0`; ITEM incremental physical
+  calls `32`; provenance-only 유입은 5 unique target/table pair로 봉인했다.
+- 운영에는 `item_official` bounded suffix 후보 채널과 내부 `bge-reranker-v2-m3-ko`
+  (`bge-reranker-v2-m3-ko-service-v2`, max 50)을 추가했다. reranker는
+  `deploy_encoder_internal`에만 있고 published host port가 없다.
+- after app containers: API `f6ec370c26c7`, Nginx `c75b4af2fe40`, reranker
+  `725f9b2f5ff0`; 모두 restart `0`. 기존 encoder `288d4c542e82`와 PostgreSQL,
+  OpenSearch, Qdrant, redis-session의 ID·시각·restart count는 배포 전후 동일하다.
+- API health/version는 HTTPS HTTP `200`; release-bound preflight는
+  `READY`, `MODEL_RERANKER`, `read_only=true`, PostgreSQL `transaction_read_only=on`.
+  실제 `/api/v1/verify/develop` E2E는 `completed`/HTTP `200`이고 reranker log에
+  `POST /rerank 200`이 확인되었다.
+- Public `/api/v1/tables`는 기존 hybrid RRF를 유지했다. index/collection/alias,
+  release pointer, data 적재, Cell API write는 수행하지 않았다.
+- 전체 shadow rerank Recall 재채점과 rerank 후 최종 답변 평가는 별도 PENDING이다.
+  상세 receipt/report는 `deploy/RECEIPT_ITEM_OFFICIAL_BGE_PROMOTION_20260829.json`와
+  `deploy/ITEM_OFFICIAL_BGE_운영반영_보고서_20260829.md`에 있다.

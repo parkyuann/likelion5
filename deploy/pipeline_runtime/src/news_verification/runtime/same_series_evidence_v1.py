@@ -224,22 +224,50 @@ def validate_period_only_identity(
 
 
 def _cell_period(cell: Mapping[str, Any]) -> str:
-    return _period_key(cell.get("PRD_DE") or cell.get("prd_de") or cell.get("period"))
+    return _period_key(cell.get("PRD_DE"))
+
+
+# KOSIS Param API의 공식 셀 row 계약은 대문자 키를 사용한다. 확인되지 않은
+# 별칭으로 누락된 좌표를 보완하지 않는다.
+_KOSIS_CELL_RESPONSE_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "ORG_ID": ("ORG_ID",),
+    "TBL_ID": ("TBL_ID",),
+    "ITM_ID": ("ITM_ID",),
+    "PRD_SE": ("PRD_SE",),
+    "PRD_DE": ("PRD_DE",),
+}
+
+
+def _kosis_cell_response_value(cell: Mapping[str, Any], field: str) -> tuple[bool, Any]:
+    for key in _KOSIS_CELL_RESPONSE_ALIASES.get(field, (field,)):
+        if key in cell:
+            return True, cell[key]
+    return False, None
 
 
 def _cell_identity_errors(plan: Mapping[str, Any], cell: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     for field, cell_key in (("org_id", "ORG_ID"), ("tbl_id", "TBL_ID"), ("itm_id", "ITM_ID")):
-        actual = cell.get(cell_key)
-        if actual not in (None, "") and str(actual) != str(plan.get(field) or ""):
-            errors.append(field)
-    actual_frequency = cell.get("PRD_SE")
-    if actual_frequency not in (None, "") and str(actual_frequency) != str(plan.get("prd_se") or ""):
+        present, actual = _kosis_cell_response_value(cell, cell_key)
+        if not present or actual in (None, "") or not str(actual).strip():
+            errors.append(cell_key)
+        elif str(actual) != str(plan.get(field) or ""):
+            errors.append(cell_key)
+    frequency_present, actual_frequency = _kosis_cell_response_value(cell, "PRD_SE")
+    if not frequency_present or actual_frequency in (None, "") or not str(actual_frequency).strip():
+        errors.append("PRD_SE")
+    elif str(actual_frequency) != str(plan.get("prd_se") or ""):
         errors.append("prd_se")
     for index, expected in enumerate((plan.get("obj_levels") or {}).values(), 1):
-        actual = cell.get(f"C{index}")
-        if actual not in (None, "") and str(actual) != str(expected):
-            errors.append(f"objL{index}")
+        field = f"C{index}"
+        actual = cell.get(field)
+        if field not in cell or actual in (None, "") or not str(actual).strip():
+            errors.append(field)
+        elif str(actual) != str(expected):
+            errors.append(field)
+    period_present, period = _kosis_cell_response_value(cell, "PRD_DE")
+    if not period_present or period in (None, "") or not str(period).strip():
+        errors.append("PRD_DE")
     return errors
 
 

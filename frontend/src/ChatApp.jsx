@@ -442,12 +442,14 @@ function ChatApp({
   });
   const progressTimersRef = useRef([]); // 진행 애니메이션 타이머 정리용
   const onMessagesChangeRef = useRef(onMessagesChange);
+  const clarificationIdentityRef = useRef(null);
 
   useEffect(() => {
     setSelectedClarificationOption(null);
     setClarificationOptionQuery("");
     setClarificationOptionPage(pendingClarification?.question?.page || null);
     const question = pendingClarification?.question;
+    const requestIdentity = pendingClarification?.identity || null;
     if (!pendingClarification || !question || question.input_mode !== "SEARCHABLE_OPTIONS") return undefined;
     let cancelled = false;
     fetchClarificationOptions({
@@ -455,9 +457,9 @@ function ChatApp({
       questionId: question.id,
       limit: question.page?.limit || 20,
     }).then((page) => {
-      if (!cancelled) setClarificationOptionPage(page);
+      if (!cancelled && clarificationIdentityRef.current === requestIdentity) setClarificationOptionPage(page);
     }).catch(() => {
-      if (!cancelled) setClarificationOptionPage(question.page || null);
+      if (!cancelled && clarificationIdentityRef.current === requestIdentity) setClarificationOptionPage(question.page || null);
     });
     return () => { cancelled = true; };
   }, [pendingClarification]);
@@ -562,12 +564,27 @@ function ChatApp({
   }
 
   function requestClarification(article, result) {
+    const question = result.question || {};
+    const clarificationPlanSha = question.clarification_plan_sha256 || result.clarification_plan_sha256 || null;
+    const candidateBundleSha = question.candidate_bundle_sha256 || result.candidate_bundle_sha256 || null;
+    const identity = `${clarificationPlanSha || "none"}:${candidateBundleSha || "none"}`;
+    if (clarificationIdentityRef.current && clarificationIdentityRef.current !== identity) {
+      // A changed plan or candidate bundle invalidates any page/selection from
+      // the previous sealed option set before the user can submit it.
+      setSelectedClarificationOption(null);
+      setClarificationOptionQuery("");
+      setClarificationOptionPage(null);
+    }
+    clarificationIdentityRef.current = identity;
     setPendingClarification({
       ...article,
-      question: result.question,
+      question,
       resumeToken: result.resume_token || null,
       resumeFromStage: result.resume_from_stage || null,
       clarificationAnswers: article.clarificationAnswers || [],
+      clarificationPlanSha,
+      candidateBundleSha,
+      identity,
     });
     setMessages((prev) => [
       ...prev,
@@ -942,6 +959,7 @@ function ChatApp({
       setInput("");
       if (answer === "취소") {
         setPendingClarification(null);
+        clarificationIdentityRef.current = null;
         lastRequestRef.current = null;
         setMessages((prev) => [
           ...prev,
@@ -961,6 +979,13 @@ function ChatApp({
         return;
       }
       const article = pendingClarification;
+      const currentIdentity = `${article.clarificationPlanSha || "none"}:${article.candidateBundleSha || "none"}`;
+      if (clarificationIdentityRef.current !== currentIdentity) {
+        setSelectedClarificationOption(null);
+        setClarificationOptionPage(null);
+        setMessages((prev) => [...prev, { role: "assistant", kind: "clarification_request", text: "선택지 근거가 갱신되어 다시 선택해 주세요." }]);
+        return;
+      }
       const visibleOptions = clarificationOptionPage?.options || question.options || [];
       if (selected?.id && !visibleOptions.some((option) => option?.id === selected.id)) {
         setSelectedClarificationOption(null);
@@ -982,6 +1007,7 @@ function ChatApp({
         clarificationAnswer,
       ];
       setPendingClarification(null);
+      clarificationIdentityRef.current = null;
       setMessages((prev) => [...prev, { role: "user", kind: "text", text: answer }]);
       runText(article.text, {
         inputType: article.inputType,
@@ -1236,14 +1262,17 @@ function ChatApp({
                   if (e.key !== "Enter") return;
                   e.preventDefault();
                   try {
+                    const requestIdentity = pendingClarification.identity;
                     const page = await fetchClarificationOptions({
                       resumeToken: pendingClarification.resumeToken,
                       questionId: pendingClarification.question.id,
                       query: clarificationOptionQuery,
                       limit: pendingClarification.question.page?.limit || 20,
                     });
-                    setSelectedClarificationOption(null);
-                    setClarificationOptionPage(page);
+                    if (clarificationIdentityRef.current === requestIdentity) {
+                      setSelectedClarificationOption(null);
+                      setClarificationOptionPage(page);
+                    }
                   } catch (error) {
                     pushError(error);
                   }
@@ -1269,6 +1298,7 @@ function ChatApp({
                 type="button"
                 onClick={async () => {
                   try {
+                    const requestIdentity = pendingClarification.identity;
                     const page = await fetchClarificationOptions({
                       resumeToken: pendingClarification.resumeToken,
                       questionId: pendingClarification.question.id,
@@ -1276,8 +1306,10 @@ function ChatApp({
                       cursor: clarificationOptionPage.page.next_cursor,
                       limit: pendingClarification.question.page?.limit || 20,
                     });
-                    setSelectedClarificationOption(null);
-                    setClarificationOptionPage(page);
+                    if (clarificationIdentityRef.current === requestIdentity) {
+                      setSelectedClarificationOption(null);
+                      setClarificationOptionPage(page);
+                    }
                   } catch (error) { pushError(error); }
                 }}
               >다음 선택지</button>

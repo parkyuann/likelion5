@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import tempfile
@@ -76,6 +77,54 @@ def _profile_payload_sha(profile: Mapping[str, Any]) -> str:
     return _json_sha({
         key: value for key, value in profile.items()
         if key not in {"retrieved_at", "profile_sha256"}
+    })
+
+
+def _sealed_query_register_identity_payload(checkpoint: Checkpoint) -> Mapping[str, Any]:
+    """Read the server-owned register payload independently of continuation."""
+    path = checkpoint.root / "clarification_plan.json"
+    records = checkpoint.metadata.get("artifact_records")
+    record = records.get("clarification_plan.json") if isinstance(records, Mapping) else None
+    if not path.is_file() or not isinstance(record, Mapping):
+        raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
+    payload = path.read_bytes()
+    if record.get("sha256") != _bytes_sha(payload) or record.get("bytes") != len(payload):
+        raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
+    try:
+        plan = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CheckpointError("RESUME_ARTIFACT_INVALIDATED") from exc
+    identity = plan.get("query_register_identity_payload") if isinstance(plan, Mapping) else None
+    if not isinstance(identity, Mapping):
+        binding = plan.get("binding_continuation") if isinstance(plan, Mapping) else None
+        identity = binding.get("query_register_identity_payload") if isinstance(binding, Mapping) else None
+    if not isinstance(identity, Mapping):
+        raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
+    return dict(identity)
+
+
+def _candidate_bundle_sha256(
+    *,
+    release_id: str,
+    retrieval_rounds: list[int],
+    query_register_version: str,
+    query_register_contract_sha256: str,
+    query_register_sha256: str,
+    candidate_membership_sha256: str,
+    profile_bundle_sha256: str,
+    projection_bundle_sha256: str,
+    corrective_plan_sha256: str | None,
+) -> str:
+    return _json_sha({
+        "release_id": str(release_id),
+        "retrieval_rounds": list(retrieval_rounds),
+        "query_register_version": str(query_register_version),
+        "query_register_contract_sha256": str(query_register_contract_sha256),
+        "query_register_sha256": str(query_register_sha256),
+        "candidate_membership_sha256": str(candidate_membership_sha256),
+        "profile_bundle_sha256": str(profile_bundle_sha256),
+        "projection_bundle_sha256": str(projection_bundle_sha256),
+        "corrective_plan_sha256": corrective_plan_sha256,
     })
 
 
@@ -149,6 +198,38 @@ def validate_binding_continuation(
     if _json_sha(profile_receipt) != continuation.get("profile_bundle_sha256"):
         raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
     if expected_release_id and release_id != expected_release_id:
+        raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
+    query_register_version = str(continuation.get("query_register_version") or "")
+    query_register_contract_sha256 = str(continuation.get("query_register_contract_sha256") or "")
+    query_register_sha256 = str(continuation.get("query_register_sha256") or "")
+    server_query_register_sha256 = _json_sha(_sealed_query_register_identity_payload(checkpoint))
+    retrieval_rounds = continuation.get("retrieval_rounds")
+    candidate_bundle_sha256 = str(continuation.get("candidate_bundle_sha256") or "")
+    corrective_plan_sha256 = continuation.get("corrective_plan_sha256")
+    if (
+        not query_register_version
+        or not re.fullmatch(r"[0-9a-f]{64}", query_register_contract_sha256)
+        or not re.fullmatch(r"[0-9a-f]{64}", query_register_sha256)
+        or query_register_sha256 != server_query_register_sha256
+        or not isinstance(retrieval_rounds, list)
+        or not all(isinstance(value, int) and value in {0, 1} for value in retrieval_rounds)
+        or not retrieval_rounds
+        or not re.fullmatch(r"[0-9a-f]{64}", candidate_bundle_sha256)
+        or (corrective_plan_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", str(corrective_plan_sha256)))
+    ):
+        raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
+    expected_candidate_bundle = _candidate_bundle_sha256(
+        release_id=release_id,
+        retrieval_rounds=retrieval_rounds,
+        query_register_version=query_register_version,
+        query_register_contract_sha256=query_register_contract_sha256,
+        query_register_sha256=server_query_register_sha256,
+        candidate_membership_sha256=str(continuation.get("candidate_membership_sha256") or ""),
+        profile_bundle_sha256=str(continuation.get("profile_bundle_sha256") or ""),
+        projection_bundle_sha256=str(continuation.get("projection_bundle_sha256") or ""),
+        corrective_plan_sha256=(str(corrective_plan_sha256) if corrective_plan_sha256 is not None else None),
+    )
+    if expected_candidate_bundle != candidate_bundle_sha256:
         raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
     return dict(continuation)
 
@@ -404,6 +485,14 @@ def create(
             "semantic_constraints": [],
             "changed_roles": list(changed_roles or []),
             "invalidated_stages": list(invalidated_stages or []),
+            "option_bundle_sha256": artifact_records.get("option_bundle.json", {}).get("sha256"),
+            "candidate_bundle_sha256": plan_record.get("candidate_bundle_sha256"),
+            "query_register_version": plan_record.get("query_register_version"),
+            "query_register_contract_sha256": plan_record.get("query_register_contract_sha256"),
+            "query_register_sha256": plan_record.get("query_register_sha256"),
+            "retrieval_rounds": list(plan_record.get("retrieval_rounds") or []),
+            "corrective_plan_sha256": plan_record.get("corrective_plan_sha256"),
+            "corrective_round": int(plan_record.get("corrective_round") or 0),
         }
         context_path = root / "clarification_context.json"
         context_path.write_text(json.dumps(context, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
@@ -424,6 +513,12 @@ def create(
             "clarification_plan_sha256": _json_sha(plan_record) if plan_record else None,
             "option_bundle_sha256": _json_sha(option_record) if option_record else None,
             "speculative_bundle_sha256": _json_sha(speculative_record) if speculative_record else None,
+            "candidate_bundle_sha256": plan_record.get("candidate_bundle_sha256"),
+            "query_register_version": plan_record.get("query_register_version"),
+            "query_register_contract_sha256": plan_record.get("query_register_contract_sha256"),
+            "query_register_sha256": plan_record.get("query_register_sha256"),
+            "retrieval_rounds": list(plan_record.get("retrieval_rounds") or []),
+            "corrective_round": int(plan_record.get("corrective_round") or 0),
             "candidate_membership_sha256": plan_record.get("candidate_membership_sha256"),
             "profile_bundle_sha256": plan_record.get("profile_bundle_sha256"),
             "binding_continuation_sha256": artifact_records.get("binding_continuation.json", {}).get("sha256"),
@@ -431,6 +526,12 @@ def create(
             "binding_profile_bundle_sha256": binding_record.get("profile_bundle_sha256"),
             "binding_release_id": binding_record.get("release_id"),
             "binding_target_scope_sha256": binding_record.get("target_scope_sha256"),
+            "binding_query_register_version": binding_record.get("query_register_version"),
+            "binding_query_register_contract_sha256": binding_record.get("query_register_contract_sha256"),
+            "binding_query_register_sha256": binding_record.get("query_register_sha256"),
+            "binding_retrieval_rounds": list(binding_record.get("retrieval_rounds") or []),
+            "binding_candidate_bundle_sha256": binding_record.get("candidate_bundle_sha256"),
+            "binding_corrective_plan_sha256": binding_record.get("corrective_plan_sha256"),
             "changed_roles": list(changed_roles or []),
             "invalidated_stages": list(invalidated_stages or []),
             "reusable_artifacts": list(reusable_artifacts or ["l1", "l2", "layers"]),
@@ -477,6 +578,12 @@ def consume(
             or metadata.get("binding_profile_bundle_sha256") != continuation.get("profile_bundle_sha256")
             or metadata.get("binding_release_id") != continuation.get("release_id")
             or metadata.get("binding_target_scope_sha256") != continuation.get("target_scope_sha256")
+            or metadata.get("binding_query_register_version") != continuation.get("query_register_version")
+            or metadata.get("binding_query_register_contract_sha256") != continuation.get("query_register_contract_sha256")
+            or metadata.get("binding_query_register_sha256") != continuation.get("query_register_sha256")
+            or metadata.get("binding_retrieval_rounds") != continuation.get("retrieval_rounds")
+            or metadata.get("binding_candidate_bundle_sha256") != continuation.get("candidate_bundle_sha256")
+            or metadata.get("binding_corrective_plan_sha256") != continuation.get("corrective_plan_sha256")
         ):
             raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
     prior = json.loads((root / "clarification_context.json").read_text(encoding="utf-8"))
@@ -503,6 +610,16 @@ def consume(
             bundle = json.loads(bundle_path.read_text(encoding="utf-8")) if bundle_path.is_file() else {}
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CheckpointError("CLARIFICATION_PLAN_INVALID") from exc
+        if isinstance(plan, Mapping):
+            plan_record = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            expected_plan = metadata.get("artifact_records", {}).get("clarification_plan.json", {}).get("sha256")
+            if expected_plan and expected_plan != _bytes_sha(plan_record):
+                raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
+        if isinstance(bundle, Mapping):
+            bundle_record = json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            expected_bundle = metadata.get("artifact_records", {}).get("option_bundle.json", {}).get("sha256")
+            if expected_bundle and expected_bundle != _bytes_sha(bundle_record):
+                raise CheckpointError("RESUME_ARTIFACT_INVALIDATED")
         input_mode = str(((plan.get("question") or {}).get("input_mode")) or "FREE_TEXT") if isinstance(plan, Mapping) else "FREE_TEXT"
         allow_direct_input = bool(((plan.get("question") or {}).get("allow_direct_input", input_mode in {"DATE", "FREE_TEXT"}))) if isinstance(plan, Mapping) else False
         option_required = input_mode in {"OPTIONS", "SEARCHABLE_OPTIONS"} and not allow_direct_input
@@ -536,6 +653,7 @@ def consume(
     # final receipt is published.  Keep the same sealed answer retryable;
     # the service will discard it only after a completed successor/final run.
     metadata["status"] = "RESUMING"
+    metadata["resume_generation"] = int(metadata.get("resume_generation") or 1) + 1
     metadata["resuming_answer_sha256"] = _json_sha(new_answers[-1]) if new_answers else None
     (root / "checkpoint.json").write_text(
         json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"

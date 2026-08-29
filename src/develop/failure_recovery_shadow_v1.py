@@ -14,6 +14,12 @@ import re
 from typing import Any, Mapping, Sequence
 
 CONTRACT_VERSION = "failure-recovery-shadow-v1"
+STATE_CONTRACT_VERSION = "retrieval-clarification-state-v1"
+PIPELINE_STATES = frozenset({
+    "DIRECT_FIELD_MISSING", "RETRIEVAL_INSUFFICIENT",
+    "METADATA_PROFILE_INCOMPLETE", "SELECTOR_CLARIFICATION_POSSIBLE",
+    "CORRECTIVE_RETRIEVAL_EXHAUSTED", "QUERY_READY", "UNVERIFIABLE_FINAL",
+})
 
 CASE_LIBRARY = (
     {
@@ -177,7 +183,14 @@ def _question_for_multiple(projections: Sequence[Any]) -> dict[str, Any]:
     }
 
 
-def build_post_binding_clarification_plan(top50: Any, *, target_id: str) -> dict[str, Any] | None:
+def build_post_binding_clarification_plan(
+    top50: Any,
+    *,
+    target_id: str,
+    corrective_plan_sha256: str | None = None,
+    corrective_round: int = 0,
+    query_register_identity_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Build an option-backed plan only from complete candidate profiles."""
     resolution = getattr(top50, "resolution", None)
     projections = tuple(getattr(top50, "projections", ()) or ())
@@ -201,6 +214,13 @@ def build_post_binding_clarification_plan(top50: Any, *, target_id: str) -> dict
         "contract_version": "clarification-plan-v2",
         "reason": str(getattr(resolution, "hold_reason", None) or "CLARIFICATION_REQUIRED"),
         "question": question,
+        "retrieval_rounds": list(getattr(top50, "retrieval_rounds", (0,)) or (0,)),
+        "query_register_version": str(getattr(top50, "query_register_version", "six-path-v1") or "six-path-v1"),
+        "query_register_contract_sha256": getattr(top50, "query_register_contract_sha256", None),
+        "query_register_sha256": getattr(top50, "query_register_sha256", None),
+        "query_register_identity_payload": dict(query_register_identity_payload) if isinstance(query_register_identity_payload, Mapping) else None,
+        "corrective_plan_sha256": corrective_plan_sha256,
+        "corrective_round": int(corrective_round),
         "candidate_membership_sha256": _sha(membership),
         "profile_bundle_sha256": _sha([
             {"table_key": projection.table_key, "canonical_sha256": projection.canonical_sha256}
@@ -218,6 +238,12 @@ def build_post_binding_clarification_plan(top50: Any, *, target_id: str) -> dict
             "target_scope_sha256": _sha([sealed_target_id]),
             "candidate_membership": membership,
             "candidate_membership_sha256": _sha(membership),
+            "query_register_version": str(getattr(top50, "query_register_version", "six-path-v1") or "six-path-v1"),
+            "query_register_contract_sha256": getattr(top50, "query_register_contract_sha256", None),
+            "query_register_sha256": getattr(top50, "query_register_sha256", None),
+            "query_register_identity_payload": dict(query_register_identity_payload) if isinstance(query_register_identity_payload, Mapping) else None,
+            "retrieval_rounds": list(getattr(top50, "retrieval_rounds", (0,)) or (0,)),
+            "corrective_plan_sha256": corrective_plan_sha256,
             "raw_profiles": {str(key): dict(value) for key, value in getattr(top50, "pinned_raw_profiles", {}).items()},
             "projection_profiles": {str(key): dict(value) for key, value in getattr(top50, "pinned_projection_profiles", {}).items()},
         },
@@ -226,6 +252,7 @@ def build_post_binding_clarification_plan(top50: Any, *, target_id: str) -> dict
         {"table_key": key, "profile_sha256": str(value.get("profile_sha256") or ""), "release_id": str(value.get("release_id") or "")}
         for key, value in sorted(plan["binding_continuation"]["raw_profiles"].items())
     ])
+    plan["profile_bundle_sha256"] = plan["binding_continuation"]["profile_bundle_sha256"]
     plan["binding_continuation"]["projection_bundle_sha256"] = _sha(
         plan["binding_continuation"]["projection_profiles"]
     )
@@ -237,6 +264,12 @@ def build_post_binding_clarification_plan(top50: Any, *, target_id: str) -> dict
     if len(release_ids) != 1 or not release_ids[0]:
         raise ValueError("BINDING_CONTINUATION_RELEASE_REQUIRED")
     plan["binding_continuation"]["release_id"] = release_ids[0]
+    plan["release_id"] = release_ids[0]
+    plan["profile_sha_set"] = _sha([
+        {"table_key": key, "release_id": value.get("release_id"), "profile_sha256": value.get("profile_sha256")}
+        for key, value in sorted(plan["binding_continuation"]["raw_profiles"].items())
+        if isinstance(value, Mapping)
+    ])
     question["id"] = "cq-" + hashlib.sha256(f"{question_id}:{plan['candidate_membership_sha256']}".encode()).hexdigest()[:24]
     bundle = {
         "contract_version": "clarification-option-bundle-v2", "question_id": question["id"],
@@ -245,6 +278,21 @@ def build_post_binding_clarification_plan(top50: Any, *, target_id: str) -> dict
     }
     plan["question"]["options"] = bundle["options"]
     plan["option_bundle"] = bundle
+    plan["option_bundle_sha256"] = _sha(bundle)
+    plan["candidate_bundle_sha256"] = _sha({
+        "release_id": plan.get("release_id"),
+        "retrieval_rounds": plan.get("retrieval_rounds"),
+        "query_register_version": plan.get("query_register_version"),
+        "query_register_contract_sha256": plan.get("query_register_contract_sha256"),
+        "query_register_sha256": plan.get("query_register_sha256"),
+        "candidate_membership_sha256": plan.get("candidate_membership_sha256"),
+        "profile_sha_set": plan.get("profile_sha_set"),
+        "profile_bundle_sha256": plan.get("profile_bundle_sha256"),
+        "projection_bundle_sha256": plan["binding_continuation"].get("projection_bundle_sha256"),
+        "corrective_plan_sha256": plan.get("corrective_plan_sha256"),
+    })
+    plan["binding_continuation"]["candidate_bundle_sha256"] = plan["candidate_bundle_sha256"]
+    plan["clarification_plan_sha256"] = _sha({key: value for key, value in plan.items() if key != "clarification_plan_sha256"})
     return plan
 
 
@@ -279,32 +327,57 @@ def _correction_terms(row: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def plan_failure_recovery(row: Mapping[str, Any], top50: Any | None) -> dict[str, Any]:
-    """Return SKIP, ASK_USER, CORRECTIVE_RETRIEVAL, or STOP."""
+    """Classify the failure and authorize one bounded next action."""
     resolution = getattr(top50, "resolution", None)
     reason = str(getattr(resolution, "hold_reason", None) or "NO_CANDIDATES")
     projections = tuple(getattr(top50, "projections", ()) or ())
     candidate_membership = tuple(getattr(top50, "candidate_membership", ()) or ())
+    fields = _fields(row)
+    missing_indicator = not str(fields.get("indicator") or "").strip() or str(fields.get("indicator") or "").casefold() in {"unknown", "ambiguous", "unavailable"}
+    missing_item = fields.get("item_required") is True and fields.get("item") in (None, "", (), [])
+    corrective_used = bool(row.get("_corrective_round_used"))
+    complete_projections = tuple(
+        projection for projection in projections
+        if "PROFILE_INCOMPLETE" not in tuple(getattr(projection, "hold_reasons", ()) or ())
+    )
+    incomplete = bool(projections) and not complete_projections
     if getattr(resolution, "outcome", None) == "QUERY_READY":
-        result = {"action": "SKIP", "reason": "QUERY_READY", "retry_budget": {"used": 0, "limit": 1}}
-    elif reason in _CLARIFY_REASONS:
+        result = {"state": "QUERY_READY", "action": "SKIP", "reason": "QUERY_READY", "retry_budget": {"used": int(corrective_used), "limit": 1}}
+    elif missing_indicator or missing_item or reason in {"PERIOD_UNKNOWN", "PERIOD_INVALID"} and _relative_period_without_article_date(row):
+        role = "indicator" if missing_indicator else "item" if missing_item else "article_date"
+        question = _question_for_missing("PERIOD_UNKNOWN" if role == "article_date" else "REGION_UNBOUND", row) if role == "article_date" else {
+            "question_id": f"clarify-{role}", "role": role,
+            "prompt": "어떤 통계 지표를 확인할지 알려주세요." if role == "indicator" else "어떤 통계 항목 기준인지 알려주세요.",
+            "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "answer": None,
+            "internal_ids_exposed": False, "model_prefill": False,
+        }
+        result = {"state": "DIRECT_FIELD_MISSING", "action": "ASK_USER", "reason": f"{role.upper()}_REQUIRED", "question": question, "retry_budget": {"used": int(corrective_used), "limit": 1}}
+    elif incomplete:
+        result = {"state": "METADATA_PROFILE_INCOMPLETE", "action": "STOP", "reason": "METADATA_PROFILE_INCOMPLETE", "retry_budget": {"used": int(corrective_used), "limit": 1}}
+    elif reason in _CLARIFY_REASONS or reason == "MULTIPLE_COMPATIBLE_SERIES":
         question = _question_for_multiple(projections) if reason == "MULTIPLE_COMPATIBLE_SERIES" else _question_for_missing(reason, row)
-        result = {"action": "ASK_USER", "reason": reason, "question": question, "retry_budget": {"used": 0, "limit": 1}}
+        result = {"state": "SELECTOR_CLARIFICATION_POSSIBLE", "action": "ASK_USER", "reason": reason, "question": question, "retry_budget": {"used": int(corrective_used), "limit": 1}}
     else:
         candidate_missing = not candidate_membership or (
             reason == "NO_COMPATIBLE_SERIES" and _item_miss_ratio(projections) >= 0.8
         )
-        terms = _correction_terms(row) if candidate_missing else []
-        if candidate_missing and terms:
+        terms = _correction_terms(row) if candidate_missing and not corrective_used else []
+        if candidate_missing and terms and not corrective_used:
             result = {
+                "state": "RETRIEVAL_INSUFFICIENT",
                 "action": "CORRECTIVE_RETRIEVAL", "reason": "CANDIDATE_MISSING_SUSPECTED",
                 "case_ids": sorted({term["case_id"] for term in terms}),
                 "corrective_terms": terms, "retry_budget": {"used": 0, "limit": 1},
                 "round0_preserved": True, "cell_values_used": False,
             }
+        elif corrective_used:
+            result = {"state": "CORRECTIVE_RETRIEVAL_EXHAUSTED", "action": "STOP", "reason": reason or "NO_COMPATIBLE_SERIES", "retry_budget": {"used": 1, "limit": 1}}
         else:
-            result = {"action": "STOP", "reason": reason or "LAYER_SPECIFIC_FAILURE", "retry_budget": {"used": 0, "limit": 1}}
+            result = {"state": "UNVERIFIABLE_FINAL", "action": "STOP", "reason": reason or "LAYER_SPECIFIC_FAILURE", "retry_budget": {"used": 0, "limit": 1}}
     result = {"contract_version": CONTRACT_VERSION, **result}
-    result["sha256"] = _sha(result)
+    result["state_contract_version"] = STATE_CONTRACT_VERSION
+    result["state_sha256"] = _sha(result)
+    result["sha256"] = result["state_sha256"]
     return result
 
 
@@ -340,6 +413,6 @@ def merge_candidate_rounds(
 
 
 __all__ = [
-    "CASE_LIBRARY", "CLARIFICATION_ROLES", "CONTRACT_VERSION", "SlotDiagnostic", "build_post_binding_clarification_plan",
+    "CASE_LIBRARY", "CLARIFICATION_ROLES", "CONTRACT_VERSION", "PIPELINE_STATES", "STATE_CONTRACT_VERSION", "SlotDiagnostic", "build_post_binding_clarification_plan",
     "corrective_claim_query", "merge_candidate_rounds", "plan_failure_recovery",
 ]

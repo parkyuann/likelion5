@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import MutableMapping
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date as calendar_date, datetime, timezone
 import hashlib
 import json
@@ -85,9 +86,13 @@ from src.news_verification.runtime.operational_article_acquisition_v2 import (
     acquire_article_url,
 )
 from src.news_verification.runtime.operational_retrieval_v2 import (
+    DISABLED_PATHS,
+    QUERY_REGISTER_VERSION,
     RerankedCandidate,
     RrfCandidate,
     build_candidate_passages,
+    build_query_register,
+    query_register_contract,
     rerank_top50,
     retrieve_parallel,
 )
@@ -172,15 +177,21 @@ def _retrieval_identity(
     release_sha256_by_channel: Mapping[str, str],
     path_top_k: int,
     union_top_k: int,
+    register_kind: str,
 ) -> dict[str, Any]:
     """Build the release/query identity used by the request-local cache."""
     payload = {
         "release_binding_sha256": dict(sorted((str(k), str(v)) for k, v in release_sha256_by_channel.items())),
         "query_register": dict(claim_query),
+        "query_register_kind": register_kind,
         "channels": sorted(str(key) for key in release_sha256_by_channel),
         "path_top_k": int(path_top_k),
         "union_top_k": int(union_top_k),
-        "field_contract_sha256": hashlib.sha256(b"retrieval-contract-v2").hexdigest(),
+        "query_register_version": QUERY_REGISTER_VERSION,
+        "disabled_paths": list(DISABLED_PATHS),
+        "field_contract_sha256": hashlib.sha256(
+            json.dumps({"version": QUERY_REGISTER_VERSION, "disabled": list(DISABLED_PATHS)}, sort_keys=True).encode()
+        ).hexdigest(),
     }
     return payload
 
@@ -195,6 +206,7 @@ def _retrieve_with_request_cache(
     retrieval_cache: RequestScopedRetrievalCache | None,
     timeout_seconds: float | None = None,
     channel_allowlist: frozenset[str] | None = None,
+    register_kind: str = "default",
 ):
     callback = lambda: retrieve_parallel(
         claim_query,
@@ -204,6 +216,7 @@ def _retrieve_with_request_cache(
         union_top_k=union_top_k,
         timeout_seconds=timeout_seconds,
         channel_allowlist=channel_allowlist,
+        register_kind=register_kind,
     )
     if retrieval_cache is None:
         return callback()
@@ -213,6 +226,7 @@ def _retrieve_with_request_cache(
             release_sha256_by_channel=release_sha256_by_channel,
             path_top_k=path_top_k,
             union_top_k=union_top_k,
+            register_kind=register_kind,
         ),
         callback,
     )
@@ -339,10 +353,99 @@ def _binding_sha(value: Any) -> str:
     ).encode()).hexdigest()
 
 
+def _query_register_identity_sha256(payload: Mapping[str, Any] | None) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+    return _binding_sha(dict(payload))
+
+
+def _candidate_bundle_sha256(
+    *,
+    release_id: str,
+    retrieval_rounds: Sequence[int],
+    query_register_version: str,
+    query_register_contract_sha256: str,
+    query_register_sha256: str,
+    candidate_membership_sha256: str,
+    profile_bundle_sha256: str,
+    projection_bundle_sha256: str,
+    corrective_plan_sha256: str | None,
+) -> str:
+    """Derive the binding bundle identity from every authority-bearing part."""
+    return _binding_sha({
+        "release_id": str(release_id),
+        "retrieval_rounds": list(retrieval_rounds),
+        "query_register_version": str(query_register_version),
+        "query_register_contract_sha256": str(query_register_contract_sha256),
+        "query_register_sha256": str(query_register_sha256),
+        "candidate_membership_sha256": str(candidate_membership_sha256),
+        "profile_bundle_sha256": str(profile_bundle_sha256),
+        "projection_bundle_sha256": str(projection_bundle_sha256),
+        "corrective_plan_sha256": corrective_plan_sha256,
+    })
+
+
+def _final_evidence_sha256(
+    *,
+    target_id: str,
+    release_id: str,
+    candidate_bundle_sha256: str,
+    profile_sha256: str,
+    query_plan: Mapping[str, Any],
+    query_ready_receipt: Mapping[str, Any],
+    cell_response_sha256: str | None,
+    cell_status: str,
+    official_unit: str,
+    evidence_packet_sha256: str,
+    answer_packet_sha256: str | None,
+    comparison: Mapping[str, Any],
+    annual_requery: Mapping[str, Any] | None,
+) -> str:
+    """Seal deterministic evidence and answer-packet identities together."""
+    return _binding_sha({
+        "target_id": target_id,
+        "release_id": release_id,
+        "candidate_bundle_sha256": candidate_bundle_sha256,
+        "profile_sha256": profile_sha256,
+        "query_plan": dict(query_plan),
+        "query_ready_receipt": dict(query_ready_receipt),
+        "cell_response_sha256": cell_response_sha256,
+        "cell_status": cell_status,
+        "official_unit": official_unit,
+        "evidence_packet_sha256": evidence_packet_sha256,
+        "answer_packet_sha256": answer_packet_sha256,
+        "comparison": dict(comparison),
+        "annual_requery": dict(annual_requery) if isinstance(annual_requery, Mapping) else annual_requery,
+    })
+
+
+_CELL_LEDGER_LOCK = threading.RLock()
+
+
+def _consume_target_cell_authorization(ledger: Mapping[str, Any] | None) -> bool:
+    """Atomically consume a mutable per-target Cell authorization.
+
+    A mapping that cannot be mutated is not an authorization ledger: allowing
+    it would make a second call indistinguishable from the first one.
+    """
+    if not isinstance(ledger, MutableMapping):
+        return False
+    with _CELL_LEDGER_LOCK:
+        current = ledger.get("cell_api")
+        if isinstance(current, bool) or current != 0:
+            return False
+        try:
+            ledger["cell_api"] = 1
+        except (TypeError, ValueError, KeyError):
+            return False
+        return ledger.get("cell_api") == 1
+
+
 def _validate_binding_continuation_runtime(
     continuation: Mapping[str, Any],
     *,
     expected_release_id: str,
+    expected_query_register_identity_payload: Mapping[str, Any] | None,
 ) -> tuple[frozenset[str], list[str], Mapping[str, Any]]:
     if continuation.get("contract_version") != "binding-continuation-v1":
         raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
@@ -364,6 +467,27 @@ def _validate_binding_continuation_runtime(
         or _binding_sha(projection_profiles) != continuation.get("projection_bundle_sha256")
     ):
         raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    query_register_version = str(continuation.get("query_register_version") or "")
+    query_register_contract_sha256 = str(continuation.get("query_register_contract_sha256") or "")
+    query_register_sha256 = str(continuation.get("query_register_sha256") or "")
+    expected_query_register_sha256 = _query_register_identity_sha256(expected_query_register_identity_payload)
+    retrieval_rounds = continuation.get("retrieval_rounds")
+    candidate_bundle_sha256 = str(continuation.get("candidate_bundle_sha256") or "")
+    corrective_plan_sha256 = continuation.get("corrective_plan_sha256")
+    if (
+        not query_register_version
+        or query_register_version != QUERY_REGISTER_VERSION
+        or query_register_contract_sha256 != _binding_sha(query_register_contract())
+        or not expected_query_register_sha256
+        or query_register_sha256 != expected_query_register_sha256
+        or not re.fullmatch(r"[0-9a-f]{64}", query_register_sha256)
+        or not isinstance(retrieval_rounds, list)
+        or not retrieval_rounds
+        or any(not isinstance(value, int) or value not in {0, 1} for value in retrieval_rounds)
+        or not re.fullmatch(r"[0-9a-f]{64}", candidate_bundle_sha256)
+        or (corrective_plan_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", str(corrective_plan_sha256)))
+    ):
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
     release_id = str(continuation.get("release_id") or "")
     receipt = []
     for table_key in sorted(membership):
@@ -383,6 +507,19 @@ def _validate_binding_continuation_runtime(
         _binding_sha(receipt) != continuation.get("profile_bundle_sha256")
         or expected_release_id and release_id != expected_release_id
     ):
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    expected_candidate_bundle = _candidate_bundle_sha256(
+        release_id=release_id,
+        retrieval_rounds=retrieval_rounds,
+        query_register_version=query_register_version,
+        query_register_contract_sha256=query_register_contract_sha256,
+        query_register_sha256=expected_query_register_sha256,
+        candidate_membership_sha256=_binding_sha(membership),
+        profile_bundle_sha256=str(continuation.get("profile_bundle_sha256") or ""),
+        projection_bundle_sha256=str(continuation.get("projection_bundle_sha256") or ""),
+        corrective_plan_sha256=(str(corrective_plan_sha256) if corrective_plan_sha256 is not None else None),
+    )
+    if expected_candidate_bundle != candidate_bundle_sha256:
         raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
     return frozenset(target_ids), list(membership), raw_profiles
 
@@ -742,6 +879,11 @@ _TRACE_SPAN_ERROR_CODES = {
     "OCCURRENCE_INDEX_INVALID",
     "UNKNOWN",
 }
+CANONICAL_L2_STATUSES = frozenset({
+    "L2_READY", "REPAIRED_SOURCE_EXACT", "HOLD_NOT_FOUND",
+    "HOLD_AMBIGUOUS", "L2_UNAVAILABLE",
+})
+DOWNSTREAM_L2_ELIGIBLE_STATUSES = frozenset({"L2_READY", "REPAIRED_SOURCE_EXACT"})
 
 
 def _trace_safe_error(error: Mapping[str, Any]) -> dict[str, Any]:
@@ -850,11 +992,20 @@ def materialize_operational_l2(
     here: only rows returned by HCX are passed downstream.
     """
     errors = list(raw_manifest.get("errors") or [])
+    canonical_runs = {
+        str(run.get("article_idx") or ""): run
+        for run in (raw_manifest.get("article_runs") or [])
+        if isinstance(run, Mapping)
+    }
     failed = {
         str(error.get("article_idx") or "")
         for error in errors
         if str(error.get("kind") or "") not in {"UNRESOLVED_SPANS", "MISSING_SENTENCES"}
     }
+    failed.update(
+        article_id for article_id, run in canonical_runs.items()
+        if str(run.get("status") or "") in {"HOLD_NOT_FOUND", "HOLD_AMBIGUOUS", "L2_UNAVAILABLE"}
+    )
     source_inventory: dict[str, dict[int, dict[str, Any]]] = {}
     value_candidates: dict[str, dict[int, list[dict[str, Any]]]] = {}
     for article in articles:
@@ -976,6 +1127,7 @@ def materialize_operational_l2(
                     "source_span_text": scope.get("source_span_text"),
                     "reason": "INDICATOR_SCOPE_UNRESOLVED",
                 })
+                failed.add(article_id)
             else:
                 kept_scopes.append(scope)
         # Do not add a field to a raw prediction that did not contain one.
@@ -1044,6 +1196,17 @@ def materialize_operational_l2(
     for article in articles:
         article_id = str(article.get("article_idx") or "")
         article_predictions = by_article.get(article_id, [])
+        canonical_run = canonical_runs.get(article_id, {})
+        canonical_status = str(canonical_run.get("status") or "")
+        canonical_reason = canonical_run.get("reason_code")
+        canonical_fields = {
+            "canonical_status": canonical_status or None,
+            "canonical_reason_code": canonical_reason,
+            "resolver_version": canonical_run.get("resolver_version"),
+            "repair_reason_code": canonical_run.get("repair_reason_code"),
+            "raw_prediction_sha256": canonical_run.get("raw_prediction_sha256"),
+            "canonical_l2_sha256": canonical_run.get("canonical_l2_sha256"),
+        }
         filtered_sentence_ids = {
             int(row["sentence_id"])
             for row in dispositions
@@ -1052,14 +1215,21 @@ def materialize_operational_l2(
         all_source_sentences_filtered = bool(source_inventory.get(article_id)) and (
             filtered_sentence_ids == set(source_inventory[article_id])
         )
-        if article_id in failed or (
+        eligible = canonical_status in DOWNSTREAM_L2_ELIGIBLE_STATUSES
+        if article_id in failed or not eligible or (
             not article_predictions and not all_source_sentences_filtered
         ):
-            results.append({"article_idx": article_id, "status": "L2_UNAVAILABLE", "predictions": []})
+            # The canonical L2 disposition, not the presence of raw HCX rows,
+            # is the sole authority for downstream eligibility.  A hold or
+            # unavailable canonical result must never be promoted to READY.
+            final_status = canonical_status if canonical_status else "L2_UNAVAILABLE"
+            if final_status not in {"HOLD_NOT_FOUND", "HOLD_AMBIGUOUS", "L2_UNAVAILABLE"}:
+                final_status = "L2_UNAVAILABLE"
+            results.append({"article_idx": article_id, "status": final_status, "predictions": [], **canonical_fields})
         else:
-            results.append({"article_idx": article_id, "status": "L2_READY", "predictions": article_predictions})
+            results.append({"article_idx": article_id, "status": canonical_status, "predictions": article_predictions, **canonical_fields})
     manifest["l2_disposition_metrics"]["l2_ready_articles"]["numerator"] = sum(
-        row.get("status") == "L2_READY" for row in results
+        row.get("status") in DOWNSTREAM_L2_ELIGIBLE_STATUSES for row in results
     )
     return {"results": results, "manifest": manifest, "external_model_calls": external_model_calls}
 
@@ -1172,7 +1342,11 @@ def _load_articles_for_clarification(
         if isinstance(answer, Mapping) and str(answer.get("role") or "").strip() == "article_date"
     ]
     for row in result:
-        updated = {**row, "clarification_answers": list(answers)}
+        updated = {
+            **row,
+            "clarification_answers": list(answers),
+            "_corrective_round_used": int(context.get("corrective_round") or 0),
+        }
         if date_answers:
             answer = date_answers[-1]
             body_sha = hashlib.sha256(str(updated["article_text"]).encode("utf-8")).hexdigest()
@@ -1232,6 +1406,8 @@ def _article_date_provenance_from_clarification(
 
 def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any]) -> dict[str, Any]:
     merged = dict(row)
+    if int(article.get("_corrective_round_used") or 0) > 0:
+        merged["_corrective_round_used"] = 1
     raw_answers = article.get("clarification_answers")
     if raw_answers in (None, []):
         return merged
@@ -1595,6 +1771,10 @@ class Top50Resolution:
     pinned_projection_profiles: Mapping[str, Mapping[str, Any]] = field(
         default_factory=lambda: MappingProxyType({}),
     )
+    retrieval_rounds: tuple[int, ...] = ()
+    query_register_version: str = QUERY_REGISTER_VERSION
+    query_register_sha256: str | None = None
+    query_register_contract_sha256: str | None = None
 
 
 def _pin_profile_snapshots(
@@ -2294,20 +2474,96 @@ def assignment_for_resolution(result: Top50Resolution) -> CandidateAssignment | 
     return matches[0] if len(matches) == 1 else None
 
 
+# KOSIS Param API의 공식 셀 row 계약은 대문자 키를 사용한다. 확인되지 않은
+# 소문자/내부 별칭으로 누락된 좌표를 보완하지 않는다.
+_KOSIS_CELL_RESPONSE_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "ORG_ID": ("ORG_ID",),
+    "TBL_ID": ("TBL_ID",),
+    "ITM_ID": ("ITM_ID",),
+    "PRD_SE": ("PRD_SE",),
+    "PRD_DE": ("PRD_DE",),
+}
+
+
+def _kosis_cell_response_value(row: Mapping[str, Any], field: str) -> tuple[bool, Any]:
+    """Return a contract-approved response field without guessing missing data."""
+    for key in _KOSIS_CELL_RESPONSE_ALIASES.get(field, (field,)):
+        if key in row:
+            return True, row[key]
+    return False, None
+
+
+def _cell_response_mismatch(
+    query_plan: Mapping[str, Any],
+    *,
+    field: str,
+    expected: Any,
+    actual: Any = None,
+    cell_api_called: bool = True,
+    reason: str = "RESPONSE_FIELD_MISMATCH",
+) -> dict[str, Any]:
+    return {
+        "status": "CELL_QUERY_MISMATCH",
+        "query": dict(query_plan),
+        "cell_api_called": cell_api_called,
+        "mismatch": {"field": field, "expected": expected, "actual": actual, "reason": reason},
+    }
+
+
 def fetch_exact_single_cell(
     query_plan: Mapping[str, Any],
     fetcher: Callable[[dict[str, Any]], list[dict[str, Any]] | dict[str, Any]],
+    *,
+    query_ready_receipt: Mapping[str, Any] | None = None,
+    candidate_bundle_sha256: str | None = None,
+    target_call_ledger: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fetch one official cell and fail closed on zero, multiple, or API error."""
+    if not isinstance(query_ready_receipt, Mapping) or query_ready_receipt.get("state") != "QUERY_READY":
+        return {
+            "status": "QUERY_READY_RECEIPT_REQUIRED",
+            "query": dict(query_plan),
+            "cell_api_called": False,
+        }
+    expected_plan_sha = hashlib.sha256(canonical_bytes(dict(query_plan))).hexdigest()
+    if str(query_ready_receipt.get("query_plan_sha256") or "") != expected_plan_sha:
+        return {"status": "QUERY_READY_RECEIPT_INVALID", "query": dict(query_plan), "cell_api_called": False}
+    if candidate_bundle_sha256 is not None and str(query_ready_receipt.get("candidate_bundle_sha256") or "") != str(candidate_bundle_sha256):
+        return {"status": "QUERY_READY_RECEIPT_INVALID", "query": dict(query_plan), "cell_api_called": False}
+    required = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de")
+    if any(not str(query_plan.get(key) or "").strip() for key in required):
+        return {"status": "QUERY_PLAN_INCOMPLETE", "query": dict(query_plan), "cell_api_called": False}
+    obj_levels = query_plan.get("obj_levels")
+    if (
+        not isinstance(obj_levels, Mapping)
+        or any(not isinstance(key, str) or not str(value or "").strip() for key, value in obj_levels.items())
+        or str(query_plan["start_prd_de"]) > str(query_plan["end_prd_de"])
+    ):
+        return {"status": "QUERY_PLAN_INCOMPLETE", "query": dict(query_plan), "cell_api_called": False}
+    selector_sha256 = hashlib.sha256(canonical_bytes(dict(sorted((str(key), str(value)) for key, value in obj_levels.items())))).hexdigest()
+    period_sha256 = hashlib.sha256(canonical_bytes({
+        "prd_se": str(query_plan["prd_se"]),
+        "start_prd_de": str(query_plan["start_prd_de"]),
+        "end_prd_de": str(query_plan["end_prd_de"]),
+    })).hexdigest()
+    if (
+        query_ready_receipt.get("selector_unique") is not True
+        or str(query_ready_receipt.get("selector_sha256") or "") != selector_sha256
+        or str(query_ready_receipt.get("period_sha256") or "") != period_sha256
+    ):
+        return {"status": "QUERY_READY_RECEIPT_INVALID", "query": dict(query_plan), "cell_api_called": False}
+    if not _consume_target_cell_authorization(target_call_ledger):
+        return {"status": "CELL_API_ONE_CALL_GUARD", "query": dict(query_plan), "cell_api_called": False}
     response = fetcher(dict(query_plan))
+    cell_called = True
     if isinstance(response, dict):
-        return {"status": "CELL_API_ERROR", "query": dict(query_plan), "response": response}
+        return {"status": "CELL_API_ERROR", "query": dict(query_plan), "response": response, "cell_api_called": cell_called}
     if not isinstance(response, list):
-        return {"status": "CELL_RESPONSE_INVALID", "query": dict(query_plan)}
+        return {"status": "CELL_RESPONSE_INVALID", "query": dict(query_plan), "cell_api_called": cell_called}
     if not response:
-        return {"status": "NO_CELL", "query": dict(query_plan), "rows": []}
+        return {"status": "NO_CELL", "query": dict(query_plan), "rows": [], "cell_api_called": cell_called}
     if len(response) != 1:
-        return {"status": "MULTIPLE_CELLS", "query": dict(query_plan), "row_count": len(response)}
+        return {"status": "MULTIPLE_CELLS", "query": dict(query_plan), "row_count": len(response), "cell_api_called": cell_called}
     cell = dict(response[0])
     checks = {
         "ORG_ID": query_plan.get("org_id"),
@@ -2315,48 +2571,62 @@ def fetch_exact_single_cell(
         "ITM_ID": query_plan.get("itm_id"),
     }
     for key, expected in checks.items():
-        actual = cell.get(key)
-        if actual not in (None, "") and str(actual) != str(expected):
-            return {
-                "status": "CELL_QUERY_MISMATCH",
-                "query": dict(query_plan),
-                "mismatch": {"field": key, "expected": expected, "actual": actual},
-            }
-    response_frequency = cell.get("PRD_SE")
+        present, actual = _kosis_cell_response_value(cell, key)
+        if not present or actual in (None, "") or not str(actual).strip():
+            return _cell_response_mismatch(
+                query_plan, field=key, expected=expected, actual=actual,
+                cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+            )
+        if str(actual) != str(expected):
+            return _cell_response_mismatch(
+                query_plan, field=key, expected=expected, actual=actual,
+                cell_api_called=cell_called,
+            )
+    frequency_present, response_frequency = _kosis_cell_response_value(cell, "PRD_SE")
     requested_frequency = query_plan.get("prd_se")
+    if not frequency_present or response_frequency in (None, "") or not str(response_frequency).strip():
+        return _cell_response_mismatch(
+            query_plan, field="PRD_SE", expected=requested_frequency, actual=response_frequency,
+            cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+        )
     annual_alias = {str(response_frequency), str(requested_frequency)} == {"A", "Y"}
     if (
-        response_frequency not in (None, "")
-        and str(response_frequency) != str(requested_frequency)
+        str(response_frequency) != str(requested_frequency)
         and not annual_alias
     ):
-        return {
-            "status": "CELL_QUERY_MISMATCH",
-            "query": dict(query_plan),
-            "mismatch": {
-                "field": "PRD_SE",
-                "expected": requested_frequency,
-                "actual": response_frequency,
-                "normalization_rule": "kosis-param-annual-a-y-v1",
-            },
-        }
-    period = cell.get("PRD_DE")
-    if period not in (None, "") and not (
+        mismatch = _cell_response_mismatch(
+            query_plan, field="PRD_SE", expected=requested_frequency, actual=response_frequency,
+            cell_api_called=cell_called,
+        )
+        mismatch["mismatch"]["normalization_rule"] = "kosis-param-annual-a-y-v1"
+        return mismatch
+    period_present, period = _kosis_cell_response_value(cell, "PRD_DE")
+    if not period_present or period in (None, "") or not str(period).strip():
+        return _cell_response_mismatch(
+            query_plan, field="PRD_DE", expected=[query_plan.get("start_prd_de"), query_plan.get("end_prd_de")],
+            actual=period, cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+        )
+    if not (
         str(query_plan.get("start_prd_de")) <= str(period) <= str(query_plan.get("end_prd_de"))
     ):
-        return {
-            "status": "CELL_QUERY_MISMATCH",
-            "query": dict(query_plan),
-            "mismatch": {"field": "PRD_DE", "expected": [query_plan.get("start_prd_de"), query_plan.get("end_prd_de")], "actual": period},
-        }
+        return _cell_response_mismatch(
+            query_plan, field="PRD_DE", expected=[query_plan.get("start_prd_de"), query_plan.get("end_prd_de")],
+            actual=period, cell_api_called=cell_called,
+        )
     for index, expected in enumerate((query_plan.get("obj_levels") or {}).values(), 1):
-        actual = cell.get(f"C{index}")
-        if actual not in (None, "") and str(actual) != str(expected):
-            return {
-                "status": "CELL_QUERY_MISMATCH",
-                "query": dict(query_plan),
-                "mismatch": {"field": f"C{index}", "expected": expected, "actual": actual},
-            }
+        field = f"C{index}"
+        present = field in cell
+        actual = cell.get(field)
+        if not present or actual in (None, "") or not str(actual).strip():
+            return _cell_response_mismatch(
+                query_plan, field=field, expected=expected, actual=actual,
+                cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+            )
+        if str(actual) != str(expected):
+            return _cell_response_mismatch(
+                query_plan, field=field, expected=expected, actual=actual,
+                cell_api_called=cell_called,
+            )
     response_sha = hashlib.sha256(
         json.dumps(response, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
@@ -2368,6 +2638,7 @@ def fetch_exact_single_cell(
         "response_contract": {
             "period_frequency_rule": "kosis-param-annual-a-y-v1" if annual_alias else "exact",
         },
+        "cell_api_called": cell_called,
     }
 
 
@@ -2723,7 +2994,24 @@ def run_technical_canary(
             "reason": "QUERY_PLAN_INVENTORY_INVALID",
             "inventory_errors": inventory_errors,
         }
-    cell_result = fetch_exact_single_cell(query_plan, cell_fetcher)
+    cell_result = fetch_exact_single_cell(
+        query_plan,
+        cell_fetcher,
+        query_ready_receipt={
+            "state": "QUERY_READY",
+            "query_plan_sha256": hashlib.sha256(canonical_bytes(query_plan)).hexdigest(),
+            "selector_unique": True,
+            "selector_sha256": hashlib.sha256(canonical_bytes(dict(sorted(
+                (str(key), str(value)) for key, value in (query_plan.get("obj_levels") or {}).items()
+            )))).hexdigest(),
+            "period_sha256": hashlib.sha256(canonical_bytes({
+                "prd_se": str(query_plan.get("prd_se") or ""),
+                "start_prd_de": str(query_plan.get("start_prd_de") or ""),
+                "end_prd_de": str(query_plan.get("end_prd_de") or ""),
+            })).hexdigest(),
+        },
+        target_call_ledger={"cell_api": 0},
+    )
     official_unit = _official_unit_for_query(profile, query_plan)
     comparison: dict[str, Any] = {}
     if cell_result.get("status") == "CELL_RESOLVED":
@@ -2801,6 +3089,7 @@ def run_new_articles_v2(
     retrieval_cache: RequestScopedRetrievalCache | None = None,
     timing: MonotonicTimingRecorder | None = None,
     binding_continuation: Mapping[str, Any] | None = None,
+    binding_query_register_identity_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the complete live contract with injectable external adapters."""
     evidence_first_statistics_shadow = _evidence_first_enabled(evidence_first_statistics_shadow)
@@ -2828,7 +3117,10 @@ def run_new_articles_v2(
         result_ids = [str(row.get("article_idx") or "") for row in results]
         if result_ids != expected_ids:
             raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
-        ready_ids = {str(row.get("article_idx") or "") for row in results if row.get("status") == "L2_READY"}
+        ready_ids = {
+            str(row.get("article_idx") or "") for row in results
+            if row.get("status") in DOWNSTREAM_L2_ELIGIBLE_STATUSES
+        }
         routed_rows = list(precomputed_routed.get("rows") or [])
         routed_article_ids = [str(row.get("article_idx") or "") for row in routed_rows]
         routed_target_ids = [str(row.get("target_id") or row.get("value_span_id") or "") for row in routed_rows]
@@ -2917,7 +3209,10 @@ def run_new_articles_v2(
         l2 = dict(precomputed_l2)
         l2["external_model_calls"] = 0
         l2["reused_model_calls"] = int(l2.get("reused_model_calls") or len(articles))
-    ready_ids = {row["article_idx"] for row in l2["results"] if row["status"] == "L2_READY"}
+    ready_ids = {
+        row["article_idx"] for row in l2["results"]
+        if row["status"] in DOWNSTREAM_L2_ELIGIBLE_STATUSES
+    }
     predictions = [row for result in l2["results"] for row in result["predictions"]]
     if precomputed_routed is None:
         routed = stack_runner([article for article in articles if str(article.get("article_idx")) in ready_ids], predictions)
@@ -3053,6 +3348,7 @@ def run_new_articles_v2(
         binding_target_scope, binding_membership, binding_profiles = _validate_binding_continuation_runtime(
             binding_continuation,
             expected_release_id=os.getenv("KOSIS_RELEASE_ID", ""),
+            expected_query_register_identity_payload=binding_query_register_identity_payload,
         )
         routed_target_scope = {
             f"{item.get('article_idx')}:{item.get('value_span_id') or item.get('sentence_id') or 'target'}"
@@ -3079,7 +3375,7 @@ def run_new_articles_v2(
             })
             represented_articles.add(article_id)
     for l2_result in l2["results"]:
-        if l2_result["status"] == "L2_READY":
+        if l2_result["status"] in DOWNSTREAM_L2_ELIGIBLE_STATUSES:
             continue
         article_id = str(l2_result["article_idx"])
         set_article_phase(article_id)
@@ -3299,6 +3595,49 @@ def run_new_articles_v2(
                 retrieval_cache=retrieval_cache,
                 ),
             )
+            if target_continuation:
+                retrieval_audit = {
+                    **retrieval_audit,
+                    "query_register_version": binding_continuation.get("query_register_version"),
+                    "query_register_contract_sha256": binding_continuation.get("query_register_contract_sha256"),
+                    "query_register_sha256": binding_continuation.get("query_register_sha256"),
+                    "retrieval_rounds": list(binding_continuation.get("retrieval_rounds") or []),
+                    "corrective_plan_sha256": binding_continuation.get("corrective_plan_sha256"),
+                    "retrieval_semantic_sha256": binding_continuation.get("retrieval_semantic_sha256"),
+                }
+            # Source/report terms are useful context but are not part of the
+            # six-path denominator.  Their candidates enter only by this
+            # explicit, separately receipted union.
+            if not target_continuation and source_terms:
+                context_candidates, context_audit = _retrieve_with_request_cache(
+                    {"source_terms": source_terms},
+                    search_channels,
+                    release_sha256_by_channel=release_sha256_by_channel,
+                    path_top_k=20,
+                    union_top_k=100,
+                    retrieval_cache=retrieval_cache,
+                    register_kind="context",
+                )
+                base_membership = [candidate.table_key for candidate in candidates]
+                context_membership = [candidate.table_key for candidate in context_candidates]
+                candidates = merge_candidate_rounds(candidates, context_candidates, limit=100)
+                retrieval_audit = {
+                    **retrieval_audit,
+                    "context_register": context_audit,
+                    "candidate_fusion": {
+                        "mode": "EXPLICIT_BASE_CONTEXT_UNION",
+                        "base_candidate_membership": base_membership,
+                        "context_candidate_membership": context_membership,
+                        "base_candidate_count": len(base_membership),
+                        "context_candidate_count": len(context_membership),
+                    },
+                    "candidate_membership": [candidate.table_key for candidate in candidates],
+                    "retrieval_semantic_sha256": _binding_sha({
+                        "base": retrieval_audit,
+                        "context": context_audit,
+                        "candidate_membership": [candidate.table_key for candidate in candidates],
+                    }),
+                }
         except RuntimeError as exc:
             retrieval_code = _bounded_exception_code(exc, "RETRIEVAL_UNAVAILABLE", {
                 "KOSIS_SEARCH_UNAVAILABLE", "KOSIS_SEARCH_INVALID_RESPONSE", "V6_BM25_EMPTY_QUERY",
@@ -3327,7 +3666,39 @@ def run_new_articles_v2(
                 "user_intent_shadow": user_intent, "answer": answer,
             }, target_call_snapshot=target_call_snapshot)
             continue
-        if not target_continuation and not candidates and failure_recovery_shadow:
+        if retrieval_audit.get("all_paths_failed"):
+            failure_recovery = {
+                **failure_recovery,
+                "state": "RETRIEVAL_INSUFFICIENT",
+                "action": "STOP",
+                "reason": "ALL_RETRIEVAL_PATHS_FAILED",
+                "retry_budget": {"used": 0, "limit": 1},
+            }
+        context_audit = retrieval_audit.get("context_register")
+        has_contract_failure = any(
+            status == "FAILED_CONTRACT"
+            for status in (retrieval_audit.get("path_status") or {}).values()
+        ) or (
+            isinstance(context_audit, Mapping)
+            and any(status == "FAILED_CONTRACT" for status in (context_audit.get("path_status") or {}).values())
+        )
+        if has_contract_failure:
+            reason = "RETRIEVAL_PATH_CONTRACT_INVALID"
+            packet = build_evidence_packet(
+                verdict="UNVERIFIABLE", claim_source={"sentence": sentence}, binding_plan={},
+                official_cell={}, comparison={}, limitation={"reason": reason},
+                placeholders={"CLAIM": sentence, "LIMITATION": reason},
+            )
+            answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
+            answers.append(answer)
+            append_target_ledger({
+                "article_idx": article_id, "value_span_id": row.get("value_span_id"),
+                "retrieval": retrieval_audit, "resolution": reason,
+                "failure_recovery_shadow": {**failure_recovery, "state": "UNVERIFIABLE_FINAL"},
+                "user_intent_shadow": user_intent, "answer": answer,
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
+            continue
+        if not target_continuation and not candidates and failure_recovery_shadow and not retrieval_audit.get("all_paths_failed"):
             failure_recovery = plan_failure_recovery(row, None)
             if failure_recovery.get("action") == "CORRECTIVE_RETRIEVAL":
                 try:
@@ -3339,6 +3710,7 @@ def run_new_articles_v2(
                         path_top_k=20,
                         union_top_k=100,
                         retrieval_cache=retrieval_cache,
+                        register_kind="corrective",
                     )
                     candidates = merge_candidate_rounds(candidates, round1, limit=100)
                     failure_recovery = {
@@ -3348,6 +3720,15 @@ def run_new_articles_v2(
                         "round1_candidate_membership": [candidate.table_key for candidate in round1],
                         "union_candidate_membership": [candidate.table_key for candidate in candidates],
                         "recovered_candidate_membership": bool(candidates),
+                    }
+                    retrieval_audit = {
+                        **retrieval_audit,
+                        "retrieval_rounds": [retrieval_audit, round1_audit],
+                        "candidate_membership": [candidate.table_key for candidate in candidates],
+                        "retrieval_semantic_sha256": _binding_sha({
+                            "rounds": [retrieval_audit, round1_audit],
+                            "candidate_membership": [candidate.table_key for candidate in candidates],
+                        }),
                     }
                 except Exception as exc:
                     failure_recovery = {
@@ -3370,7 +3751,8 @@ def run_new_articles_v2(
             answers.append(answer)
             append_target_ledger({
                 "article_idx": row.get("article_idx"), "value_span_id": row.get("value_span_id"),
-                "retrieval": retrieval_audit, "resolution": "NO_CANDIDATES",
+                "retrieval": retrieval_audit,
+                "resolution": "RETRIEVAL_INSUFFICIENT" if retrieval_audit.get("all_paths_failed") else "NO_CANDIDATES",
                 "failure_recovery_shadow": failure_recovery,
                 "user_intent_shadow": user_intent, "answer": answer,
             }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
@@ -3463,6 +3845,7 @@ def run_new_articles_v2(
                         path_top_k=20,
                         union_top_k=100,
                         retrieval_cache=retrieval_cache,
+                        register_kind="corrective",
                     )
                     union = merge_candidate_rounds(candidates, round1, limit=100)
                     if release_bound_mode:
@@ -3501,8 +3884,16 @@ def run_new_articles_v2(
                         "round1_resolution": asdict(corrected_top50.resolution),
                         "recovered": recovered,
                     }
-                    if recovered:
-                        candidates, reranked, top50 = union, corrected_reranked, corrected_top50
+                    candidates, reranked, top50 = union, corrected_reranked, corrected_top50
+                    retrieval_audit = {
+                        **retrieval_audit,
+                        "retrieval_rounds": [retrieval_audit, round1_audit],
+                        "candidate_membership": [candidate.table_key for candidate in candidates],
+                        "retrieval_semantic_sha256": _binding_sha({
+                            "rounds": [retrieval_audit, round1_audit],
+                            "candidate_membership": [candidate.table_key for candidate in candidates],
+                        }),
+                    }
                 except Exception as exc:
                     failure_recovery = {
                         **failure_recovery,
@@ -3513,7 +3904,7 @@ def run_new_articles_v2(
                             "exception_type": type(exc).__name__,
                         },
                     }
-        elif failure_recovery_shadow:
+        if failure_recovery_shadow and failure_recovery.get("retry_budget", {}).get("used") == 1:
             post_retry = plan_failure_recovery(row, top50)
             failure_recovery = {
                 **failure_recovery,
@@ -3523,8 +3914,25 @@ def run_new_articles_v2(
             if post_retry.get("action") == "ASK_USER":
                 failure_recovery["action"] = "ASK_USER_AFTER_CORRECTION"
                 failure_recovery["question"] = post_retry["question"]
+        if hasattr(top50, "retrieval_rounds"):
+            top50 = replace(
+                top50,
+                retrieval_rounds=((0, 1) if failure_recovery.get("retry_budget", {}).get("used") else (0,)),
+                query_register_version=str(retrieval_audit.get("query_register_version") or QUERY_REGISTER_VERSION),
+                query_register_sha256=retrieval_audit.get("query_register_sha256"),
+                query_register_contract_sha256=retrieval_audit.get("query_register_contract_sha256"),
+            )
         if failure_recovery_shadow and os.getenv("PIPELINE_CLARIFICATION_OPTIONS_ENABLED", "true").strip().lower() == "true":
-            clarification_plan = build_post_binding_clarification_plan(top50, target_id=target_id)
+            clarification_plan = build_post_binding_clarification_plan(
+                top50,
+                target_id=target_id,
+                corrective_plan_sha256=(
+                    str(failure_recovery.get("state_sha256") or "")
+                    if int(failure_recovery.get("retry_budget", {}).get("used") or 0) else None
+                ),
+                corrective_round=int(failure_recovery.get("retry_budget", {}).get("used") or 0),
+                query_register_identity_payload=retrieval_audit.get("query_register_identity_payload"),
+            )
             if clarification_plan is not None:
                 question = dict(clarification_plan.get("question") or {})
                 failure_recovery = {
@@ -3584,6 +3992,54 @@ def run_new_articles_v2(
         profile_sha256 = ""
         release_id = os.getenv("KOSIS_RELEASE_ID", "")
         annual_requery: dict[str, Any] | None = None
+        release_id = str(os.getenv("KOSIS_RELEASE_ID") or "")
+        retrieval_rounds = list(top50.retrieval_rounds or (0,))
+        raw_profile_receipt = [
+            {
+                "table_key": key,
+                "profile_sha256": str(profile.get("profile_sha256") or ""),
+                "release_id": str(profile.get("release_id") or ""),
+            }
+            for key, profile in sorted(top50.pinned_raw_profiles.items())
+            if isinstance(profile, Mapping)
+        ]
+        profile_bundle_sha256 = _binding_sha(raw_profile_receipt)
+        projection_bundle_sha256 = _binding_sha(top50.pinned_projection_profiles)
+        corrective_plan_sha256 = (
+            str(failure_recovery.get("state_sha256") or "")
+            if int(failure_recovery.get("retry_budget", {}).get("used") or 0) else None
+        )
+        candidate_bundle_sha256 = _candidate_bundle_sha256(
+            release_id=release_id,
+            retrieval_rounds=retrieval_rounds,
+            query_register_version=str(top50.query_register_version or QUERY_REGISTER_VERSION),
+            query_register_contract_sha256=str(
+                top50.query_register_contract_sha256 or _binding_sha(query_register_contract())
+            ),
+            query_register_sha256=str(retrieval_audit.get("query_register_sha256") or ""),
+            candidate_membership_sha256=_binding_sha(list(top50.candidate_membership)),
+            profile_bundle_sha256=profile_bundle_sha256,
+            projection_bundle_sha256=projection_bundle_sha256,
+            corrective_plan_sha256=corrective_plan_sha256,
+        )
+        query_selector_sha256 = hashlib.sha256(canonical_bytes(dict(sorted(
+            (str(key), str(value)) for key, value in (query_plan.get("obj_levels") or {}).items()
+        )))).hexdigest()
+        query_period_sha256 = hashlib.sha256(canonical_bytes({
+            "prd_se": str(query_plan.get("prd_se") or ""),
+            "start_prd_de": str(query_plan.get("start_prd_de") or ""),
+            "end_prd_de": str(query_plan.get("end_prd_de") or ""),
+        })).hexdigest()
+        query_ready_receipt = {
+            "state": "QUERY_READY",
+            "query_plan_sha256": hashlib.sha256(canonical_bytes(query_plan)).hexdigest(),
+            "candidate_bundle_sha256": candidate_bundle_sha256,
+            "chosen_table_key": top50.resolution.chosen_table_key,
+            "release_id": release_id,
+            "selector_unique": top50.resolution.outcome == "QUERY_READY" and assignment_for_resolution(top50) is not None,
+            "selector_sha256": query_selector_sha256,
+            "period_sha256": query_period_sha256,
+        }
         if top50.resolution.outcome == "QUERY_READY" and assignment is not None:
             chosen_key = str(top50.resolution.chosen_table_key or "")
             # Both generic and monthly resolutions pin the profiles read for
@@ -3610,14 +4066,27 @@ def run_new_articles_v2(
             if inventory_errors:
                 verdict, reason = "UNVERIFIABLE", "QUERY_PLAN_INVENTORY_INVALID"
             else:
+                cell_call_ledger = {"cell_api": 0}
                 if budget_ledger is not None:
                     cell_result = budget_ledger.execute(
                         budget_run_id or "audit", "cell",
-                        lambda: fetch_exact_single_cell(query_plan, cell_fetcher),
+                        lambda: fetch_exact_single_cell(
+                            query_plan,
+                            cell_fetcher,
+                            query_ready_receipt=query_ready_receipt,
+                            candidate_bundle_sha256=candidate_bundle_sha256,
+                            target_call_ledger=cell_call_ledger,
+                        ),
                         target_id=target_id,
                     )
                 else:
-                    cell_result = fetch_exact_single_cell(query_plan, cell_fetcher)
+                    cell_result = fetch_exact_single_cell(
+                        query_plan,
+                        cell_fetcher,
+                        query_ready_receipt=query_ready_receipt,
+                        candidate_bundle_sha256=candidate_bundle_sha256,
+                        target_call_ledger=cell_call_ledger,
+                    )
             if not inventory_errors and cell_result["status"] == "CELL_RESOLVED":
                 if _annual_change_only_row(row):
                     # A CHANGE_RATE claim is not a LEVEL claim.  The current
@@ -3675,6 +4144,7 @@ def run_new_articles_v2(
                     current_target_id=str(row.get("value_span_id") or ""),
                     cell_fetcher=annual_cell_fetcher,
                     official_unit=official_unit,
+                    candidate_bundle_sha256=candidate_bundle_sha256,
                 )
                 comparison = {**comparison, "annual_requery": annual_requery}
                 verdict = str(annual_requery.get("verdict") or verdict)
@@ -3741,6 +4211,24 @@ def run_new_articles_v2(
             }
         if user_intent is not None:
             answer["user_intent"] = user_intent
+        # Seal only authoritative evidence.  Generated wording is deliberately
+        # excluded so a verbalizer retry cannot mutate the evidence identity.
+        final_evidence_sha256 = _final_evidence_sha256(
+            target_id=target_id,
+            release_id=release_id,
+            candidate_bundle_sha256=candidate_bundle_sha256,
+            profile_sha256=profile_sha256,
+            query_plan=query_plan,
+            query_ready_receipt=query_ready_receipt,
+            cell_response_sha256=cell_result.get("response_sha256"),
+            cell_status=str(cell_result.get("status") or ""),
+            official_unit=official_unit,
+            evidence_packet_sha256=packet.packet_sha256,
+            answer_packet_sha256=answer.get("packet_sha256"),
+            comparison=comparison,
+            annual_requery=annual_requery,
+        )
+        answer["final_evidence_sha256"] = final_evidence_sha256
         answers.append(answer)
         execution_ledger = {
             "article_idx": row.get("article_idx"),
@@ -3779,6 +4267,7 @@ def run_new_articles_v2(
             },
             "call_ledger": {"cell_api": current_cell_calls},
             "assignment_provenance": binding_payload,
+            "final_evidence_sha256": final_evidence_sha256,
             "answer": answer,
         }
         if annual_requery is not None:
@@ -3991,14 +4480,14 @@ def _discover_precomputed_manifest(manifest_path: Path, *, stage: str, article_p
         cursor = 0
         for row in result_rows:
             status = row.get("status")
-            if status not in {"L2_READY", "L2_UNAVAILABLE"}:
+            if status not in CANONICAL_L2_STATUSES:
                 raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
             if not isinstance(row.get("prediction_row_start"), int) or not isinstance(row.get("prediction_row_end"), int):
                 raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
             start, end = row["prediction_row_start"], row["prediction_row_end"]
             if start != cursor or start < 0 or end < start or end > len(predictions):
                 raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
-            if status == "L2_UNAVAILABLE":
+            if status not in DOWNSTREAM_L2_ELIGIBLE_STATUSES:
                 if start != end:
                     raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
                 selected: list[dict[str, Any]] = []
@@ -4094,9 +4583,20 @@ def run_live_from_files(
     precomputed_l2 = precomputed_routed = None
     local_articles = _load_articles_for_clarification(article_path, clarification_context_path)
     binding_continuation = None
+    binding_query_register_identity_payload = None
     if binding_continuation_path is not None:
         try:
-            binding_continuation = _read_json(Path(binding_continuation_path).resolve())
+            continuation_path = Path(binding_continuation_path).resolve()
+            binding_continuation = _read_json(continuation_path)
+            plan_path = continuation_path.with_name("clarification_plan.json")
+            plan = _read_json(plan_path)
+            if isinstance(plan, Mapping):
+                candidate_payload = plan.get("query_register_identity_payload")
+                if not isinstance(candidate_payload, Mapping):
+                    binding = plan.get("binding_continuation")
+                    candidate_payload = binding.get("query_register_identity_payload") if isinstance(binding, Mapping) else None
+                if isinstance(candidate_payload, Mapping):
+                    binding_query_register_identity_payload = dict(candidate_payload)
         except Exception as exc:
             raise OperationalPipelineError("RESUME_ARTIFACT_STALE") from exc
     expected_article_ids = [str(row.get("article_idx") or "") for row in local_articles]
@@ -4348,6 +4848,7 @@ def run_live_from_files(
         retrieval_cache=retrieval_cache if request_cache_enabled else None,
         timing=timing,
         binding_continuation=binding_continuation,
+        binding_query_register_identity_payload=binding_query_register_identity_payload,
     )
     timing.observe("live", live_started)
     article_call_snapshot = {

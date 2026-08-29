@@ -31,7 +31,7 @@ def _compare_stub(claim_value_text, _claim_unit_text, cell, _official_unit_text)
         "reason": "MATCH",
     }
 
-def _fetch_stub(query_plan, fetcher):
+def _fetch_stub(query_plan, fetcher, **_guard_receipt):
     response = fetcher(dict(query_plan))
     if isinstance(response, list) and len(response) == 1:
         return {"status": "CELL_RESOLVED", "query": dict(query_plan), "cell": dict(response[0])}

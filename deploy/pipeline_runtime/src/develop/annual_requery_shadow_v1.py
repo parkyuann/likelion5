@@ -10,6 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 import hashlib
+import inspect
 import json
 import re
 from typing import Any, Callable, Mapping, Sequence
@@ -28,6 +29,33 @@ def _operational_cell_primitives() -> tuple[Callable[..., Any], Callable[..., An
     from src.develop.run_pipeline_operational_v2 import compare_official_cell, fetch_exact_single_cell
 
     return compare_official_cell, fetch_exact_single_cell
+
+
+def _fetch_baseline_cell_with_guard(
+    primitive: Callable[..., Any],
+    query_plan: Mapping[str, Any],
+    cell_fetcher: Callable[[dict[str, Any]], Any],
+    *,
+    query_ready_receipt: Mapping[str, Any],
+    candidate_bundle_sha256: str | None,
+) -> Any:
+    """Call the guarded runtime primitive, retaining legacy injected hooks.
+
+    Production ``fetch_exact_single_cell`` advertises and receives all guard
+    arguments.  Older injected primitives are a test/deterministic seam, so
+    their two-positional-argument contract remains usable without weakening
+    the production primitive or its self-guard.
+    """
+    guard_kwargs = {
+        "query_ready_receipt": query_ready_receipt,
+        "candidate_bundle_sha256": candidate_bundle_sha256,
+        "target_call_ledger": {"cell_api": 0},
+    }
+    try:
+        inspect.signature(primitive).bind(query_plan, cell_fetcher, **guard_kwargs)
+    except TypeError:
+        return primitive(query_plan, cell_fetcher)
+    return primitive(query_plan, cell_fetcher, **guard_kwargs)
 
 
 def _fields(row: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -135,6 +163,7 @@ def verify_annual_requery(
     *, rows: Sequence[Mapping[str, Any]], current_plan: Mapping[str, Any],
     current_cell_result: Mapping[str, Any], current_target_id: str,
     cell_fetcher: Callable[[dict[str, Any]], Any], official_unit: str = "",
+    candidate_bundle_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Verify an annual level/change pair or a change-only claim with one extra cell."""
     current_row = next((dict(row) for row in rows if str(row.get("value_span_id") or "") == current_target_id), None)
@@ -170,7 +199,30 @@ def verify_annual_requery(
     current_cell = current_cell_result.get("cell") if isinstance(current_cell_result.get("cell"), Mapping) else None
     if current_cell_result.get("status") != "CELL_RESOLVED" or current_cell is None:
         raise AnnualRequeryError("CURRENT_CELL_NOT_RESOLVED")
-    baseline_cell_result = fetch_exact_single_cell(baseline_plan, cell_fetcher)
+    baseline_receipt = {
+            "state": "QUERY_READY",
+            "query_plan_sha256": hashlib.sha256(json.dumps(
+                baseline_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+            ).encode("utf-8")).hexdigest(),
+            "candidate_bundle_sha256": candidate_bundle_sha256,
+            "selector_unique": True,
+            "selector_sha256": hashlib.sha256(json.dumps(
+                dict(sorted((str(key), str(value)) for key, value in (baseline_plan.get("obj_levels") or {}).items())),
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+            ).encode("utf-8")).hexdigest(),
+            "period_sha256": hashlib.sha256(json.dumps({
+                "prd_se": str(baseline_plan.get("prd_se") or ""),
+                "start_prd_de": str(baseline_plan.get("start_prd_de") or ""),
+                "end_prd_de": str(baseline_plan.get("end_prd_de") or ""),
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest(),
+    }
+    baseline_cell_result = _fetch_baseline_cell_with_guard(
+        fetch_exact_single_cell,
+        baseline_plan,
+        cell_fetcher,
+        query_ready_receipt=baseline_receipt,
+        candidate_bundle_sha256=candidate_bundle_sha256,
+    )
     baseline_cell = baseline_cell_result.get("cell") if isinstance(baseline_cell_result.get("cell"), Mapping) else None
     if baseline_cell_result.get("status") != "CELL_RESOLVED" or baseline_cell is None:
         raise AnnualRequeryError(str(baseline_cell_result.get("status") or "BASELINE_CELL_NOT_RESOLVED"))

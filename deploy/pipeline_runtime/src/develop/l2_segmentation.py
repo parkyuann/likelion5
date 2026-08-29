@@ -57,12 +57,14 @@ RAW_L2_CONTRACT_VERSION = "raw-hcx-l2-v1"
 CANONICAL_L2_CONTRACT_VERSION = "canonical-l2-v1"
 RESOLVER_VERSION = "exact-source-resolver-v1"
 MISSING_SENTENCE_REPAIR_CONTRACT_VERSION = "l2-missing-sentence-exact-repair-v1"
+INDICATOR_EVIDENCE_CONTRACT_VERSION = "l2-indicator-evidence-v1"
 CANONICAL_L2_STATUSES = frozenset({
     "L2_READY", "REPAIRED_SOURCE_EXACT", "REPAIRED_SOURCE_NOT_PROVIDED", "HOLD_NOT_FOUND",
-    "HOLD_AMBIGUOUS", "L2_UNAVAILABLE",
+    "HOLD_AMBIGUOUS", "L2_CLARIFICATION_REQUIRED", "L2_UNAVAILABLE",
 })
 DOWNSTREAM_L2_ELIGIBLE = frozenset({
     "L2_READY", "REPAIRED_SOURCE_EXACT", "REPAIRED_SOURCE_NOT_PROVIDED",
+    "L2_CLARIFICATION_REQUIRED",
 })
 
 
@@ -416,6 +418,50 @@ def _occurrences(sentence_text: str, span_text: str) -> list[int]:
     return starts
 
 
+def _indicator_evidence_decision(
+    indicator_label: Any,
+    resolved_source_span: Any,
+    sentence_text: Any,
+) -> tuple[str, dict[str, Any]]:
+    """Accept a model label only when it has exact article evidence.
+
+    This is deliberately a character-for-character check.  The registry
+    proposal is also exact and versioned; it is not a normalization,
+    similarity, metadata, retrieval, or retry fallback.
+    """
+    label = str(indicator_label or "")
+    source = str(resolved_source_span or "")
+    sentence = str(sentence_text or "")
+    source_count = len(_occurrences(source, label)) if label else 0
+    sentence_count = len(_occurrences(sentence, label)) if label else 0
+    registry_matches = [
+        proposal for proposal in propose_exact_statistical_indicator_matches(sentence)
+        if proposal.text == label
+    ] if label else []
+    exact_count = source_count or sentence_count
+    if source_count == 1 or sentence_count == 1 or len(registry_matches) == 1:
+        decision = "RESOLVED"
+        reason = "EXACT_LABEL_IN_SOURCE_OR_SENTENCE"
+    elif exact_count > 1 or len(registry_matches) > 1:
+        decision = "AMBIGUOUS"
+        reason = "INDICATOR_LABEL_EXACT_MATCH_AMBIGUOUS"
+    else:
+        decision = "MISSING"
+        reason = "MODEL_INDICATOR_LABEL_NOT_GROUNDED"
+    return decision, {
+        "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
+        "decision": decision,
+        "reason_code": reason,
+        "indicator_label": label,
+        "exact_label_in_source_span_count": source_count,
+        "exact_label_in_sentence_count": sentence_count,
+        "exact_registry_match_count": len(registry_matches),
+        "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
+        "owned_l1_value_count": None,
+        "period_context_preserved": None,
+    }
+
+
 def find_hcx_model_span_matches(sentence_text: str, span_text: str) -> list[int]:
     """Return offsets for exact source text only."""
     _validate_hcx_model_span_inputs(sentence_text, span_text)
@@ -715,6 +761,9 @@ def resolve_prediction(
     exact_repair_receipts: list[dict[str, Any]] = []
     exact_repair_statuses: list[str] = []
     malformed_source_pointer_receipts: list[dict[str, Any]] = []
+    source_not_provided_receipts: list[dict[str, Any]] = []
+    indicator_evidence_receipts: list[dict[str, Any]] = []
+    indicator_clarification = False
     for item in prediction.get("sentences") or []:
         sentence_id = item.get("sentence_id")
         text = sentences.get(sentence_id, "")
@@ -728,6 +777,32 @@ def resolve_prediction(
                 span = resolve_hcx_model_span(text, entry["source_span_text"])
                 _apply_hcx_span_resolution(entry, span)
                 entry["span_status"] = "RESOLVED"
+                evidence_decision, evidence_receipt = _indicator_evidence_decision(
+                    entry["indicator_label"], entry.get("source_span_text"), text,
+                )
+                evidence_receipt.update({
+                    "sentence_id": int(sentence_id),
+                    "value_span_ids": [
+                        value.get("span_id")
+                        for value in candidates_by_sentence.get(int(sentence_id), [])
+                        if value.get("kind") == "value_unit"
+                    ],
+                    "period_context_preserved": bool(
+                        item.get("period_context")
+                        or any(value.get("kind") == "time" for value in candidates_by_sentence.get(int(sentence_id), []))
+                    ),
+                })
+                if evidence_decision != "RESOLVED":
+                    # Keep the raw model label in raw_envelope only.  The
+                    # canonical row must not turn an invented label into a
+                    # retrieval field or permit indicator inheritance.
+                    entry["indicator_label"] = ""
+                    entry["indicator_evidence_status"] = evidence_decision
+                    entry["indicator_evidence_reason"] = evidence_receipt["reason_code"]
+                    indicator_clarification = True
+                    indicator_evidence_receipts.append(evidence_receipt)
+                else:
+                    entry["indicator_evidence_status"] = "RESOLVED"
             except SpanResolutionError as exc:
                 entry["span_status"] = "UNRESOLVED"
                 entry["span_error"] = str(exc)
@@ -741,6 +816,29 @@ def resolve_prediction(
                     )
                 )
             scopes.append(entry)
+        sentence_values = [
+            value for value in candidates_by_sentence.get(int(sentence_id), [])
+            if value.get("kind") == "value_unit"
+        ]
+        if sentence_values and not scopes:
+            indicator_clarification = True
+            indicator_evidence_receipts.append({
+                "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
+                "decision": "MISSING",
+                "reason_code": "MODEL_INDICATOR_LABEL_NOT_GROUNDED",
+                "indicator_label": "",
+                "exact_label_in_source_span_count": 0,
+                "exact_label_in_sentence_count": 0,
+                "exact_registry_match_count": 0,
+                "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
+                "owned_l1_value_count": len(sentence_values),
+                "period_context_preserved": bool(
+                    item.get("period_context")
+                    or any(value.get("kind") == "time" for value in candidates_by_sentence.get(int(sentence_id), []))
+                ),
+                "sentence_id": int(sentence_id),
+                "value_span_ids": [value.get("span_id") for value in sentence_values],
+            })
         region = dict(item.get("source_region") or {})
         # Derive the category from the pointer so downstream code and the
         # evaluator keep one vocabulary regardless of how the model answered.
@@ -753,6 +851,33 @@ def resolve_prediction(
         else:
             region["dominance"] = "상속"
         region_span = str(region.get("source_span_text") or "").strip()
+        if region.get("opens_region") and not region_span:
+            original_region = dict(region)
+            for key in (
+                "source_char_start", "source_char_end", "source_sentence_id",
+                "model_source_span_text", "span_match_mode", "offset_provenance",
+                "span_error",
+            ):
+                region.pop(key, None)
+            region.update({
+                "opens_region": False,
+                "governing_sentence_id": None,
+                "source_subtype": "",
+                "source_span_text": "",
+                "span_status": "NOT_PROVIDED",
+                "dominance": DOMINANCE_NONE,
+            })
+            source_not_provided_receipts.append({
+                "repair_contract_version": MALFORMED_SOURCE_POINTER_REPAIR_CONTRACT_VERSION,
+                "repair_action": "NORMALIZE_EMPTY_SOURCE_REGION_TO_NOT_PROVIDED",
+                "reason_code": "SOURCE_REGION_OPEN_WITHOUT_EXACT_SPAN",
+                "sentence_id": int(sentence_id),
+                "original_opens_region": bool(original_region.get("opens_region")),
+                "original_source_subtype": str(original_region.get("source_subtype") or ""),
+                "original_source_span_text": str(original_region.get("source_span_text") or ""),
+                "exact_source_span_match_count": 0,
+            })
+            region_span = ""
         if region_span:
             try:
                 span = resolve_hcx_model_span(text, region_span)
@@ -841,6 +966,30 @@ def resolve_prediction(
             "indicator_scopes": scopes,
             "source_region": region,
             "period_context": item.get("period_context") or {},
+            "field_states": ({
+                "indicator": {
+                    "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
+                    "state": "AMBIGUOUS" if any(
+                        receipt.get("decision") == "AMBIGUOUS"
+                        and receipt.get("sentence_id") == int(sentence_id)
+                        for receipt in indicator_evidence_receipts
+                    ) else "MISSING",
+                    "reason_code": "INDICATOR_EVIDENCE_AMBIGUOUS" if any(
+                        receipt.get("decision") == "AMBIGUOUS"
+                        and receipt.get("sentence_id") == int(sentence_id)
+                        for receipt in indicator_evidence_receipts
+                    ) else "INDICATOR_EVIDENCE_MISSING",
+                    "value_span_ids": [value.get("span_id") for value in sentence_values],
+                    "period_preserved": bool(
+                        item.get("period_context")
+                        or any(value.get("kind") == "time" for value in candidates_by_sentence.get(int(sentence_id), []))
+                    ),
+                }
+            } if any(
+                receipt.get("sentence_id") == int(sentence_id)
+                and receipt.get("decision") in {"MISSING", "AMBIGUOUS"}
+                for receipt in indicator_evidence_receipts
+            ) else {}),
         })
     # Break the common lead↔attribution pointer cycle by opening the uniquely
     # located source on the sentence that actually contains its exact span.
@@ -904,9 +1053,16 @@ def resolve_prediction(
     elif "HOLD_NOT_FOUND" in exact_repair_statuses and not resolved:
         canonical_status = "HOLD_NOT_FOUND"
         reason_code = "MISSING_SENTENCE_EXACT_INDICATOR_NOT_FOUND"
-    elif malformed_source_pointer_receipts:
+    elif indicator_clarification:
+        canonical_status = "L2_CLARIFICATION_REQUIRED"
+        reason_code = "INDICATOR_EVIDENCE_MISSING"
+    elif malformed_source_pointer_receipts or source_not_provided_receipts:
         canonical_status = "REPAIRED_SOURCE_NOT_PROVIDED"
-        reason_code = "MALFORMED_SOURCE_POINTER_WITHOUT_EXACT_EVIDENCE"
+        reason_code = (
+            "MALFORMED_SOURCE_POINTER_WITHOUT_EXACT_EVIDENCE"
+            if malformed_source_pointer_receipts
+            else "SOURCE_REGION_OPEN_WITHOUT_EXACT_SPAN"
+        )
     elif "REPAIRED_SOURCE_EXACT" in exact_repair_statuses:
         canonical_status = "REPAIRED_SOURCE_EXACT"
         reason_code = "MISSING_SENTENCE_EXACT_INDICATOR"
@@ -928,7 +1084,11 @@ def resolve_prediction(
     canonical_l2_sha256 = _canonical_sha(canonical_payload)
     for receipt in exact_repair_receipts:
         receipt["canonical_l2_sha256"] = canonical_l2_sha256
-    all_repair_receipts = [*exact_repair_receipts, *malformed_source_pointer_receipts]
+    all_repair_receipts = [
+        *exact_repair_receipts,
+        *malformed_source_pointer_receipts,
+        *source_not_provided_receipts,
+    ]
     canonicalization_receipt_payload = {
         "contract_version": CANONICAL_L2_CONTRACT_VERSION,
         "raw_prediction_sha256": raw_prediction_sha256,
@@ -967,6 +1127,7 @@ def resolve_prediction(
         "resolver_version": RESOLVER_VERSION,
         "repair_reason_code": reason_code,
         "repair_receipts": all_repair_receipts,
+        "indicator_evidence_receipts": indicator_evidence_receipts,
         "canonical_l2_sha256": canonical_l2_sha256,
         "canonicalization_receipt_sha256": canonicalization_receipt_sha256,
     }

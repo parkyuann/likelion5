@@ -574,6 +574,38 @@ def _missing_high_impact_role(fields: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _indicator_failure_recovery(
+    row: Mapping[str, Any],
+    *,
+    target_id: str,
+) -> dict[str, Any]:
+    """Create the bounded producer record consumed by the backend projector."""
+    question_id = "clarify-indicator-" + hashlib.sha256(
+        target_id.encode("utf-8")
+    ).hexdigest()[:24]
+    unsigned: dict[str, Any] = {
+        "contract_version": "failure-recovery-shadow-v1",
+        "state_contract_version": "retrieval-clarification-state-v1",
+        "state": "DIRECT_FIELD_MISSING",
+        "action": "ASK_USER",
+        "reason": "INDICATOR_REQUIRED",
+        "question": {
+            "question_id": question_id,
+            "role": "indicator",
+            "prompt": "이 수치가 어떤 통계 지표를 의미하는지 알려주세요.",
+            "input_mode": "FREE_TEXT",
+            "allow_direct_input": True,
+            "options": [],
+            "answer": None,
+            "model_prefill": False,
+            "internal_ids_exposed": False,
+        },
+        "retry_budget": {"used": 0, "limit": 1},
+    }
+    digest = _binding_sha(unsigned)
+    return {**unsigned, "state_sha256": digest, "sha256": digest}
+
+
 def _speculative_clarification_plan(
     row: Mapping[str, Any],
     *,
@@ -3501,7 +3533,74 @@ def run_new_articles_v2(
             else:
                 row["article_date_provenance"] = _bounded_article_date_provenance(article, article_text)
         routing_class = str(row.get("routing_class") or "")
-        if routing_class and routing_class != "KOSIS_CANDIDATE":
+        answered_indicator = (
+            row.get("user_clarifications", {}).get("indicator")
+            if isinstance(row.get("user_clarifications"), Mapping)
+            else None
+        )
+        if (
+            routing_class
+            and routing_class != "KOSIS_CANDIDATE"
+            and not (
+                routing_class == "CLARIFICATION_REQUIRED"
+                and row.get("clarification_required") == "indicator"
+                and answered_indicator
+            )
+        ):
+            if (
+                routing_class == "CLARIFICATION_REQUIRED"
+                and row.get("clarification_required") == "indicator"
+            ):
+                answered_indicator = (
+                    row.get("user_clarifications", {}).get("indicator")
+                    if isinstance(row.get("user_clarifications"), Mapping)
+                    else None
+                )
+                if answered_indicator:
+                    # The L2 evidence remains missing; the user answer is a
+                    # separate retrieval constraint.  Only the downstream
+                    # gate changes so resume can continue from retrieval.
+                    row["routing_class"] = "KOSIS_CANDIDATE"
+                    row["reason"] = "USER_CLARIFICATION_INDICATOR"
+                    row["authoritative_retrieval_authorized"] = True
+                    routing_class = "KOSIS_CANDIDATE"
+                else:
+                    failure_recovery = _indicator_failure_recovery(
+                        row, target_id=target_id,
+                    )
+                    question = dict(failure_recovery["question"])
+                    answer = {
+                        "article_idx": article_id,
+                        "target_id": target_id,
+                        "verdict": "CLARIFICATION_REQUIRED",
+                        "headline": "추가 정보가 필요합니다.",
+                        "explanation": question["prompt"],
+                        "limitation": "INDICATOR_REQUIRED",
+                        "questions": [question],
+                        "fallback": False,
+                    }
+                    answers.append(answer)
+                    append_target_ledger({
+                        "article_idx": article_id,
+                        "target_id": target_id,
+                        "value_span_id": row.get("value_span_id"),
+                        "l1_l5": {
+                            "routing_class": routing_class,
+                            "confidence": row.get("confidence"),
+                            "reason": row.get("reason"),
+                            "authoritative_retrieval_authorized": False,
+                        },
+                        "resolution": "CLARIFICATION_REQUIRED",
+                        "failure_recovery_shadow": failure_recovery,
+                        "cell_values_used": False,
+                        "answer": answer,
+                        "call_ledger": {
+                            "cell_api": 0,
+                            "answer_deterministic": 0,
+                            "answer_hcx_shadow": 0,
+                        },
+                    }, target_call_snapshot=target_call_snapshot)
+                    continue
             gate_reason = f"L5_{routing_class}:{row.get('reason') or 'UNSPECIFIED'}"
             packet = build_evidence_packet(
                 verdict="UNVERIFIABLE",

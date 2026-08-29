@@ -3,21 +3,18 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 import sys
-import types
 
 RUNTIME_ROOT = Path(__file__).parents[1] / "deploy" / "pipeline_runtime"
 if str(RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_ROOT))
-if "pandas" not in sys.modules:
-    pandas = types.ModuleType("pandas")
-    pandas.Series = object
-    pandas.DataFrame = object
-    sys.modules["pandas"] = pandas
 
 from src.develop.l2_segmentation import (  # noqa: E402
     DOWNSTREAM_L2_ELIGIBLE,
     resolve_prediction,
 )
+from src.news_verification.runtime.l3_role_assignment import assign_roles  # noqa: E402
+from src.news_verification.runtime.l4_field_normalization import compose_fields  # noqa: E402
+from src.news_verification.runtime.l5_routing import route_value  # noqa: E402
 from src.news_verification.runtime.l1_value_candidates import iter_sentence_spans  # noqa: E402
 
 
@@ -137,3 +134,148 @@ def test_missing_repair_receipt_and_canonical_sha_are_deterministic():
     assert first["canonical_l2_sha256"] == second["canonical_l2_sha256"]
     assert first["repair_receipts"] == second["repair_receipts"]
     assert first["raw_envelope"] == second["raw_envelope"]
+
+
+def test_invented_indicator_label_becomes_clarification_and_preserves_l1_period():
+    article = "2025년 출생아 수는 25만4341명이다."
+    result = resolve_prediction(
+        article,
+        {
+            "sentences": [{
+                "sentence_id": 0,
+                "indicator_scopes": [{
+                    "indicator_label": "인구 성장률",
+                    "source_span_text": article,
+                }],
+                "source_region": {},
+                "period_context": {"period_raw": "2025년"},
+            }],
+        },
+        sentence_span_iterator=iter_sentence_spans,
+    )
+
+    assert result["canonical_status"] == "L2_CLARIFICATION_REQUIRED"
+    assert result["canonical_reason_code"] == "INDICATOR_EVIDENCE_MISSING"
+    assert result["sentences"][0]["indicator_scopes"][0]["indicator_label"] == ""
+    assert result["sentences"][0]["field_states"]["indicator"]["state"] == "MISSING"
+    assert result["sentences"][0]["period_context"] == {"period_raw": "2025년"}
+    assert result["sentences"][0]["field_states"]["indicator"]["value_span_ids"]
+
+    assignments = assign_roles(
+        article, result["sentences"], sentence_span_iterator=iter_sentence_spans
+    )
+    assert len(assignments) == 1
+    assert assignments[0]["indicator_label"] is None
+    assert assignments[0]["period_raw"] == "2025년"
+    normalized = compose_fields(assignments[0], published_at="2026-08-26")
+    routed = route_value(normalized)
+    assert routed["routing_class"] == "CLARIFICATION_REQUIRED"
+    assert routed["authoritative_retrieval_authorized"] is False
+
+
+def test_exact_indicator_in_a_broad_resolved_span_remains_grounded():
+    article = "2025년 출생아 수는 25만4341명이다."
+    result = resolve_prediction(
+        article,
+        {
+            "sentences": [{
+                "sentence_id": 0,
+                "indicator_scopes": [{
+                    "indicator_label": "출생아 수",
+                    "source_span_text": article,
+                }],
+                "source_region": {},
+                "period_context": {"period_raw": "2025년"},
+            }],
+        },
+        sentence_span_iterator=iter_sentence_spans,
+    )
+
+    scope = result["sentences"][0]["indicator_scopes"][0]
+    assert result["canonical_status"] == "L2_READY"
+    assert scope["indicator_label"] == "출생아 수"
+    assert scope["indicator_evidence_status"] == "RESOLVED"
+
+
+def test_indicator_whitespace_variant_is_not_normalized_for_hcx_evidence():
+    article = "2025년 출생아수는 25만4341명이다."
+    result = resolve_prediction(
+        article,
+        {
+            "sentences": [{
+                "sentence_id": 0,
+                "indicator_scopes": [{
+                    "indicator_label": "출생아 수",
+                    "source_span_text": "출생아수",
+                }],
+                "source_region": {},
+                "period_context": {"period_raw": "2025년"},
+            }],
+        },
+        sentence_span_iterator=iter_sentence_spans,
+    )
+
+    assert result["canonical_status"] == "L2_CLARIFICATION_REQUIRED"
+    assert result["sentences"][0]["indicator_scopes"][0]["indicator_label"] == ""
+    assert result["indicator_evidence_receipts"][0]["exact_label_in_sentence_count"] == 0
+
+
+def test_empty_open_source_region_is_not_provided_even_with_subtype():
+    article = "출생아 수는 10명이다."
+    result = resolve_prediction(
+        article,
+        {
+            "sentences": [{
+                "sentence_id": 0,
+                "indicator_scopes": [{
+                    "indicator_label": "출생아 수",
+                    "source_span_text": "출생아 수",
+                }],
+                "source_region": {
+                    "opens_region": True,
+                    "governing_sentence_id": 0,
+                    "source_subtype": "잠정추산",
+                    "source_span_text": "",
+                },
+            }],
+        },
+        sentence_span_iterator=iter_sentence_spans,
+    )
+
+    region = result["sentences"][0]["source_region"]
+    assert region["opens_region"] is False
+    assert region["governing_sentence_id"] is None
+    assert region["source_subtype"] == ""
+    assert region["span_status"] == "NOT_PROVIDED"
+    assert result["canonical_status"] == "REPAIRED_SOURCE_NOT_PROVIDED"
+    assert result["repair_receipts"][0]["repair_action"] == (
+        "NORMALIZE_EMPTY_SOURCE_REGION_TO_NOT_PROVIDED"
+    )
+
+
+def test_nonempty_exact_source_region_is_preserved():
+    article = "통계청에 따르면 출생아 수는 10명이다."
+    result = resolve_prediction(
+        article,
+        {
+            "sentences": [{
+                "sentence_id": 0,
+                "indicator_scopes": [{
+                    "indicator_label": "출생아 수",
+                    "source_span_text": "출생아 수",
+                }],
+                "source_region": {
+                    "opens_region": True,
+                    "governing_sentence_id": 0,
+                    "source_subtype": "공식집계",
+                    "source_span_text": "통계청",
+                },
+            }],
+        },
+        sentence_span_iterator=iter_sentence_spans,
+    )
+
+    region = result["sentences"][0]["source_region"]
+    assert region["opens_region"] is True
+    assert region["source_span_text"] == "통계청"
+    assert region["span_status"] == "RESOLVED"

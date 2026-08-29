@@ -245,7 +245,7 @@ def _pre_live_clarification_plan(
                     "prompt": "어떤 통계 지표를 확인할지 알려주세요." if role == "indicator" else "어떤 통계 항목을 확인할지 알려주세요.",
                     "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "speculative": True,
                 },
-                "resume_from_stage": "layers",
+                "resume_from_stage": "retrieval",
                 "changed_roles": [role], "invalidated_stages": ["layers", "retrieval", "binding", "cell", "answer"],
                 "reusable_artifacts": ["l1", "l2", "layers"],
                 "speculative": True,
@@ -345,27 +345,18 @@ def _pending_clarification(out_root: Path) -> dict[str, Any] | None:
         recovery = row.get("failure_recovery_shadow")
         if not isinstance(recovery, dict):
             continue
-        # Once v2 planning is enabled, a legacy string-only question is not
-        # safe to resume because its option/question binding is unverifiable.
-        question = recovery.get("question")
-        if not isinstance(question, dict):
-            post_retry = recovery.get("post_retry")
-            question = post_retry.get("question") if isinstance(post_retry, dict) else None
-        if not isinstance(question, dict):
+        if recovery.get("action") != "ASK_USER":
             continue
-        if recovery.get("contract_version") != "clarification-plan-v2":
-            raise BackendError(
-                "CLARIFICATION_PLAN_INVALID",
-                "이전 재질의 정보의 검증 계약이 만료되었습니다. 원문을 다시 제출해 주세요.",
-                status_code=409,
-            )
-        role = str(question.get("role") or "")
-        if role not in _CLARIFICATION_ROLES:
-            continue
-        post_retry = recovery.get("post_retry")
-        retry_reason = post_retry.get("reason") if isinstance(post_retry, dict) else ""
-        reason = str(recovery.get("reason") or retry_reason or row.get("resolution") or "CLARIFICATION_REQUIRED")
-        candidates.append((_CLARIFICATION_ROLE_PRIORITY[role], question, reason))
+        # A failure-recovery record is a producer-side contract, not a public
+        # question.  Validate and project it before the checkpoint path sees
+        # it.  Legacy string-only/post-retry records are intentionally rejected
+        # instead of being guessed into a resume request.
+        plan = _project_failure_recovery_clarification(recovery)
+        question = dict(plan["question"])
+        question["clarification_plan_sha256"] = plan["clarification_plan_sha256"]
+        question["plan_sha256"] = plan["clarification_plan_sha256"]
+        question["_clarification_plan"] = plan
+        candidates.append((_CLARIFICATION_ROLE_PRIORITY[question["role"]], question, plan["reason"]))
     if not candidates:
         return None
     _, question, reason = sorted(candidates, key=lambda item: item[0])[0]
@@ -379,6 +370,9 @@ def _pending_clarification_plan(out_root: Path) -> dict[str, Any] | None:
         if isinstance(plan, dict) and plan.get("contract_version") == "clarification-plan-v2":
             if isinstance(plan.get("question"), dict):
                 return dict(plan)
+        recovery = row.get("failure_recovery_shadow")
+        if isinstance(recovery, Mapping) and recovery.get("action") == "ASK_USER":
+            return _project_failure_recovery_clarification(recovery)
     return None
 
 
@@ -686,6 +680,150 @@ def _receipt_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+_FAILURE_RECOVERY_REASON_ROLES = {
+    "INDICATOR_REQUIRED": "indicator",
+    "ITEM_REQUIRED": "item",
+    "SOURCE_REQUIRED": "source",
+    "ARTICLE_DATE_REQUIRED": "article_date",
+    "POPULATION_UNBOUND": "population",
+    "REGION_UNBOUND": "region",
+    "PERIOD_UNKNOWN": "period",
+    "PERIOD_INVALID": "period",
+}
+_FAILURE_RECOVERY_PROJECTABLE_STATES = {
+    "DIRECT_FIELD_MISSING",
+    "SELECTOR_CLARIFICATION_POSSIBLE",
+}
+_FAILURE_RECOVERY_PROJECTABLE_INPUT_MODES = {"DATE", "FREE_TEXT"}
+_FAILURE_RECOVERY_QUESTION_FIELDS = frozenset({
+    "question_id", "id", "role", "prompt", "input_mode", "options",
+    "answer", "model_prefill", "internal_ids_exposed", "allow_direct_input",
+})
+
+
+def _project_failure_recovery_clarification(
+    recovery: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project one current failure-recovery record into clarification-plan-v2.
+
+    This is intentionally a narrow wire-contract adapter.  It does not trust
+    a recovery record merely because it contains a question: the producer
+    contract, state digest, state/action, finite role, and reason-role pair
+    must all be valid before any checkpoint is created.
+    """
+    if not isinstance(recovery, Mapping):
+        raise BackendError(
+            "CLARIFICATION_PLAN_INVALID",
+            "재질의 계획의 형식이 올바르지 않습니다.",
+            status_code=409,
+        )
+    contract = str(recovery.get("contract_version") or "")
+    state_contract = str(recovery.get("state_contract_version") or "")
+    state = str(recovery.get("state") or "")
+    action = str(recovery.get("action") or "")
+    reason = str(recovery.get("reason") or "")
+    expected_state_sha = str(recovery.get("state_sha256") or "")
+    expected_alias_sha = str(recovery.get("sha256") or "")
+    unsigned = {
+        key: value
+        for key, value in recovery.items()
+        if key not in {"state_sha256", "sha256"}
+    }
+    actual_state_sha = _receipt_sha256(unsigned)
+    if (
+        contract != "failure-recovery-shadow-v1"
+        or state_contract != "retrieval-clarification-state-v1"
+        or state not in _FAILURE_RECOVERY_PROJECTABLE_STATES
+        or action != "ASK_USER"
+        or not _SHA256_RE.fullmatch(expected_state_sha)
+        or expected_state_sha != actual_state_sha
+        or expected_alias_sha != expected_state_sha
+        or reason not in _FAILURE_RECOVERY_REASON_ROLES
+    ):
+        raise BackendError(
+            "CLARIFICATION_PLAN_INVALID",
+            "재질의 계획의 검증 계약이 유효하지 않습니다.",
+            status_code=409,
+        )
+
+    question = recovery.get("question")
+    if not isinstance(question, Mapping):
+        raise BackendError(
+            "CLARIFICATION_PLAN_INVALID",
+            "재질의 질문의 구조가 올바르지 않습니다.",
+            status_code=409,
+        )
+    question_id = str(question.get("question_id") or question.get("id") or "").strip()
+    alternate_question_id = str(question.get("id") or "").strip()
+    role = str(question.get("role") or "").strip()
+    prompt = str(question.get("prompt") or "").strip()
+    input_mode = str(question.get("input_mode") or "").strip()
+    options = question.get("options")
+    expected_role = _FAILURE_RECOVERY_REASON_ROLES[reason]
+    forbidden_prefill = question.get("model_prefill")
+    forbidden_internal_ids = question.get("internal_ids_exposed")
+    answer = question.get("answer")
+    if (
+        not question_id
+        or bool(set(question) - _FAILURE_RECOVERY_QUESTION_FIELDS)
+        or (alternate_question_id and str(question.get("question_id") or "").strip() and alternate_question_id != question_id)
+        or role not in _CLARIFICATION_ROLES
+        or role != expected_role
+        or not prompt
+        or input_mode not in _FAILURE_RECOVERY_PROJECTABLE_INPUT_MODES
+        or not isinstance(options, list)
+        or options
+        or forbidden_prefill is True
+        or forbidden_internal_ids is True
+        or ("answer" in question and answer is not None)
+    ):
+        raise BackendError(
+            "CLARIFICATION_PLAN_INVALID",
+            "재질의 질문이 안전한 입력 계약을 만족하지 않습니다.",
+            status_code=409,
+        )
+
+    # The projection deliberately omits all producer-specific fields and
+    # gives the checkpoint a deterministic dependency mapping.  No candidate
+    # bundle exists on this path, so binding continuation is not permitted.
+    resume_from_stage = (
+        "layers" if role in {"article_date", "period"}
+        else "retrieval"
+    )
+    projected_question = {
+        "id": question_id,
+        "role": role,
+        "prompt": prompt,
+        "input_mode": input_mode,
+        "allow_direct_input": True,
+        "options": [],
+        "answer": None,
+        "model_prefill": False,
+        "internal_ids_exposed": False,
+    }
+    plan: dict[str, Any] = {
+        "contract_version": "clarification-plan-v2",
+        "state_contract_version": "retrieval-clarification-state-v1",
+        "source_contract_version": contract,
+        "source_state": state,
+        "source_action": action,
+        "source_state_sha256": expected_state_sha,
+        "reason": reason,
+        "question": projected_question,
+        "resume_from_stage": resume_from_stage,
+        "changed_roles": [role],
+        "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
+        "reusable_artifacts": ["l1", "l2", "layers"],
+        "speculative": False,
+        "candidate_bundle_sha256": None,
+        "option_bundle": None,
+        "cell_api_calls": 0,
+        "hcx_answer_calls": 0,
+    }
+    plan["clarification_plan_sha256"] = _receipt_sha256(plan)
+    return plan
 
 
 def _routed_target_keys(row: dict[str, Any]) -> tuple[str, ...]:
@@ -1261,8 +1399,8 @@ def verify_article_develop(
                 pending = _pending_article_date_from_routed(out_root)
             if pending:
                 role = pending.get("question", {}).get("role")
-                resume_from = (
-                    "layers" if role in {"article_date", "period", "indicator"}
+                resume_from = str(pending.get("resume_from_stage") or "") or (
+                    "layers" if role in {"article_date", "period"}
                     else "retrieval" if role in {"item", "unit", "source", "population"}
                     else "binding" if role in {"region", "sex", "age", "classification", "measurement_basis"}
                     else "live"

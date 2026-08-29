@@ -161,6 +161,6 @@ reranker는 `deploy_encoder_internal`에만 연결되고 published host port가 
 따라서 이번 배포는 **후보 생성 개선을 운영에 반영한 상태**로 마감하고,
 후속 rerank 전·후 비교를 완료하기 전까지 `GO_FULL_RERANK_QUALITY`로 확대하지 않는다.
 
-봉인 receipt SHA-256: `6d67cfe885c385be702542044c4d06baf805da025b6059620b33122d770ed8e9`.
+봉인 receipt SHA-256: `f8086c16d9bec516857992dca4ed02f0934f79dc1b9d156035d2aff1b4fec2e1`.
 EC2 server-only receipt 경로는
 `/srv/news_verification/application-overlay/receipts/049c2c84a6be0fa421812fdb8cd9daa273da8211/RECEIPT_ITEM_OFFICIAL_BGE_PROMOTION_20260829.json`이다.

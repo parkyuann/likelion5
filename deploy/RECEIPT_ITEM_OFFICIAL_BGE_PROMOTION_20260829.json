@@ -54,6 +54,24 @@
     "opensearch_errors": 0,
     "qdrant_errors": 0
   },
+  "ec2_before": {
+    "source_branch": "ec2/release-bound-live-stage",
+    "source_sha": "bc8b27175d7c06a53101104441b22afe7c6a887f",
+    "source_dirty_count": 0,
+    "active_release_sha": "cadd3dc388cdaba04f13796d8c9943c82639f473",
+    "api_container_id": "7a10a04118b5afbc82d1670c477a6cf97dcf4ba3c46847938eb8386f254a53e3",
+    "api_image_digest": "sha256:8497115b72fad65ee35e58d5ad3e7ebbecf5e786cdcee1fbb6d1ca0dd61a37f6",
+    "nginx_container_id": "536c127a432c7a1c717ad1005e3faf03122fc57ba64a1b534060c66857e56a05",
+    "nginx_image_digest": "sha256:8c7de892f94bb887c4048038c2262cabee18bcaffe47b55279a79a7d434b654a",
+    "encoder_container_id": "288d4c542e8220588910ee5787466f6bb615217b5396eb8fdc1a581ba0d130bd",
+    "postgres_container_id": "04a93362057869d71e43537bbb1d9b965c5c2b87a38ef80ab0702a32e6079124",
+    "opensearch_container_id": "592b675a4c74c56088d842368b7e0d631decae5e24e9688b3fc55b7305fa7537",
+    "qdrant_container_id": "43e4a947fa8b076b53f60840249f570964b84c1617ae26bc686ed3471f68f668",
+    "redis_container_id": "b6f872a38289bec09e07dd8b4ab51cc8590fc7548eeeb28c2616d7f5e59a207a",
+    "all_restart_count": 0,
+    "active_reranker": "absent",
+    "data_layer_mutation": false
+  },
   "ec2_after": {
     "api_container_id": "f6ec370c26c733fe74955d5f70d2d5f5849b990dae46ff6f7398e274198129bc",
     "nginx_container_id": "c75b4af2fe4062266d92c2ef1318afb1b01db48fdc4f220d5284e0199e1ea8d5",

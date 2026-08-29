@@ -804,7 +804,10 @@ def resolve_prediction(
         sentence_id = item.get("sentence_id")
         text = sentences.get(sentence_id, "")
         scopes = []
+        sentence_indicator_clarification = False
+        model_indicator_labels: list[str] = []
         for scope in item.get("indicator_scopes") or []:
+            model_indicator_labels.append(str(scope.get("indicator_label") or ""))
             entry = {
                 "indicator_label": scope.get("indicator_label") or "",
                 "source_span_text": scope.get("source_span_text") or "",
@@ -835,7 +838,7 @@ def resolve_prediction(
                     entry["indicator_label"] = ""
                     entry["indicator_evidence_status"] = evidence_decision
                     entry["indicator_evidence_reason"] = evidence_receipt["reason_code"]
-                    indicator_clarification = True
+                    sentence_indicator_clarification = True
                     indicator_evidence_receipts.append(evidence_receipt)
                 else:
                     entry["indicator_evidence_status"] = "RESOLVED"
@@ -894,7 +897,7 @@ def resolve_prediction(
                     "recovery_rule_id": "l2-single-exact-indicator-recovery-v1",
                 })
             else:
-                indicator_clarification = True
+                sentence_indicator_clarification = True
                 indicator_evidence_receipts.append({
                     "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
                     "decision": "MISSING",
@@ -912,6 +915,59 @@ def resolve_prediction(
                     "sentence_id": int(sentence_id),
                     "value_span_ids": [value.get("span_id") for value in sentence_values],
                 })
+        if sentence_values and scopes and sentence_indicator_clarification:
+            # HCX sometimes returns one exact but overly broad source span and
+            # leaves indicator_label empty.  Treat that as malformed model
+            # evidence, then apply the same narrow registry recovery used for
+            # an omitted scope.  Multiple scopes or unresolved spans remain a
+            # clarification/hold and are never guessed.
+            raw_region = dict(item.get("source_region") or {})
+            raw_region_span = str(raw_region.get("source_span_text") or "").strip()
+            source_pointer_is_valid = True
+            if raw_region_span:
+                try:
+                    resolve_hcx_model_span(text, raw_region_span)
+                except SpanResolutionError:
+                    source_pointer_is_valid = False
+            if (
+                source_pointer_is_valid
+                and len(scopes) == 1
+                and scopes[0].get("span_status") == "RESOLVED"
+                and len(model_indicator_labels) == 1
+                and not model_indicator_labels[0].strip()
+            ):
+                recovered_indicator = _recover_single_exact_indicator(text, sentence_values)
+                if recovered_indicator is not None:
+                    indicator_evidence_receipts = [
+                        receipt for receipt in indicator_evidence_receipts
+                        if not (
+                            receipt.get("sentence_id") == int(sentence_id)
+                            and receipt.get("decision") in {"MISSING", "AMBIGUOUS"}
+                        )
+                    ]
+                    scopes = [recovered_indicator]
+                    proposal = propose_exact_statistical_indicator_matches(text)[0]
+                    indicator_evidence_receipts.append({
+                        "contract_version": INDICATOR_EVIDENCE_CONTRACT_VERSION,
+                        "decision": "RESOLVED",
+                        "reason_code": "EXACT_REGISTRY_SOURCE_RECOVERY",
+                        "indicator_label": proposal.text,
+                        "exact_label_in_source_span_count": 1,
+                        "exact_label_in_sentence_count": 1,
+                        "exact_registry_match_count": 1,
+                        "terminology_registry_version": EXACT_INDICATOR_REGISTRY_VERSION,
+                        "owned_l1_value_count": len(sentence_values),
+                        "period_context_preserved": bool(
+                            item.get("period_context")
+                            or any(value.get("kind") == "time" for value in candidates_by_sentence.get(int(sentence_id), []))
+                        ),
+                        "sentence_id": int(sentence_id),
+                        "value_span_ids": [value.get("span_id") for value in sentence_values],
+                        "recovery_rule_id": "l2-single-exact-indicator-recovery-v1",
+                        "recovered_from_model_scope": True,
+                    })
+                    sentence_indicator_clarification = False
+        indicator_clarification = indicator_clarification or sentence_indicator_clarification
         region = dict(item.get("source_region") or {})
         # Derive the category from the pointer so downstream code and the
         # evaluator keep one vocabulary regardless of how the model answered.

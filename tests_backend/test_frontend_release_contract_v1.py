@@ -25,8 +25,11 @@ def test_status_labels_and_compose_build_contract_preserve_one_valid_sha() -> No
     api_dockerfile = (ROOT / "deploy/api.Dockerfile").read_text(encoding="utf-8")
     nginx_dockerfile = (ROOT / "deploy/nginx.Dockerfile").read_text(encoding="utf-8")
 
-    for label in ("검증 완료", "일부 근거 확인 · 추가 확인 필요", "공식 통계 근거를 확인하지 못함", "구조화 완료 · 공식 대조 미실행"):
+    for label in ("검증 완료", "일부 근거 확인 · 추가 확인 필요", "추가 정보 필요 · 공식 통계 근거를 확인하지 못함", "구조화 완료 · 공식 대조 미실행"):
         assert label in chat
+    assert 'marker: "i"' not in chat
+    assert 'marker: "?"' in chat
+    assert "c-ring ${done ? `status ${completion.className}` : \"loading\"}" in chat
     assert "APP_RELEASE_SHA:?set the exact 40-character Git SHA" in compose
     assert ":-unknown" not in compose
     assert "^[0-9a-f]{40}$" in api_dockerfile

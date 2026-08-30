@@ -1289,9 +1289,16 @@
   transition: background 0.35s ease;
 }
 .c-ring::before { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--surface); }
-.c-ring.done { background: var(--green); }
+.c-ring.status {
+  background: var(--surface-2);
+  border: 2px solid var(--line-strong);
+}
+.c-ring.status::before { display: none; }
+.c-ring.status.done { background: var(--green-tint); border-color: var(--green); }
+.c-ring.status.limited { background: var(--slate-tint); border-color: var(--slate); }
 .c-ring-num { position: relative; font-size: 12px; font-weight: 800; color: var(--brand); font-variant-numeric: tabular-nums; }
-.c-ring.done .c-ring-num { color: var(--green); }
+.c-ring.status.done .c-ring-num { color: var(--green-ink); }
+.c-ring.status.limited .c-ring-num { color: var(--slate); }
 .c-progress-meta { display: flex; flex-direction: column; gap: 2px; }
 .c-progress-meta strong { font-size: 14px; color: var(--ink); }
 .c-sent-log { display: flex; flex-direction: column; gap: 2px; }

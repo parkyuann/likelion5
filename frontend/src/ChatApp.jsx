@@ -350,18 +350,22 @@ function ProgressBubble({ progress }) {
   const [openLog, setOpenLog] = useState(false);
   const percent = done ? 100 : Math.round(pct);
   const completion = {
-    completed: { label: "검증 완료", marker: "✓", className: "done" },
-    completed_with_limits: { label: "일부 근거 확인 · 추가 확인 필요", marker: "!", className: "limited" },
-    unverifiable: { label: "공식 통계 근거를 확인하지 못함", marker: "i", className: "limited" },
-    structured_only: { label: "구조화 완료 · 공식 대조 미실행", marker: "i", className: "limited" },
-  }[status] || { label: "검증 완료", marker: "✓", className: "done" };
+    completed: { label: "검증 완료", marker: "✓", className: "done", statusLabel: "검증 완료" },
+    completed_with_limits: { label: "일부 근거 확인 · 추가 확인 필요", marker: "!", className: "limited", statusLabel: "추가 확인 필요" },
+    unverifiable: { label: "추가 정보 필요 · 공식 통계 근거를 확인하지 못함", marker: "?", className: "limited", statusLabel: "추가 정보 필요" },
+    structured_only: { label: "구조화 완료 · 공식 대조 미실행", marker: "!", className: "limited", statusLabel: "공식 대조 미실행" },
+  }[status] || { label: "검증 완료", marker: "✓", className: "done", statusLabel: "검증 완료" };
   // 진행 중엔 항상 보이고, 완료 후엔 토글로 열 때만 보인다.
   const showLog = logs.length > 0 && (!done || openLog);
   return (
     <div className="c-progress">
       <div className="c-progress-top">
-        <div className={`c-ring ${done ? completion.className : "loading"}`} style={{ "--pct": percent }}>
-          <span className="c-ring-num">{done ? completion.marker : `${percent}%`}</span>
+        <div
+          className={`c-ring ${done ? `status ${completion.className}` : "loading"}`}
+          style={done ? undefined : { "--pct": percent }}
+          aria-label={done ? completion.statusLabel : `검증 진행률 ${percent}%`}
+        >
+          <span className="c-ring-num" aria-hidden="true">{done ? completion.marker : `${percent}%`}</span>
         </div>
         <div className="c-progress-meta">
           <strong>{done ? completion.label : "검증 중…"}</strong>

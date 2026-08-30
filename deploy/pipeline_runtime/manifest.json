@@ -38,8 +38,8 @@
     },
     {
       "path": "develop/failure_recovery_shadow_v1.py",
-      "sha256": "e0731c04a84aa4b8b8f43a3915af26482db35fd6f210f4e75443168c3cd8a2e9",
-      "size": 22729
+      "sha256": "07f7b0aa114ecda45f9d9f2139bbc890ee8973680371efa1ad3303219a3b6e5c",
+      "size": 23241
     },
     {
       "path": "develop/hcx_client.py",
@@ -53,8 +53,8 @@
     },
     {
       "path": "develop/l2_segmentation.py",
-      "sha256": "40998ca387c64edbe2cf6041c49ef588bc917a11027136f0d90e7bf51abc203f",
-      "size": 60039
+      "sha256": "992adfea6664d136147d0ea18b4cb52c248c83f814c5e6a7e0595cc8791020ea",
+      "size": 68957
     },
     {
       "path": "develop/l2_span_resolver.py",
@@ -93,8 +93,8 @@
     },
     {
       "path": "develop/user_intent_router_shadow_v1.py",
-      "sha256": "292e844e1dc85b58ea5f76a3505036ebfa1734a215911aeeaef71a0805496b25",
-      "size": 8969
+      "sha256": "6898b172e0286ad6905d5e77f3cd65a0e62ca3f2e3568439606fd1effb9e27f8",
+      "size": 9131
     },
     {
       "path": "hcx_claim_experiment.py",
@@ -208,13 +208,13 @@
     },
     {
       "path": "news_verification/runtime/l3_role_assignment.py",
-      "sha256": "f03ca6ecb5b62032bf797b1e7726caae897d8c326c07bd1cb752e175895b5858",
-      "size": 21426
+      "sha256": "7480e5cf2a4376666110c7c88146d7dbe41a39b1f9f49e33daf1d83f78d02566",
+      "size": 24769
     },
     {
       "path": "news_verification/runtime/l4_field_normalization.py",
-      "sha256": "e1c01d60832c79752b44e8b13a0675d7eeb98ed15aa50faa9830023291a1af16",
-      "size": 36753
+      "sha256": "6e91242d38b781da333ca9bce6cf4fc6a71cd5d94f6587a5bb5f48bdedc2afca",
+      "size": 36914
     },
     {
       "path": "news_verification/runtime/l5_routing.py",
@@ -278,8 +278,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_claim_core_v2.py",
-      "sha256": "86a71c70d52f3aa0669d4f0b36d0074d0ddd98b9ae5ed31b33982dfc8a0d4ab8",
-      "size": 37322
+      "sha256": "6ac1983c7cb7c5c1a3a5d5553cf51d45bb04808f2d84c223bd2ad6e3f1a62341",
+      "size": 37455
     },
     {
       "path": "news_verification/runtime/r4c1_live_metadata.py",
@@ -293,8 +293,8 @@
     },
     {
       "path": "news_verification/runtime/r4c1_projection_v2.py",
-      "sha256": "1d76a22911828be7322f421c3257d80e77d93b8f047a8cb338b46aa1b4e2938a",
-      "size": 97699
+      "sha256": "78dcff6617a10c474d72a07bad2f79b72e0ba6d0af473ac5bc37e10090e2afd2",
+      "size": 97737
     },
     {
       "path": "news_verification/runtime/retrieval_query.py",
@@ -318,8 +318,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "fb8c6b05f934bf6482ffa0d4a746c792f8d71d019c9bb7db13d6788556fff58d",
-      "size": 259237
+      "sha256": "c45c8db7accb7be9903b9230baa63e3c6ea50467fc5460a653ec461a9a8a4f59",
+      "size": 261794
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

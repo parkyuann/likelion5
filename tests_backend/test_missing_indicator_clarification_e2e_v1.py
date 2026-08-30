@@ -185,6 +185,8 @@ def test_first_request_emits_indicator_question_without_authoritative_calls(monk
     assert recovery["state"] == "DIRECT_FIELD_MISSING"
     assert recovery["reason"] == "INDICATOR_REQUIRED"
     assert recovery["question"]["role"] == "indicator"
+    assert "기사에서 확인하려는 수치를 구체적으로 알려주세요." in recovery["question"]["prompt"]
+    assert "전국 출생아 수" in recovery["question"]["prompt"]
     assert recovery["question"]["input_mode"] == "FREE_TEXT"
     assert recovery["question"]["options"] == []
     assert recovery["question"]["model_prefill"] is False
@@ -259,6 +261,24 @@ def test_backend_early_gate_does_not_repeat_answered_indicator(tmp_path):
     )
 
     assert pending is None
+
+
+def test_backend_early_indicator_prompt_explains_expected_statistic(tmp_path):
+    (tmp_path / "03_routed.jsonl").write_text(
+        json.dumps(_routed_row(), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    pending = _pre_live_clarification_plan(
+        tmp_path,
+        body=ARTICLE["article_text"],
+        article_date=ARTICLE["date"],
+    )
+
+    assert pending is not None
+    assert pending["reason"] == "INDICATOR_REQUIRED"
+    assert "기사에서 확인하려는 수치를 구체적으로 알려주세요." in pending["question"]["prompt"]
+    assert "전국 출생아 수" in pending["question"]["prompt"]
 
 
 def test_retrieval_resume_rebinds_predecessor_context(tmp_path):

@@ -1,10 +1,11 @@
 # API/Nginx-only shadow validation overlay.
 #
-# Invoke this file by itself with a unique `--project-name`; `extends` imports
-# the Git-tracked api/nginx definitions from compose.yaml without importing the
-# main service names.  The shadow API gets an `api` alias only on its dedicated
-# network, never on kosis_shadow_internal.  Main Nginx therefore cannot route
-# a production request to this shadow container.
+# Invoke this file by itself with a unique `--project-name`; the API extends
+# the Git-tracked service definition while Nginx repeats its small build and
+# hardening contract so the shadow host-port mappings are explicit.  The shadow
+# API gets an `api` alias only on its dedicated network, never on
+# kosis_shadow_internal.  Main Nginx therefore cannot route a production
+# request to this shadow container.
 services:
   shadow-api:
     extends:
@@ -26,9 +27,13 @@ services:
       encoder_internal: {}
 
   shadow-nginx:
-    extends:
-      file: compose.yaml
-      service: nginx
+    build:
+      context: ..
+      dockerfile: deploy/nginx.Dockerfile
+      args:
+        APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    labels:
+      org.opencontainers.image.revision: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
     depends_on: !override
       shadow-api:
         condition: service_started
@@ -37,6 +42,19 @@ services:
       - "${APP_HTTPS_PORT:?set a unique shadow HTTPS host port}:8443"
     networks: !override
       shadow_app_internal: {}
+    volumes:
+      - type: bind
+        source: "${NGINX_TLS_CERT_SOURCE:?set the server-only development certificate path}"
+        target: /etc/nginx/tls/dev.crt
+        read_only: true
+      - type: bind
+        source: "${NGINX_TLS_KEY_SOURCE:?set the server-only development private key path}"
+        target: /etc/nginx/tls/dev.key
+        read_only: true
+    read_only: true
+    tmpfs: ["/var/cache/nginx", "/var/run"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
 
 networks:
   shadow_app_internal:

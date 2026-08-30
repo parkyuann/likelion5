@@ -37,7 +37,7 @@ services:
     depends_on: !override
       shadow-api:
         condition: service_started
-    ports: !override
+    ports:
       - "${APP_HTTP_PORT:?set a unique shadow HTTP host port}:8080"
       - "${APP_HTTPS_PORT:?set a unique shadow HTTPS host port}:8443"
     networks: !override

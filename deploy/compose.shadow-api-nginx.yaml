@@ -42,6 +42,7 @@ services:
       - "${APP_HTTPS_PORT:?set a unique shadow HTTPS host port}:8443"
     networks: !override
       shadow_app_internal: {}
+      shadow_edge: {}
     volumes:
       - type: bind
         source: "${NGINX_TLS_CERT_SOURCE:?set the server-only development certificate path}"
@@ -59,6 +60,7 @@ services:
 networks:
   shadow_app_internal:
     internal: true
+  shadow_edge: {}
   kosis_shadow_internal:
     external: true
     name: kosis_shadow_internal

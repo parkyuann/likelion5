@@ -133,12 +133,17 @@ def _quality(paragraphs: Iterable[str], *, min_compact_chars: int = 100) -> tupl
     return len(compact) >= min_compact_chars and len(_LETTER_RE.findall(text)) >= 30, len(text), len(values)
 
 
-def _body_from_selectors(soup: BeautifulSoup, selectors: Iterable[str]) -> tuple[list[str], str] | None:
+def _body_from_selectors(
+    soup: BeautifulSoup,
+    selectors: Iterable[str],
+    *,
+    min_compact_chars: int = 100,
+) -> tuple[list[str], str] | None:
     best: tuple[list[str], str, int] | None = None
     for selector in selectors:
         for node in soup.select(selector):
             paragraphs = _normalized_paragraphs(node)
-            valid, chars, _ = _quality(paragraphs)
+            valid, chars, _ = _quality(paragraphs, min_compact_chars=min_compact_chars)
             if not valid:
                 continue
             if best is None or chars > best[2]:
@@ -287,7 +292,14 @@ def extract_article_html(raw_html: bytes, *, source_url: str, final_url: str) ->
         raise ArticleExtractionError("ARTICLE_HTML_PARSE_FAILED") from exc
     records = _json_ld_records(soup)
     adapter = publisher_adapter_for_url(final_url)
-    selected = _body_from_selectors(soup, adapter.body_selectors if adapter else _GENERIC_SELECTORS)
+    selected = _body_from_selectors(
+        soup,
+        adapter.body_selectors if adapter else _GENERIC_SELECTORS,
+        # A known publisher selector is stronger provenance than the generic
+        # fallback.  Keep its compact short-notice allowance consistent with
+        # the final quality gate below.
+        min_compact_chars=80 if adapter else 100,
+    )
     body_source = "publisher_selector" if adapter else "generic_selector"
     selector = selected[1] if selected else None
     paragraphs = selected[0] if selected else None

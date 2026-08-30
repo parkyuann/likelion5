@@ -124,13 +124,13 @@ def _normalized_paragraphs(node: Tag) -> list[str]:
     return [text] if text else []
 
 
-def _quality(paragraphs: Iterable[str]) -> tuple[bool, int, int]:
+def _quality(paragraphs: Iterable[str], *, min_compact_chars: int = 100) -> tuple[bool, int, int]:
     values = [value for value in paragraphs if value]
     text = "\n\n".join(values)
     compact = _SPACE_RE.sub("", text)
     # This is a provenance/quality gate, not an article classifier.  It blocks
     # obvious menu/login pages while still allowing short but genuine notices.
-    return len(compact) >= 100 and len(_LETTER_RE.findall(text)) >= 30, len(text), len(values)
+    return len(compact) >= min_compact_chars and len(_LETTER_RE.findall(text)) >= 30, len(text), len(values)
 
 
 def _body_from_selectors(soup: BeautifulSoup, selectors: Iterable[str]) -> tuple[list[str], str] | None:
@@ -301,7 +301,11 @@ def extract_article_html(raw_html: bytes, *, source_url: str, final_url: str) ->
         body_source = "json_ld_articleBody"
     if not paragraphs:
         raise ArticleExtractionError("ARTICLE_BODY_QUALITY_INSUFFICIENT")
-    valid, text_chars, paragraph_count = _quality(paragraphs)
+    # A publisher-specific selector has stronger provenance than a generic
+    # page-wide fallback.  Allow a short, multi-paragraph publisher article
+    # while keeping the generic fallback at the stricter 100-character gate.
+    min_compact_chars = 80 if adapter and body_source.startswith("publisher_") else 100
+    valid, text_chars, paragraph_count = _quality(paragraphs, min_compact_chars=min_compact_chars)
     if not valid:
         raise ArticleExtractionError("ARTICLE_BODY_QUALITY_INSUFFICIENT")
 

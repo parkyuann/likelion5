@@ -138,16 +138,29 @@ def _body_from_selectors(
     selectors: Iterable[str],
     *,
     min_compact_chars: int = 100,
+    prefer_selector_order: bool = False,
 ) -> tuple[list[str], str] | None:
     best: tuple[list[str], str, int] | None = None
     for selector in selectors:
+        # A selector may point at an article wrapper or at every individual
+        # body paragraph.  Aggregate every match for this *one* selector
+        # before checking quality, so a precise repeated paragraph selector
+        # does not lose to a broader wrapper merely because each paragraph is
+        # short by itself.
+        paragraphs: list[str] = []
         for node in soup.select(selector):
-            paragraphs = _normalized_paragraphs(node)
-            valid, chars, _ = _quality(paragraphs, min_compact_chars=min_compact_chars)
-            if not valid:
-                continue
-            if best is None or chars > best[2]:
-                best = (paragraphs, selector, chars)
+            paragraphs.extend(_normalized_paragraphs(node))
+        valid, chars, _ = _quality(paragraphs, min_compact_chars=min_compact_chars)
+        if not valid:
+            continue
+        # Publisher adapter selector order is editorial provenance: the first
+        # passing scoped selector beats a broader fallback wrapper that may
+        # contain a subtitle, caption, or related-page text.  Generic fallback
+        # remains volume-based because it has no publisher-specific scope.
+        if prefer_selector_order:
+            return paragraphs, selector
+        if best is None or chars > best[2]:
+            best = (paragraphs, selector, chars)
     return (best[0], best[1]) if best else None
 
 
@@ -299,6 +312,7 @@ def extract_article_html(raw_html: bytes, *, source_url: str, final_url: str) ->
         # fallback.  Keep its compact short-notice allowance consistent with
         # the final quality gate below.
         min_compact_chars=80 if adapter else 100,
+        prefer_selector_order=adapter is not None,
     )
     body_source = "publisher_selector" if adapter else "generic_selector"
     selector = selected[1] if selected else None

@@ -57,6 +57,32 @@ def test_generic_json_ld_fallback_is_provenance_labeled() -> None:
     assert receipt["body_source"] == "json_ld_articleBody"
 
 
+def test_khan_scoped_body_paragraphs_beat_header_and_caption_wrapper() -> None:
+    url = "https://www.khan.co.kr/article/202608271115011"
+    first = _BODY
+    second = (
+        "국가데이터처가 발표한 출생통계에는 서울 출생아 수와 혼인 건수의 변화가 함께 담겼다. "
+        "이 문단도 기사 본문으로만 보존돼야 하며 주변 화면 요소와 섞여서는 안 된다."
+    )
+    html = f'''<html><head>
+      <meta property="og:title" content="경향 기사 제목" />
+      <meta property="article:published_time" content="2026-08-27T11:15:00+09:00" />
+    </head><body><div id="articleBody">
+      <p>기사 부제목은 본문이 아니다.</p>
+      <p class="caption">사진 설명과 제공자 표기는 본문이 아니다.</p>
+      <p class="content_text text-l">{first}</p>
+      <p class="content_text text-l">{second}</p>
+    </div></body></html>'''.encode()
+
+    article, receipt = extract_article_html(html, source_url=url, final_url=url)
+
+    assert article["article_text"] == f"{first}\n\n{second}"
+    assert "부제목" not in article["article_text"]
+    assert "사진 설명" not in article["article_text"]
+    assert receipt["body_selector"] == "#articleBody .content_text"
+    assert receipt["paragraph_count"] == 2
+
+
 def test_chosun_fusion_metadata_is_used_when_browser_dom_has_no_article() -> None:
     url = "https://www.chosun.com/national/example/"
     html = f'''<html><head>

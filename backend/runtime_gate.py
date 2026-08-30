@@ -32,6 +32,24 @@ def pipeline_live_stage_enabled() -> bool:
     return os.getenv(PIPELINE_LIVE_STAGE_ENABLED_ENV, "") == "true"
 
 
+def pipeline_url_enabled() -> bool:
+    return os.getenv("PIPELINE_URL_ENABLED", "") == "true"
+
+
+def pipeline_image_enabled() -> bool:
+    return os.getenv("PIPELINE_IMAGE_ENABLED", "") == "true"
+
+
+def require_pipeline_url() -> None:
+    if not pipeline_url_enabled():
+        raise BackendError(PIPELINE_URL_PENDING, "URL 기사 추출 경로가 아직 활성화되지 않았습니다.", status_code=503)
+
+
+def require_pipeline_image() -> None:
+    if not pipeline_image_enabled():
+        raise BackendError(PIPELINE_IMAGE_PENDING, "이미지 입력 경로가 아직 활성화되지 않았습니다.", status_code=503)
+
+
 def require_search_adapter() -> None:
     """Compatibility guard for services that are outside the table-search route."""
 

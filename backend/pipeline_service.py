@@ -31,9 +31,8 @@ except ImportError:
     pass
 
 # 경로 설정 뒤에 import 해야 한다(순서 중요).
-import agent_pipeline  # noqa: E402  (src/kosis_agent)
-import claim_extractor  # noqa: E402 (src)
-from period_resolver import resolve_period_override  # noqa: E402
+# 검증 로직은 현재 파이프라인 진입점(run_pipeline.factcheck_claim)을 사용한다.
+import run_pipeline  # noqa: E402  (src)
 
 
 def _jsonable(value: Any) -> Any:
@@ -54,26 +53,25 @@ def verify_claim(
     text: str,
     explain: bool = True,
     *,
-    period_override: dict[str, Any] | None = None,
+    pub_date: str | None = None,
 ) -> dict[str, Any]:
-    """주장/질의 한 문장을 검증한다.
+    """주장/질의 한 문장을 검증한다(현재 파이프라인 factcheck_claim 사용).
 
-    반환: answer(자연어 답), action(answer|unverifiable), verdict(일치/불일치 등),
-          table_key, explanation, 그리고 원본 결과(raw) 전체.
+    반환: answer(자연어 답), action(answer|unverifiable), verdict(6분류 라벨),
+          table_key, explanation(근거), url, 그리고 원본 결과(raw) 전체.
     """
-    result = agent_pipeline.run(
-        text,
-        verbose=False,
-        explain=explain,
-        period_override=period_override,
-    )
+    result = run_pipeline.factcheck_claim(text, pub_date, with_rationale=explain)
+    table = result.get("table")
+    # 근거: RAG 근거문이 있으면 그걸, 없으면 결정론 근거문(numeric)
+    explanation = result.get("rationale") or result.get("numeric")
     return {
         "input": text,
-        "answer": result.get("answer"),
-        "action": result.get("action"),
+        "answer": explanation,
+        "action": "answer" if table else "unverifiable",
         "verdict": result.get("verdict"),
-        "table_key": result.get("table_key"),
-        "explanation": result.get("explanation"),
+        "table_key": table,
+        "explanation": explanation,
+        "url": result.get("url"),
         "raw": _jsonable(result),
     }
 
@@ -90,6 +88,7 @@ def verify_article(
     max_claims: LLM 호출이 주장 수만큼 발생하므로 데모 안전장치로 상한을 둔다(None=제한없음).
     explain=False: 기사 단위는 주장이 많아 기본적으로 자연어 설명 생성을 끈다(속도).
     """
+    import claim_extractor  # noqa: E402 (src) — 기사→주장 추출
     rows = claim_extractor.extract_from_article(
         idx=0, title=title, date=date, label="", text=text
     )
@@ -101,11 +100,10 @@ def verify_article(
     for row in claims:
         claim_text = row["claim_text"]
         try:
-            period_override = resolve_period_override(claim_text, date) if date else None
             one = verify_claim(
                 claim_text,
                 explain=explain,
-                period_override=period_override,
+                pub_date=(date or None),
             )
         except Exception as exc:  # 한 주장 실패가 전체를 막지 않도록
             one = {

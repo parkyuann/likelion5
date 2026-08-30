@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
@@ -19,10 +21,10 @@ from backend.runtime_gate import (
     require_application_product_state,
     require_csrf,
     raise_pipeline_pending,
+    require_pipeline_image,
     require_pipeline_runtime,
-    PIPELINE_IMAGE_PENDING,
+    require_pipeline_url,
     PIPELINE_NATURAL_QUERY_PENDING,
-    PIPELINE_URL_PENDING,
 )
 
 
@@ -121,6 +123,25 @@ class AnalyzeRequest(StrictModel):
     explain: bool = False
     focus_question: str = Field("", max_length=1000)
     conversation_id: str | None = None
+    clarification_answers: list["ClarificationAnswerRequest"] = Field(default_factory=list, max_length=3)
+
+
+class ClarificationAnswerRequest(StrictModel):
+    question_id: str = Field(..., min_length=1, max_length=160)
+    role: Literal[
+        "article_date", "period", "indicator", "item", "unit", "source", "population",
+        "region", "sex", "age", "classification", "measurement_basis",
+    ]
+    value: str = Field(..., min_length=1, max_length=120)
+    option_id: str | None = Field(None, min_length=1, max_length=160)
+
+
+class ClarificationOptionsRequest(StrictModel):
+    resume_token: str = Field(..., min_length=32, max_length=256)
+    question_id: str = Field(..., min_length=1, max_length=160)
+    query: str = Field("", max_length=200)
+    cursor: str | None = Field(None, max_length=2048)
+    limit: int = Field(20, ge=1, le=50)
 
 
 class DevelopVerifyRequest(StrictModel):
@@ -129,6 +150,8 @@ class DevelopVerifyRequest(StrictModel):
     date: str | None = Field("", max_length=40)
     date_source: Literal["user_feedback", "url_metadata", "api_request"] | None = None
     conversation_id: str | None = None
+    clarification_answers: list[ClarificationAnswerRequest] = Field(default_factory=list, max_length=3)
+    resume_token: str | None = Field(None, min_length=32, max_length=256)
 
 
 app = FastAPI(title="뉴스 사실검증 API", version="0.2.0")
@@ -179,6 +202,26 @@ def _clear_cookie(response: Response) -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def _release_version() -> dict[str, str]:
+    manifest_path = Path(
+        os.getenv("PIPELINE_RUNTIME_MANIFEST_PATH", "/app/pipeline_runtime/manifest.json")
+    )
+    manifest_sha = os.getenv("RUNTIME_MANIFEST_SHA256", "")
+    if not manifest_sha and manifest_path.is_file():
+        manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    return {
+        "release_sha": os.getenv("APP_RELEASE_SHA", "unknown"),
+        "runtime_manifest_sha256": manifest_sha,
+        "release_id": os.getenv("KOSIS_RELEASE_ID", ""),
+    }
+
+
+@app.get("/api/version")
+def version() -> dict[str, str]:
+    """Return non-secret application/runtime provenance for deployment checks."""
+    return _release_version()
 
 
 @app.post("/api/auth/signup", status_code=201, response_model=UserResponse, dependencies=[Depends(require_csrf)])
@@ -263,19 +306,36 @@ def verify_develop(req: DevelopVerifyRequest, user: dict | None = Depends(option
     del user
     from backend.develop_verify_service import (
         _looks_like_question,
-        article_date_required_response,
-        normalize_article_date,
         verify_article_develop,
     )
 
     if _looks_like_question(req.text.strip()):
         return {"type": "not_article", "reason": "question"}
-    normalized_date = normalize_article_date(req.date, req.date_source)
-    if normalized_date is None:
-        return article_date_required_response()
-    date, date_source = normalized_date
     require_pipeline_runtime()
-    return verify_article_develop(req.text, title=req.title, date=date, date_source=date_source)
+    kwargs = {"title": req.title, "date": req.date, "date_source": req.date_source or "api_request"}
+    # Keep the legacy injectable verifier signature usable for tests and
+    # technical canaries when no v2 clarification payload is present.
+    if req.clarification_answers:
+        kwargs["clarification_answers"] = [item.model_dump() for item in req.clarification_answers]
+    if req.resume_token is not None:
+        kwargs["resume_token"] = req.resume_token
+    return verify_article_develop(
+        req.text,
+        **kwargs,
+    )
+
+
+@app.post("/api/v1/verify/develop/options", dependencies=[Depends(require_csrf)])
+def verify_develop_options(req: ClarificationOptionsRequest) -> dict[str, Any]:
+    from backend.develop_verify_service import get_clarification_options
+
+    return get_clarification_options(
+        req.resume_token,
+        question_id=req.question_id,
+        query=req.query,
+        cursor=req.cursor,
+        limit=req.limit,
+    )
 
 
 def _looks_like_url(value: str) -> bool:
@@ -289,21 +349,42 @@ def _looks_like_url(value: str) -> bool:
 def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> dict:
     del user
     if req.input_type == "url" or (req.input_type == "auto" and _looks_like_url(req.text)):
-        raise_pipeline_pending(PIPELINE_URL_PENDING, "URL 기사 추출 경로가 아직 연결되지 않았습니다.")
+        require_pipeline_runtime()
+        require_pipeline_url()
+        from backend.url_article_service import prepare_url_article
+
+        return prepare_url_article(req.text)
     if req.input_type != "article":
         raise_pipeline_pending(PIPELINE_NATURAL_QUERY_PENDING, "자연어·자동 질의 경로가 아직 연결되지 않았습니다.")
 
-    from backend.develop_verify_service import article_date_required_response, normalize_article_date, verify_article_develop
+    from backend.develop_verify_service import verify_article_develop
 
-    normalized_date = normalize_article_date(req.date, req.date_source)
-    if normalized_date is None:
-        return article_date_required_response()
-    date, date_source = normalized_date
     require_pipeline_runtime()
-    return verify_article_develop(req.text, date=date, date_source=date_source)
+    kwargs: dict[str, Any] = {"date": req.date, "date_source": req.date_source or "api_request"}
+    if req.clarification_answers:
+        kwargs["clarification_answers"] = [item.model_dump() for item in req.clarification_answers]
+    return verify_article_develop(req.text, **kwargs)
 
 
 @app.post("/api/v1/analyze/image", dependencies=[Depends(require_csrf)])
-def analyze_image(file: UploadFile = File(...), conversation_id: str | None = Form(None), focus_question: str = Form(""), user: dict | None = Depends(optional_user)) -> dict:
-    del file, conversation_id, focus_question, user
-    raise_pipeline_pending(PIPELINE_IMAGE_PENDING, "이미지 입력 경로가 아직 연결되지 않았습니다.")
+async def analyze_image(file: UploadFile = File(...), conversation_id: str | None = Form(None), focus_question: str = Form(""), user: dict | None = Depends(optional_user)) -> dict:
+    del conversation_id, focus_question, user
+    require_pipeline_image()
+    require_pipeline_runtime()
+    from backend.develop_verify_service import verify_article_develop
+    from backend.image_ocr_service import prepare_image_article
+
+    prepared = prepare_image_article(
+        await file.read(),
+        filename=file.filename,
+        declared_content_type=file.content_type,
+    )
+    document = prepared["article_document"]
+    verified = verify_article_develop(
+        document["text"],
+        title="이미지에서 추출한 기사",
+    )
+    # The UI needs the OCR text only when a date/period clarification resumes.
+    # Keep source and OCR provenance in the response; neither credentials nor
+    # raw image bytes are returned.
+    return {**verified, "source": prepared["source"], "extraction": prepared["extraction"], "article_document": document}

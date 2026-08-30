@@ -50,8 +50,9 @@ KOSIS Cell API 호출을 수행하지 않는다. 이후 단계의 `QUERY_READY`�
    기동한다. `deploy/compose.shadow-api-nginx.yaml`은 shadow 전용 내부 network를 만들고 기존 내부
    BGE encoder network만 external로 연결한다. 따라서 shadow API의 `api` alias는 shadow Nginx에서만
    보이며, 메인 Nginx와 이름 충돌하지 않는다. shadow에서는 `shadow-api shadow-nginx`만
-   `--no-deps`로 기동해 GPU encoder를 중복 생성하지 않는다. 기존 PostgreSQL·OpenSearch·Qdrant·Redis
-   컨테이너·volume은 읽기 전용으로 재사용하며 생성·삭제·재적재하지 않는다.
+   `--no-deps`로 기동해 GPU encoder를 중복 생성하지 않는다. 서버의 root-owned runtime 환경 파일은
+   `SHADOW_RUNTIME_ENV_FILE`로 읽기 전용 주입한다. 기존 PostgreSQL·OpenSearch·Qdrant·Redis 컨테이너·
+   volume은 읽기 전용으로 재사용하며 생성·삭제·재적재하지 않는다.
 4. shadow에서 다매체 URL 입력과 기존 article-text pipeline 회귀를 실행하고, container·network·port
    충돌과 data-layer 기준선 변경이 없음을 확인한다.
 5. 위 결과가 모두 통과한 동일 SHA만 main application overlay에 반영한다.

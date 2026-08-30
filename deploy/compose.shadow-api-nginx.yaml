@@ -11,6 +11,9 @@ services:
       file: compose.yaml
       service: api
     depends_on: !reset []
+    env_file:
+      - path: "${SHADOW_RUNTIME_ENV_FILE:?set the root-owned shadow runtime.env path}"
+        required: true
     environment:
       KOSIS_RELEASE_DATA_RUNTIME_ENABLED: "true"
       PIPELINE_URL_ENABLED: "true"

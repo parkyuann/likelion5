@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import "./ChatApp.css";
-import { analyzeInput, analyzeImage, verifyArticleDevelop, ApiError } from "./api.js";
+import { analyzeInput, analyzeImage, verifyArticleDevelop, fetchClarificationOptions, ApiError } from "./api.js";
 import { ImageIcon, AlertIcon, DocIcon, LinkIcon, CheckIcon, RefreshIcon, QuestionIcon } from "./icons.jsx";
 import { mockToDisplayMessages } from "./mockVerificationData.js";
 import { mockVerifyArticle } from "./uiMockData.js";
@@ -346,19 +346,25 @@ function isValidArticleDate(value) {
 // ── 진행 말풍선: 원형 링(%) + 문장별 진행 로그 ─────────
 // 완료 후에도 대화에 그대로 남으며, 완료 시 문장별 내역은 토글로 접는다.
 function ProgressBubble({ progress }) {
-  const { done = false, pct = 0, elapsedS = 0, logs = [] } = progress || {};
+  const { done = false, pct = 0, elapsedS = 0, logs = [], status = "" } = progress || {};
   const [openLog, setOpenLog] = useState(false);
   const percent = done ? 100 : Math.round(pct);
+  const completion = {
+    completed: { label: "검증 완료", marker: "✓", className: "done" },
+    completed_with_limits: { label: "일부 근거 확인 · 추가 확인 필요", marker: "!", className: "limited" },
+    unverifiable: { label: "공식 통계 근거를 확인하지 못함", marker: "i", className: "limited" },
+    structured_only: { label: "구조화 완료 · 공식 대조 미실행", marker: "i", className: "limited" },
+  }[status] || { label: "검증 완료", marker: "✓", className: "done" };
   // 진행 중엔 항상 보이고, 완료 후엔 토글로 열 때만 보인다.
   const showLog = logs.length > 0 && (!done || openLog);
   return (
     <div className="c-progress">
       <div className="c-progress-top">
-        <div className={`c-ring ${done ? "done" : "loading"}`} style={{ "--pct": percent }}>
-          <span className="c-ring-num">{done ? "✓" : `${percent}%`}</span>
+        <div className={`c-ring ${done ? completion.className : "loading"}`} style={{ "--pct": percent }}>
+          <span className="c-ring-num">{done ? completion.marker : `${percent}%`}</span>
         </div>
         <div className="c-progress-meta">
-          <strong>{done ? "검증 완료" : "검증 중…"}</strong>
+          <strong>{done ? completion.label : "검증 중…"}</strong>
           <span className="c-elapsed">전체 {elapsedS.toFixed(1)}s</span>
         </div>
         {done && logs.length > 0 && (
@@ -419,7 +425,10 @@ function ChatApp({
   const [input, setInput] = useState("");
   const [sourceQuestion, setSourceQuestion] = useState("");
   const [pendingImage, setPendingImage] = useState(null); // { file, url }
-  const [pendingArticleDate, setPendingArticleDate] = useState(null);
+  const [pendingClarification, setPendingClarification] = useState(null);
+  const [selectedClarificationOption, setSelectedClarificationOption] = useState(null);
+  const [clarificationOptionQuery, setClarificationOptionQuery] = useState("");
+  const [clarificationOptionPage, setClarificationOptionPage] = useState(null);
   const [loading, setLoading] = useState(false);
   const chatBodyRef = useRef(null);
   const fileRef = useRef(null);
@@ -433,6 +442,27 @@ function ChatApp({
   });
   const progressTimersRef = useRef([]); // 진행 애니메이션 타이머 정리용
   const onMessagesChangeRef = useRef(onMessagesChange);
+  const clarificationIdentityRef = useRef(null);
+
+  useEffect(() => {
+    setSelectedClarificationOption(null);
+    setClarificationOptionQuery("");
+    setClarificationOptionPage(pendingClarification?.question?.page || null);
+    const question = pendingClarification?.question;
+    const requestIdentity = pendingClarification?.identity || null;
+    if (!pendingClarification || !question || question.input_mode !== "SEARCHABLE_OPTIONS") return undefined;
+    let cancelled = false;
+    fetchClarificationOptions({
+      resumeToken: pendingClarification.resumeToken,
+      questionId: question.id,
+      limit: question.page?.limit || 20,
+    }).then((page) => {
+      if (!cancelled && clarificationIdentityRef.current === requestIdentity) setClarificationOptionPage(page);
+    }).catch(() => {
+      if (!cancelled && clarificationIdentityRef.current === requestIdentity) setClarificationOptionPage(question.page || null);
+    });
+    return () => { cancelled = true; };
+  }, [pendingClarification]);
 
   useEffect(() => {
     onMessagesChangeRef.current = onMessagesChange;
@@ -533,14 +563,35 @@ function ChatApp({
     ]);
   }
 
-  function requestArticleDate(article, result) {
-    setPendingArticleDate(article);
+  function requestClarification(article, result) {
+    const question = result.question || {};
+    const clarificationPlanSha = question.clarification_plan_sha256 || result.clarification_plan_sha256 || null;
+    const candidateBundleSha = question.candidate_bundle_sha256 || result.candidate_bundle_sha256 || null;
+    const identity = `${clarificationPlanSha || "none"}:${candidateBundleSha || "none"}`;
+    if (clarificationIdentityRef.current && clarificationIdentityRef.current !== identity) {
+      // A changed plan or candidate bundle invalidates any page/selection from
+      // the previous sealed option set before the user can submit it.
+      setSelectedClarificationOption(null);
+      setClarificationOptionQuery("");
+      setClarificationOptionPage(null);
+    }
+    clarificationIdentityRef.current = identity;
+    setPendingClarification({
+      ...article,
+      question,
+      resumeToken: result.resume_token || null,
+      resumeFromStage: result.resume_from_stage || null,
+      clarificationAnswers: article.clarificationAnswers || [],
+      clarificationPlanSha,
+      candidateBundleSha,
+      identity,
+    });
     setMessages((prev) => [
       ...prev,
       {
         role: "assistant",
-        kind: "date_request",
-        text: result.question?.prompt || "기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+        kind: "clarification_request",
+        text: result.question?.prompt || "확인을 위해 통계 조건을 조금 더 알려주세요.",
       },
     ]);
   }
@@ -712,7 +763,10 @@ function ChatApp({
       {
         role: "assistant",
         kind: "progress",
-        progress: { done: true, pct: 100, elapsedS: info.elapsedS, logs: info.logs },
+        progress: {
+          done: true, pct: 100, elapsedS: info.elapsedS, logs: info.logs,
+          status: verified.status || "unverifiable",
+        },
       },
       { role: "assistant", kind: "article", segments },
     ]);
@@ -724,13 +778,15 @@ function ChatApp({
     title = "",
     date = "",
     dateSource = null,
+    clarificationAnswers = [],
+    resumeToken = null,
     requestConversationId = conversationId,
   } = {}) {
     // UI 확인용 목업은 ?mock=1 일 때만 사용합니다(기본은 실제 파이프라인).
     // 새 UX(진행 링·결과 카드·인라인 상세)를 색상/수식/후보까지 그대로 렌더한다.
     if (mockEnabled()) {
       lastRequestRef.current = {
-        kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+        kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, resumeToken, requestConversationId,
       };
       const startTs = startNetworkProgress();
       setLoading(true);
@@ -746,7 +802,7 @@ function ChatApp({
       return;
     }
     lastRequestRef.current = {
-      kind: "text", text, inputType, focusQuestion, title, date, dateSource, requestConversationId,
+      kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, resumeToken, requestConversationId,
     };
     const isUrl = inputType === "url" || /^https?:\/\/\S+$/i.test(text.trim());
     const startTs = startNetworkProgress();
@@ -766,14 +822,20 @@ function ChatApp({
             title: doc.title || "",
             date: doc.published_date || "",
             dateSource: doc.published_date ? "url_metadata" : null,
+            clarificationAnswers,
+            resumeToken,
           });
           if (verified?.type === "needs_user_input") {
-            requestArticleDate({
+            requestClarification({
               text: doc.text,
               title: doc.title || "",
               inputType: "article",
               focusQuestion,
+              date: doc.published_date || "",
+              dateSource: doc.published_date ? "url_metadata" : null,
               conversationId: prepared.conversation_id || requestConversationId,
+              clarificationAnswers,
+              resumeToken: verified?.resume_token || null,
             }, verified);
           } else if (verified?.type === "article") await showArticleResult(verified, startTs);
           else handleResult(verified, focusQuestion);
@@ -788,14 +850,18 @@ function ChatApp({
           title,
           date,
           dateSource,
+          clarificationAnswers,
+          resumeToken,
         });
         if (verified?.type === "needs_user_input") {
-          requestArticleDate({
+          requestClarification({
             text,
             title,
             inputType,
             focusQuestion,
             conversationId: requestConversationId,
+            clarificationAnswers,
+            resumeToken: verified?.resume_token || null,
           }, verified);
         } else if (verified?.type === "not_article") {
           const routed = await analyzeInput(text, {
@@ -858,7 +924,23 @@ function ChatApp({
 
       // 실제 OCR 완료 체크를 인지할 수 있도록 짧게 유지한 뒤 결과를 표시한다.
       await new Promise((resolve) => setTimeout(resolve, 550));
-      handleResult(result, focusQuestion);
+      if (result?.type === "needs_user_input" && result.article_document?.text) {
+        requestClarification({
+          text: result.article_document.text,
+          title: result.article_document.title || "이미지에서 추출한 기사",
+          inputType: "article",
+          focusQuestion,
+          date: "",
+          dateSource: null,
+          conversationId,
+          clarificationAnswers: [],
+          resumeToken: result.resume_token || null,
+        }, result);
+      } else if (result?.type === "article") {
+        await showArticleResult(result, Date.now());
+      } else {
+        handleResult(result, focusQuestion);
+      }
     } catch (err) {
       handleError(err);
     } finally {
@@ -869,39 +951,72 @@ function ChatApp({
   // ── 입력 전송 ──
   function handleSend() {
     if (loading) return;
-    if (pendingArticleDate) {
-      const answer = input.trim();
+    if (pendingClarification) {
+      const question = pendingClarification.question || {};
+      const selected = selectedClarificationOption;
+      const answer = (selected?.label || input).trim();
       if (!answer) return;
       setInput("");
       if (answer === "취소") {
-        setPendingArticleDate(null);
+        setPendingClarification(null);
+        clarificationIdentityRef.current = null;
         lastRequestRef.current = null;
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", kind: "text", text: "기사 발행일 입력을 취소했습니다." },
+          { role: "assistant", kind: "text", text: "추가 정보 입력을 취소했습니다." },
         ]);
         return;
       }
-      if (!isValidArticleDate(answer)) {
+      if (question.input_mode === "DATE" && !isValidArticleDate(answer)) {
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            kind: "date_request",
+            kind: "clarification_request",
             text: "실제 달력에 존재하는 YYYY-MM-DD 형식으로 다시 알려주세요. 취소하려면 '취소'를 입력하세요.",
           },
         ]);
         return;
       }
-      const article = pendingArticleDate;
-      setPendingArticleDate(null);
+      const article = pendingClarification;
+      const currentIdentity = `${article.clarificationPlanSha || "none"}:${article.candidateBundleSha || "none"}`;
+      if (clarificationIdentityRef.current !== currentIdentity) {
+        setSelectedClarificationOption(null);
+        setClarificationOptionPage(null);
+        setMessages((prev) => [...prev, { role: "assistant", kind: "clarification_request", text: "선택지 근거가 갱신되어 다시 선택해 주세요." }]);
+        return;
+      }
+      const visibleOptions = clarificationOptionPage?.options || question.options || [];
+      if (selected?.id && !visibleOptions.some((option) => option?.id === selected.id)) {
+        setSelectedClarificationOption(null);
+        setMessages((prev) => [...prev, { role: "assistant", kind: "clarification_request", text: "현재 표시된 선택지에서 다시 선택해 주세요." }]);
+        return;
+      }
+      const clarificationAnswer = {
+        question_id: question.id,
+        role: question.role,
+        value: answer,
+        ...(selected?.id ? { option_id: selected.id } : {}),
+      };
+      if (["OPTIONS", "SEARCHABLE_OPTIONS"].includes(question.input_mode) && !selected && !question.allow_direct_input) {
+        setMessages((prev) => [...prev, { role: "assistant", kind: "clarification_request", text: "목록에서 하나를 선택해 주세요." }]);
+        return;
+      }
+      const clarificationAnswers = [
+        ...(article.clarificationAnswers || []),
+        clarificationAnswer,
+      ];
+      setPendingClarification(null);
+      clarificationIdentityRef.current = null;
       setMessages((prev) => [...prev, { role: "user", kind: "text", text: answer }]);
       runText(article.text, {
         inputType: article.inputType,
         focusQuestion: article.focusQuestion,
         title: article.title,
-        date: answer,
-        dateSource: "user_feedback",
+        date: article.date || "",
+        dateSource: article.dateSource || null,
+        clarificationAnswers,
+        resumeToken: article.resumeToken || null,
         requestConversationId: article.conversationId,
       });
       return;
@@ -945,6 +1060,8 @@ function ChatApp({
       title: last.title,
       date: last.date,
       dateSource: last.dateSource,
+      clarificationAnswers: last.clarificationAnswers || [],
+      resumeToken: last.resumeToken || null,
       requestConversationId: last.requestConversationId,
     });
   }
@@ -1013,7 +1130,7 @@ function ChatApp({
               </div>
             );
           }
-          if (msg.kind === "date_request") {
+          if (msg.kind === "clarification_request" || msg.kind === "date_request") {
             return (
               <div key={i} className="c-row assistant">
                 <div className="c-bubble assistant">{msg.text}</div>
@@ -1131,6 +1248,74 @@ function ChatApp({
             />
           </label>
         )}
+        {pendingClarification && ["OPTIONS", "SEARCHABLE_OPTIONS"].includes(pendingClarification.question?.input_mode) && (
+          <div className="chat-clarification-options" role="group" aria-label="추가 확인 선택지">
+            {pendingClarification.question?.input_mode === "SEARCHABLE_OPTIONS" && (
+              <input
+                value={clarificationOptionQuery}
+                onChange={(e) => {
+                  setClarificationOptionQuery(e.target.value);
+                  setSelectedClarificationOption(null);
+                  setClarificationOptionPage(null);
+                }}
+                onKeyDown={async (e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
+                  try {
+                    const requestIdentity = pendingClarification.identity;
+                    const page = await fetchClarificationOptions({
+                      resumeToken: pendingClarification.resumeToken,
+                      questionId: pendingClarification.question.id,
+                      query: clarificationOptionQuery,
+                      limit: pendingClarification.question.page?.limit || 20,
+                    });
+                    if (clarificationIdentityRef.current === requestIdentity) {
+                      setSelectedClarificationOption(null);
+                      setClarificationOptionPage(page);
+                    }
+                  } catch (error) {
+                    pushError(error);
+                  }
+                }}
+                placeholder="선택지 검색"
+                aria-label="선택지 검색"
+              />
+            )}
+            <div className="chat-clarification-option-list">
+              {(clarificationOptionPage?.options || pendingClarification.question?.options || []).map((option) => (
+                <button
+                  type="button"
+                  key={option.id}
+                  className={selectedClarificationOption?.id === option.id ? "selected" : ""}
+                  onClick={() => { setSelectedClarificationOption(option); setInput(""); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {clarificationOptionPage?.page?.next_cursor && (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const requestIdentity = pendingClarification.identity;
+                    const page = await fetchClarificationOptions({
+                      resumeToken: pendingClarification.resumeToken,
+                      questionId: pendingClarification.question.id,
+                      query: clarificationOptionQuery,
+                      cursor: clarificationOptionPage.page.next_cursor,
+                      limit: pendingClarification.question.page?.limit || 20,
+                    });
+                    if (clarificationIdentityRef.current === requestIdentity) {
+                      setSelectedClarificationOption(null);
+                      setClarificationOptionPage(page);
+                    }
+                  } catch (error) { pushError(error); }
+                }}
+              >다음 선택지</button>
+            )}
+          </div>
+        )}
         <div className="chat-input">
           <button
             className="chat-attach-btn"
@@ -1153,8 +1338,14 @@ function ChatApp({
           <textarea
             className="c-textarea"
             placeholder={
-              pendingArticleDate
-                ? "기사 발행일 YYYY-MM-DD 입력 또는 '취소'"
+              pendingClarification
+                ? pendingClarification.question?.input_mode === "DATE"
+                  ? "기사 발행일 YYYY-MM-DD 입력 또는 '취소'"
+                  : ["OPTIONS", "SEARCHABLE_OPTIONS"].includes(pendingClarification.question?.input_mode)
+                    ? pendingClarification.question?.allow_direct_input
+                      ? "목록에서 선택하거나 직접 입력 또는 '취소'"
+                      : "목록에서 선택하거나 '취소'"
+                  : "추가 통계 조건을 입력하거나 '취소'"
                 : pendingImage
                 ? "이미지가 첨부되었습니다"
                 : "통계 질문, 기사 URL 또는 본문 입력 후 Enter"

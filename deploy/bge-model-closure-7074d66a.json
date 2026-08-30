@@ -1,0 +1,18 @@
+{
+  "contract": "bge-model-snapshot-closure-v1",
+  "model_id": "dragonkue/BGE-m3-ko",
+  "revision": "7074d66aa46562342193ca4feb3d89bf9dad71b4",
+  "files": [
+    {"path": ".gitattributes", "size": 1570, "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"},
+    {"path": "1_Pooling/config.json", "size": 297, "sha256": "13e69897522ee8255104483ed9f219465d1be3936654a54a318758738052789e"},
+    {"path": "README.md", "size": 31844, "sha256": "da9c6bdfd0632cdab10fa10f7f2306b3f2ba965030aaafc8b089a5a9369ff314"},
+    {"path": "config.json", "size": 698, "sha256": "a20b07ed6fb38e0ad84c645ca45a5ad8ef7e06868d89d41e04417532b17d04bc"},
+    {"path": "config_sentence_transformers.json", "size": 201, "sha256": "73974c2b1c9e4727b4eb2a05dc8255882beec90f53a4d7bab6566c5b6aac7b39"},
+    {"path": "model.safetensors", "size": 2271064456, "sha256": "da164fa90633e730db4ee91a79ebf99a0826fb31d6f002c4a8ec7952a286c4f4"},
+    {"path": "modules.json", "size": 349, "sha256": "84e40c8e006c9b1d6c122e02cba9b02458120b5fb0c87b746c41e0207cf642cf"},
+    {"path": "sentence_bert_config.json", "size": 54, "sha256": "eb9b44b13c0f52a3b3685c3b1cbdea1ba8b04bea123b98f61610048940776eb1"},
+    {"path": "special_tokens_map.json", "size": 964, "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835"},
+    {"path": "tokenizer.json", "size": 17083053, "sha256": "6e3b8957de04e3a4ed42b1a11381556f9adad8d0d502b9dd071c75f626b28f40"},
+    {"path": "tokenizer_config.json", "size": 1365, "sha256": "c54a3249a0a774464d2eb2cd20827326ec4ed51bd08b0b6b235e153e0fc9dd0d"}
+  ]
+}

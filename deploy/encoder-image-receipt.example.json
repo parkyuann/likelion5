@@ -1,0 +1,48 @@
+{
+  "contract": "bge-query-encoder-image-receipt-v1",
+  "status": "EXAMPLE_NOT_ATTESTED",
+  "base_image": {
+    "name": "news-verification-bge-preflight",
+    "digest": "sha256:b98d5ae3c07824c21e2f0242e9cf488c47563a6c0320e9876a4af245f7538adb"
+  },
+  "image": {
+    "reference": "sha256:<64hex-image-id-after-EC2-build>",
+    "registry": null
+  },
+  "source": {
+    "path": "backend/query_encoder_service.py",
+    "sha256": "<sha256-after-commit>"
+  },
+  "dockerfile": {
+    "path": "deploy/encoder.Dockerfile",
+    "sha256": "<sha256-after-commit>"
+  },
+  "runtime_lock": {
+    "path": "deploy/encoder-runtime.lock.json",
+    "sha256": "<sha256-after-commit>"
+  },
+  "model": {
+    "id": "dragonkue/BGE-m3-ko",
+    "revision": "7074d66aa46562342193ca4feb3d89bf9dad71b4",
+    "repository_mount": "/models/repository",
+    "closure_manifest": "deploy/bge-model-closure-7074d66a.json",
+    "closure_manifest_sha256": "fd2d4a2ecb5443f856b6bb991d7d6d4dda2b03dbe0fa428f6b9a6da51ed3312f",
+    "preflight_receipt_sha256": "<64hex-server-only-receipt-sha256>",
+    "vector_dimension": 1024,
+    "dtype": "float32",
+    "normalized": true,
+    "fixed_probe": {
+      "text_sha256": "<sha256-of-fixed-probe-text>",
+      "repeat_exact": true,
+      "l2_min": 0.999,
+      "l2_max": 1.001
+    }
+  },
+  "service": {
+    "contract": "bge-m3-ko-query-encoder-service-v2",
+    "endpoint": "/v2/query-embeddings",
+    "worker_count": 1,
+    "public_ports": [],
+    "probe": "PENDING_EC2_RUNTIME_EXECUTION"
+  }
+}

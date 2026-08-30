@@ -1,0 +1,132 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+      args:
+        APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    env_file:
+      - path: runtime.env
+        required: false
+    secrets:
+      - bge_query_encoder_token
+    depends_on:
+      bge-query-encoder:
+        condition: service_healthy
+    expose: ["8000"]
+    environment:
+      APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    labels:
+      org.opencontainers.image.revision: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    networks:
+      - kosis_shadow_internal
+      - encoder_internal
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  bge-query-encoder:
+    # This EC2 integration image is content-addressed and attested in
+    # encoder-image-receipt-ec2-20260827.json. Mutable tags cannot open this path.
+    image: "sha256:666dea4633e530cda4959c2b5682920ff408e8754b58fe728d787256bae9beb3"
+    expose: ["8101"]
+    environment:
+      BGE_QUERY_ENCODER_CONTRACT: bge-m3-ko-query-encoder-service-v2
+      BGE_QUERY_ENCODER_MODEL_ID: dragonkue/BGE-m3-ko
+      BGE_QUERY_ENCODER_MODEL_REVISION: 7074d66aa46562342193ca4feb3d89bf9dad71b4
+      BGE_QUERY_ENCODER_VECTOR_SIZE: "1024"
+      BGE_QUERY_ENCODER_MODEL_RECEIPT_SHA256: "${BGE_QUERY_ENCODER_MODEL_RECEIPT_SHA256:?set the read-only model receipt SHA-256}"
+      BGE_QUERY_ENCODER_MODEL_RECEIPT_PATH: /etc/bge-query-encoder/receipt/query_encoder_preflight_20260827.json
+      BGE_QUERY_ENCODER_MODEL_CLOSURE_PATH: /etc/bge-query-encoder/closure/bge-model-closure-7074d66a.json
+      BGE_QUERY_ENCODER_TOKEN_FILE: /run/secrets/bge_query_encoder_token
+      BGE_QUERY_ENCODER_MODEL_REPOSITORY: /models/repository
+      BGE_QUERY_ENCODER_MAX_LENGTH: "1024"
+      BGE_QUERY_ENCODER_BATCH_SIZE: "16"
+      BGE_QUERY_ENCODER_WORKERS: "1"
+      BGE_QUERY_ENCODER_CONCURRENCY: "1"
+      BGE_QUERY_ENCODER_QUEUE_SIZE: "8"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      BGE_QUERY_ENCODER_LOCAL_FILES_ONLY: "true"
+      BGE_QUERY_ENCODER_TRUST_REMOTE_CODE: "false"
+      LOCAL_ENCODER_REPOSITORY: /models/repository
+    volumes:
+      - type: bind
+        source: "${BGE_QUERY_ENCODER_MODEL_SOURCE:?set the whole Hugging Face repository path}"
+        target: /models/repository
+        read_only: true
+      - type: bind
+        source: "${BGE_QUERY_ENCODER_MODEL_RECEIPT_SOURCE:?set the preflight receipt path}"
+        target: /etc/bge-query-encoder/receipt/query_encoder_preflight_20260827.json
+        read_only: true
+      - type: bind
+        source: "${BGE_QUERY_ENCODER_CLOSURE_MANIFEST_SOURCE:?set the model closure manifest path}"
+        target: /etc/bge-query-encoder/closure/bge-model-closure-7074d66a.json
+        read_only: true
+    secrets:
+      - bge_query_encoder_token
+    networks: [encoder_internal]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          body=json.load(urllib.request.urlopen('http://127.0.0.1:8101/health', timeout=1));
+          raise SystemExit(0 if body.get('status') == 'READY' else 1)
+      interval: 10s
+      timeout: 2s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    read_only: true
+    tmpfs: ["/tmp:size=256m,noexec,nosuid,nodev"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: deploy/nginx.Dockerfile
+      args:
+        APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    labels:
+      org.opencontainers.image.revision: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    ports:
+      - "${APP_HTTP_PORT:-8080}:8080"
+      - "${APP_HTTPS_PORT:-8443}:8443"
+    depends_on: [api]
+    networks: [kosis_shadow_internal]
+    volumes:
+      - type: bind
+        source: "${NGINX_TLS_CERT_SOURCE:?set the server-only development certificate path}"
+        target: /etc/nginx/tls/dev.crt
+        read_only: true
+      - type: bind
+        source: "${NGINX_TLS_KEY_SOURCE:?set the server-only development private key path}"
+        target: /etc/nginx/tls/dev.key
+        read_only: true
+    read_only: true
+    tmpfs: ["/var/cache/nginx", "/var/run"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+networks:
+  kosis_shadow_internal:
+    external: true
+    name: kosis_shadow_internal
+  encoder_internal:
+    internal: true
+
+secrets:
+  bge_query_encoder_token:
+    file: "${BGE_QUERY_ENCODER_TOKEN_SOURCE:?set a server-only Docker secret source path}"

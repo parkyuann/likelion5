@@ -237,6 +237,22 @@ def _claim_provenance(
     return result
 
 
+def _attach_user_clarification(
+    provenance: dict[str, Any], row: Mapping[str, Any], role: str,
+) -> None:
+    clarifications = row.get("user_clarifications")
+    if not isinstance(clarifications, Mapping):
+        return
+    answer = clarifications.get(role)
+    if isinstance(answer, Mapping) and str(answer.get("source") or "") == "USER_CLARIFICATION":
+        provenance["user_clarification"] = {
+            "source": "USER_CLARIFICATION",
+            "question_id": str(answer.get("question_id") or ""),
+            "role": role,
+            "answer_sha256": str(answer.get("answer_sha256") or ""),
+        }
+
+
 def _atom(role: str, surface: Any, status: str, provenance: dict[str, Any]) -> ClaimAtom:
     return ClaimAtom(role, surface, status, provenance)
 
@@ -425,6 +441,12 @@ def build_claim_core_v2(routed_value: Mapping[str, Any]) -> ClaimCore:
     if region_sentence:
         region_prov["sentence_text"] = region_sentence
 
+    for role, provenance in (
+        ("indicator", indicator_prov), ("unit", unit_prov), ("period", period_prov),
+        ("population", population_prov), ("region", region_prov),
+    ):
+        _attach_user_clarification(provenance, row, role)
+
     measurement = fields.get("measurement_type")
     measurement_status = "EXPLICIT" if measurement in {"LEVEL", "CHANGE_RATE", "CHANGE_POINT"} else "UNKNOWN"
     atoms = {
@@ -452,6 +474,14 @@ def build_claim_core_v2(routed_value: Mapping[str, Any]) -> ClaimCore:
         "article_sentence_id": article_sentence_id,
         "value_span_id": row.get("value_span_id"),
     }
+    clarifications = row.get("user_clarifications")
+    if isinstance(clarifications, Mapping):
+        provenance["user_clarifications"] = {
+            str(role): dict(answer)
+            for role, answer in clarifications.items()
+            if str(role) in {"article_date", "period", "region", "population", "indicator", "unit"}
+            and isinstance(answer, Mapping)
+        }
     data = {
         "atoms": {name: asdict(atom) for name, atom in atoms.items()},
         "proposal_view": proposal,

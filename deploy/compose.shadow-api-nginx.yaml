@@ -44,3 +44,7 @@ networks:
   encoder_internal:
     external: true
     name: "${BGE_QUERY_ENCODER_EXTERNAL_NETWORK:?set the existing encoder Docker network name}"
+
+secrets:
+  bge_query_encoder_token:
+    file: "${BGE_QUERY_ENCODER_TOKEN_SOURCE:?set the existing root-owned encoder token file}"

@@ -3,6 +3,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/api.Dockerfile
+      args:
+        APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
     env_file:
       - path: runtime.env
         required: false
@@ -12,6 +14,10 @@ services:
       bge-query-encoder:
         condition: service_healthy
     expose: ["8000"]
+    environment:
+      APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    labels:
+      org.opencontainers.image.revision: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
     networks:
       - kosis_shadow_internal
       - encoder_internal
@@ -91,6 +97,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/nginx.Dockerfile
+      args:
+        APP_RELEASE_SHA: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
+    labels:
+      org.opencontainers.image.revision: "${APP_RELEASE_SHA:?set the exact 40-character Git SHA}"
     ports:
       - "${APP_HTTP_PORT:-8080}:8080"
       - "${APP_HTTPS_PORT:-8443}:8443"

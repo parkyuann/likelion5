@@ -10,12 +10,10 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 import hashlib
+import inspect
 import json
 import re
 from typing import Any, Callable, Mapping, Sequence
-
-from src.develop.run_pipeline_operational_v2 import compare_official_cell, fetch_exact_single_cell
-
 
 CONTRACT_VERSION = "annual-same-series-requery-shadow-v1"
 _CHANGE_SUFFIX = re.compile(r"(?:전년대비)?(?:증가|감소|증감|변화)?(?:량|률|율|폭)$")
@@ -24,6 +22,40 @@ _FREQUENCY_WORDS = re.compile(r"(?:연간|연도별|월간|월별|분기별|분�
 
 class AnnualRequeryError(RuntimeError):
     pass
+
+
+def _operational_cell_primitives() -> tuple[Callable[..., Any], Callable[..., Any]]:
+    """Load operational cell functions only after the runtime import closes."""
+    from src.develop.run_pipeline_operational_v2 import compare_official_cell, fetch_exact_single_cell
+
+    return compare_official_cell, fetch_exact_single_cell
+
+
+def _fetch_baseline_cell_with_guard(
+    primitive: Callable[..., Any],
+    query_plan: Mapping[str, Any],
+    cell_fetcher: Callable[[dict[str, Any]], Any],
+    *,
+    query_ready_receipt: Mapping[str, Any],
+    candidate_bundle_sha256: str | None,
+) -> Any:
+    """Call the guarded runtime primitive, retaining legacy injected hooks.
+
+    Production ``fetch_exact_single_cell`` advertises and receives all guard
+    arguments.  Older injected primitives are a test/deterministic seam, so
+    their two-positional-argument contract remains usable without weakening
+    the production primitive or its self-guard.
+    """
+    guard_kwargs = {
+        "query_ready_receipt": query_ready_receipt,
+        "candidate_bundle_sha256": candidate_bundle_sha256,
+        "target_call_ledger": {"cell_api": 0},
+    }
+    try:
+        inspect.signature(primitive).bind(query_plan, cell_fetcher, **guard_kwargs)
+    except TypeError:
+        return primitive(query_plan, cell_fetcher)
+    return primitive(query_plan, cell_fetcher, **guard_kwargs)
 
 
 def _fields(row: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -75,43 +107,132 @@ def _component_verdict(value_comparison: Mapping[str, Any], direction_match: boo
     return "VERIFIED" if verdict == "VERIFIED" and direction_match else "REFUTED"
 
 
+def _measurement_type(row: Mapping[str, Any]) -> str:
+    return str(_fields(row).get("measurement_type") or "").upper()
+
+
+def _display_item_name(
+    current_cell: Mapping[str, Any], baseline_cell: Mapping[str, Any],
+) -> str:
+    """Use the selected canonical item label without exposing its unit suffix."""
+    raw = str(
+        current_cell.get("ITM_NM")
+        or baseline_cell.get("ITM_NM")
+        or ""
+    ).strip()
+    label = re.sub(r"\s*\([^()]*\)\s*$", "", raw).strip()
+    # Keep this mapping intentionally small and generic: KOSIS commonly names
+    # the birth-count item ``출생건수`` while article-facing language is
+    # ``출생아 수``.
+    return {"출생건수": "출생아 수"}.get(label, label or "해당 지표")
+
+
+def _format_official_number(value: Decimal) -> str:
+    return format(value, ",f").rstrip("0").rstrip(".") if "." in format(value, ",f") else format(value, ",f")
+
+
+def _annual_user_answer(
+    *, current_year: str, baseline_year: str, item_name: str,
+    current_value: Decimal, baseline_value: Decimal,
+    signed_change: Decimal, change_unit: str, level_unit: str,
+) -> str:
+    current_display = _format_official_number(current_value)
+    baseline_display = _format_official_number(baseline_value)
+    difference_display = _format_official_number(current_value - baseline_value)
+    unit = str(level_unit or "")
+    direction = "증가" if signed_change > 0 else "감소" if signed_change < 0 else "변동"
+    if signed_change == 0:
+        return (
+            f"KOSIS 공식 통계에서 {current_year}년 {item_name}는 "
+            f"{current_display}{unit}이고, {baseline_year}년은 {baseline_display}{unit}으로 "
+            "변동이 없습니다."
+        )
+    if change_unit == "%":
+        percent_display = f"{signed_change.quantize(Decimal('0.1')):.1f}"
+        change_display = f"{difference_display}{unit}(약 {percent_display}%)"
+    else:
+        change_display = f"{difference_display}{change_unit}"
+    return (
+        f"KOSIS 공식 통계에서 {current_year}년 {item_name}는 "
+        f"{current_display}{unit}이고, {baseline_year}년 {baseline_display}{unit}보다 "
+        f"{change_display} {direction}했습니다."
+    )
+
+
 def verify_annual_requery(
     *, rows: Sequence[Mapping[str, Any]], current_plan: Mapping[str, Any],
     current_cell_result: Mapping[str, Any], current_target_id: str,
     cell_fetcher: Callable[[dict[str, Any]], Any], official_unit: str = "",
+    candidate_bundle_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Verify a current level and its stated annual change with one extra cell."""
+    """Verify an annual level/change pair or a change-only claim with one extra cell."""
     current_row = next((dict(row) for row in rows if str(row.get("value_span_id") or "") == current_target_id), None)
     if current_row is None:
         raise AnnualRequeryError("CURRENT_TARGET_NOT_FOUND")
     current_year = str(current_plan.get("start_prd_de") or "")
-    change_rows = []
-    for source in rows:
-        row = dict(source)
-        measurement, baseline = _periods(row)
-        if (
-            indicator_key(row) == indicator_key(current_row)
-            and str(_fields(row).get("measurement_type") or "") in {"CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"}
-            and measurement == current_year
-            and baseline
-        ):
-            change_rows.append(row)
-    if len(change_rows) != 1:
-        raise AnnualRequeryError(f"ANNUAL_CHANGE_NOT_UNIQUE:{len(change_rows)}")
-    change_row = change_rows[0]
+    current_measurement_type = _measurement_type(current_row)
+    compare_official_cell, fetch_exact_single_cell = _operational_cell_primitives()
+    if current_measurement_type == "LEVEL":
+        change_rows = []
+        for source in rows:
+            row = dict(source)
+            measurement, baseline = _periods(row)
+            if (
+                indicator_key(row) == indicator_key(current_row)
+                and _measurement_type(row) in {"CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"}
+                and measurement == current_year
+                and baseline
+            ):
+                change_rows.append(row)
+        if len(change_rows) != 1:
+            raise AnnualRequeryError(f"ANNUAL_CHANGE_NOT_UNIQUE:{len(change_rows)}")
+        change_row = change_rows[0]
+    elif current_measurement_type in {"CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"}:
+        # A change-only input has no level claim.  The already resolved current
+        # cell is used only as the current endpoint for arithmetic; it must not
+        # be compared to the change claim as though the claim were a level.
+        change_row = current_row
+    else:
+        raise AnnualRequeryError("ANNUAL_MEASUREMENT_UNSUPPORTED")
     _, baseline_year = _periods(change_row)
     baseline_plan = derive_baseline_plan(current_plan, baseline_year)
     current_cell = current_cell_result.get("cell") if isinstance(current_cell_result.get("cell"), Mapping) else None
     if current_cell_result.get("status") != "CELL_RESOLVED" or current_cell is None:
         raise AnnualRequeryError("CURRENT_CELL_NOT_RESOLVED")
-    baseline_cell_result = fetch_exact_single_cell(baseline_plan, cell_fetcher)
+    baseline_receipt = {
+            "state": "QUERY_READY",
+            "query_plan_sha256": hashlib.sha256(json.dumps(
+                baseline_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+            ).encode("utf-8")).hexdigest(),
+            "candidate_bundle_sha256": candidate_bundle_sha256,
+            "selector_unique": True,
+            "selector_sha256": hashlib.sha256(json.dumps(
+                dict(sorted((str(key), str(value)) for key, value in (baseline_plan.get("obj_levels") or {}).items())),
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+            ).encode("utf-8")).hexdigest(),
+            "period_sha256": hashlib.sha256(json.dumps({
+                "prd_se": str(baseline_plan.get("prd_se") or ""),
+                "start_prd_de": str(baseline_plan.get("start_prd_de") or ""),
+                "end_prd_de": str(baseline_plan.get("end_prd_de") or ""),
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest(),
+    }
+    baseline_cell_result = _fetch_baseline_cell_with_guard(
+        fetch_exact_single_cell,
+        baseline_plan,
+        cell_fetcher,
+        query_ready_receipt=baseline_receipt,
+        candidate_bundle_sha256=candidate_bundle_sha256,
+    )
     baseline_cell = baseline_cell_result.get("cell") if isinstance(baseline_cell_result.get("cell"), Mapping) else None
     if baseline_cell_result.get("status") != "CELL_RESOLVED" or baseline_cell is None:
         raise AnnualRequeryError(str(baseline_cell_result.get("status") or "BASELINE_CELL_NOT_RESOLVED"))
-    unit = str(official_unit or current_row.get("value_unit") or "")
-    current_comparison = compare_official_cell(
-        str(current_row.get("value_text") or ""), str(current_row.get("value_unit") or ""), current_cell, unit,
-    )
+    unit = str(official_unit or "")
+    current_comparison = None
+    if current_measurement_type == "LEVEL":
+        unit = str(official_unit or current_row.get("value_unit") or "")
+        current_comparison = compare_official_cell(
+            str(current_row.get("value_text") or ""), str(current_row.get("value_unit") or ""), current_cell, unit,
+        )
     try:
         current_value = Decimal(str(current_cell.get("DT")))
         baseline_value = Decimal(str(baseline_cell.get("DT")))
@@ -119,7 +240,7 @@ def verify_annual_requery(
         raise AnnualRequeryError("OFFICIAL_CELL_NOT_NUMERIC") from exc
     if baseline_value == 0:
         raise AnnualRequeryError("BASELINE_ZERO")
-    measurement_type = str(_fields(change_row).get("measurement_type") or "")
+    measurement_type = _measurement_type(change_row)
     signed_change = (
         (current_value - baseline_value) / abs(baseline_value) * Decimal(100)
         if measurement_type == "CHANGE_RATE"
@@ -135,7 +256,6 @@ def verify_annual_requery(
     direction_match = not expected_direction or expected_direction == actual_direction
     change_verdict = _component_verdict(value_comparison, direction_match)
     components = {
-        "current_level": current_comparison,
         "change": {
             "verdict": change_verdict,
             "reason": str(value_comparison.get("reason") or "") if direction_match else "DIRECTION_MISMATCH",
@@ -144,8 +264,11 @@ def verify_annual_requery(
             "actual_direction": actual_direction,
         },
     }
+    if current_comparison is not None:
+        components["current_level"] = current_comparison
     verdicts = {str(value.get("verdict") or "UNVERIFIABLE") for value in components.values()}
     verdict = "UNVERIFIABLE" if "UNVERIFIABLE" in verdicts else "VERIFIED" if verdicts == {"VERIFIED"} else "REFUTED"
+    item_name = _display_item_name(current_cell, baseline_cell)
     result = {
         "contract_version": CONTRACT_VERSION,
         "verdict": verdict,
@@ -158,15 +281,23 @@ def verify_annual_requery(
             "signed_change": str(signed_change), "change_unit": change_unit, "level_unit": unit,
         },
         "claims": {
-            "current": {"target_id": current_target_id, "value_text": current_row.get("value_text")},
+            "current": (
+                {"target_id": current_target_id, "value_text": current_row.get("value_text")}
+                if current_measurement_type == "LEVEL" else None
+            ),
             "change": {"target_id": change_row.get("value_span_id"), "value_text": change_row.get("value_text")},
         },
         "components": components,
         "call_ledger": {"baseline_cell_api": {"used": 1, "limit": 1}},
-        "answer": (
-            f"{current_year}년 공식값은 {current_value}{unit}, {baseline_year}년은 {baseline_value}{unit}이며 "
-            f"공식 전년 대비 변화는 {signed_change}{change_unit}입니다. "
-            f"현재 수준 판정은 {current_comparison.get('verdict')}, 변화 판정은 {change_verdict}입니다."
+        "answer": _annual_user_answer(
+            current_year=current_year,
+            baseline_year=baseline_year,
+            item_name=item_name,
+            current_value=current_value,
+            baseline_value=baseline_value,
+            signed_change=signed_change,
+            change_unit=change_unit,
+            level_unit=unit,
         ),
     }
     serializable = json.loads(json.dumps(result, ensure_ascii=False, default=str))

@@ -14,6 +14,8 @@ from typing import Any
 
 
 CONTRACT_VERSION = "r4c1-binding-proposer-v1"
+TERMINOLOGY_REGISTRY_VERSION = 1
+EXACT_INDICATOR_REGISTRY_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,16 @@ class SurfaceProposal:
 _ALIASES = (
     ("국민총소득", "국민소득", "ko-stat-gni-common-name"),
     ("수납액", "세수", "ko-tax-receipts-common-name"),
+    ("출생건수", "출생아 수", "ko-stat-birth-count-common-name"),
+)
+
+# Exact statistical indicator surfaces used only for the bounded L2 missing
+# sentence repair.  These are generic terminology rules: they never select
+# a table, item ID, period, or value.  They are literal exact surfaces;
+# whitespace normalization is deliberately not permitted.
+STATISTICAL_INDICATOR_REGISTRY = (
+    {"surface": "출생아 수", "rule_id": "ko-stat-birth-count-spaced-v1"},
+    {"surface": "합계출산율", "rule_id": "ko-stat-total-fertility-rate-v1"},
 )
 
 
@@ -63,6 +75,26 @@ def _base_inventory_label(value: Any) -> str:
     return re.sub(r"\([^()]*\)", "", str(value or "")).strip()
 
 
+def propose_exact_statistical_indicator_matches(
+    article_text: Any,
+) -> tuple[SurfaceProposal, ...]:
+    """Return every exact registry surface occurrence in article_text."""
+    text = article_text if isinstance(article_text, str) else ""
+    proposals: list[SurfaceProposal] = []
+    for entry in STATISTICAL_INDICATOR_REGISTRY:
+        surface = str(entry["surface"])
+        rule_id = str(entry["rule_id"])
+        for match in re.finditer(re.escape(surface), text):
+            proposals.append(SurfaceProposal(
+                start=match.start(),
+                end=match.end(),
+                text=match.group(0),
+                rule_id=rule_id,
+                rule_version=EXACT_INDICATOR_REGISTRY_VERSION,
+            ))
+    return tuple(sorted(proposals, key=lambda row: (row.start, row.end, row.rule_id)))
+
+
 def propose_semantic_alias_matches(
     claim_surface: Any,
     inventory_label: Any,
@@ -91,6 +123,10 @@ def propose_semantic_alias_matches(
     return tuple(sorted(proposals.values(), key=lambda row: (row.start, row.end, row.rule_id)))
 
 
-__all__ = ["CONTRACT_VERSION", "SurfaceProposal", "propose_semantic_alias_matches"]
-
-
+__all__ = [
+    "CONTRACT_VERSION", "TERMINOLOGY_REGISTRY_VERSION",
+    "EXACT_INDICATOR_REGISTRY_VERSION", "SurfaceProposal",
+    "STATISTICAL_INDICATOR_REGISTRY",
+    "propose_exact_statistical_indicator_matches",
+    "propose_semantic_alias_matches",
+]

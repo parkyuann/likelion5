@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date as calendar_date
 import gc
 import hashlib
 import json
@@ -13,7 +14,7 @@ import shutil
 import time
 import traceback
 import uuid
-from typing import Any, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from ..hcx_claim_experiment import env_api_key
 from .article_body_sentence_splitter_v1 import (
@@ -21,10 +22,17 @@ from .article_body_sentence_splitter_v1 import (
     iter_article_body_sentence_spans,
     splitter_source_sha256,
 )
+from .deterministic_query_claim_front_v1 import (
+    CONTRACT_VERSION as QUERY_FRONT_CONTRACT,
+    QUERY_ONLY_INPUT_KIND,
+    build_query_claim_front,
+)
 from .l1_value_candidates import build_span_candidates
-from .run_l2_segmentation import run as run_l2
+from .l2_segmentation import DOWNSTREAM_L2_ELIGIBLE
+from .run_l2_segmentation import L2ReceiptError, run as run_l2
 from .run_layer_stack import run_stack
 from .run_pipeline_operational_v2 import (
+    OperationalPipelineError,
     materialize_operational_l2,
     project_trace_operational_l2,
     run_live_from_files,
@@ -50,6 +58,14 @@ _STAGE_FILES = {
     "04": ({"04_stage_ledger.jsonl", "04_answers.jsonl"}, {"04_trace.log"}),
 }
 _SECRET_RE = re.compile(r"(?:Bearer\s+[A-Za-z0-9._~+/=-]+|(?:api[_-]?key|token)\s*[:=]\s*\S+)", re.I)
+_SECRET_ENV_NAME_RE = re.compile(
+    r"(?:^|_)(?:API_KEY|APIKEY|SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE_KEY|CREDENTIAL)(?:_|$)",
+    re.I,
+)
+_NON_SECRET_ENV_SUFFIX_RE = re.compile(
+    r"_(?:URL|URI|PATH|FILE|SOURCE|ID|REVISION|SHA256|HOST|PORT|PRESENT|ENABLED|NAME|COUNT|LIMIT|MODE|TYPE)$",
+    re.I,
+)
 
 
 class TraceStageError(RuntimeError):
@@ -191,7 +207,16 @@ def _atomic_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
 
 
 def _safe_env_secrets() -> list[str]:
-    return [value for value in os.environ.values() if isinstance(value, str) and len(value) >= 8]
+    values: list[str] = []
+    for name, value in os.environ.items():
+        if (
+            isinstance(value, str)
+            and len(value) >= 8
+            and _SECRET_ENV_NAME_RE.search(name)
+            and not _NON_SECRET_ENV_SUFFIX_RE.search(name)
+        ):
+            values.append(value)
+    return values
 
 
 def _scan_text(value: str) -> bool:
@@ -250,6 +275,8 @@ def _manifest(
     *, stage: str, root: Path, article_path: Path, articles: list[Mapping[str, Any]],
     predecessor_sha256: str | None, data_names: set[str], log_names: set[str],
     operational: Mapping[str, Any] | None = None,
+    terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context_sha256: str | None = None,
 ) -> dict[str, Any]:
     ids, bodies = _article_meta(articles)
     data = {name: _record(root / name) for name in sorted(data_names)}
@@ -259,7 +286,7 @@ def _manifest(
     if stage == "04" and runtime_root.exists():
         for path in sorted(item for item in runtime_root.rglob("*") if item.is_file()):
             runtime[str(path.relative_to(root)).replace("\\", "/")] = _record(path, rows=False)
-    return {
+    result = {
         "contract_version": CONTRACT_VERSION,
         "status": "COMPLETE",
         "stage": stage,
@@ -277,6 +304,96 @@ def _manifest(
         "call_ledger": {name: {"used": 0, "limit": limit} for name, limit in CALL_LIMITS.items()},
         "secret_scan": {"status": "PASS", "hits": 0},
     }
+    if terminal_invocation is not None:
+        result["terminal_invocation"] = dict(terminal_invocation)
+    if clarification_context_sha256:
+        result["clarification_context_sha256"] = clarification_context_sha256
+    return result
+
+
+def _load_clarification_context(path: str | Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    context_path = Path(path).resolve()
+    try:
+        value = json.loads(context_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from exc
+    if not isinstance(value, dict) or value.get("contract_version") not in {"clarification-context-v1", "clarification-context-v2"}:
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID")
+    answers = value.get("clarification_answers")
+    if not isinstance(answers, list) or len(answers) > 3 or not isinstance(value.get("article_body_sha256"), str):
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID")
+    return value
+
+
+def _apply_clarification_context(
+    articles: list[dict[str, Any]], context: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if context is None:
+        return articles
+    raw_answers = context.get("clarification_answers") or []
+    if any(not isinstance(answer, Mapping) for answer in raw_answers):
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID")
+    answers = [dict(answer) for answer in raw_answers]
+    expected_sha = str(context.get("article_body_sha256") or "")
+    for article in articles:
+        body_sha = hashlib.sha256(str(article.get("article_text") or "").encode("utf-8")).hexdigest()
+        if expected_sha and body_sha != expected_sha:
+            raise TraceStageError("CLARIFICATION_CONTEXT_FINGERPRINT_MISMATCH")
+    article_date_answers = [
+        answer for answer in answers
+        if str(answer.get("role") or "").strip() == "article_date"
+    ]
+    resolved_date = ""
+    date_answer_sha = ""
+    if article_date_answers:
+        answer = article_date_answers[-1]
+        resolved_date = str(answer.get("value") or "").strip()
+        try:
+            if (not str(answer.get("question_id") or "").strip()
+                or str(answer.get("role") or "") != "article_date"
+                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", resolved_date)):
+                raise ValueError
+            calendar_date.fromisoformat(resolved_date)
+        except ValueError:
+            raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from None
+        date_answer_sha = hashlib.sha256(
+            json.dumps(
+                {"question_id": answer.get("question_id"), "role": "article_date", "value": resolved_date},
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    hydrated: list[dict[str, Any]] = []
+    for article in articles:
+        updated = {**article, "clarification_answers": answers}
+        if resolved_date:
+            body_sha = hashlib.sha256(str(article.get("article_text") or "").encode("utf-8")).hexdigest()
+            provenance = dict(
+                article.get("article_date_provenance")
+                if isinstance(article.get("article_date_provenance"), Mapping) else {}
+            )
+            provenance.update({
+                "source": "USER_CLARIFICATION",
+                "date_source": "user_feedback",
+                "source_path": "clarification_context",
+                "date_field": "date",
+                "article_text_sha256": body_sha,
+                "answer_sha256": date_answer_sha,
+            })
+            updated["date"] = resolved_date
+            updated["article_date"] = resolved_date
+            updated["article_date_provenance"] = provenance
+        fields = dict(updated.get("clarification_fields") if isinstance(updated.get("clarification_fields"), Mapping) else {})
+        for answer in answers:
+            role = str(answer.get("role") or "").strip()
+            value = str(answer.get("value") or "").strip()
+            if role and role != "article_date" and value:
+                fields[role] = value
+        if fields:
+            updated["clarification_fields"] = fields
+        hydrated.append(updated)
+    return hydrated
 
 
 def _publish_manifest(root: Path, manifest: dict[str, Any]) -> None:
@@ -300,7 +417,14 @@ def _safe_name(name: str) -> bool:
     return bool(name) and not path.is_absolute() and ".." not in path.parts and path.name == name
 
 
-def _validate_manifest(root: Path, manifest: Mapping[str, Any], stage: str, article_path: Path, articles: list[Mapping[str, Any]]) -> str:
+def _validate_manifest(
+    root: Path,
+    manifest: Mapping[str, Any],
+    stage: str,
+    article_path: Path,
+    articles: list[Mapping[str, Any]],
+    terminal_invocation: Mapping[str, Any] | None = None,
+) -> str:
     if manifest.get("status") != "COMPLETE" or str(manifest.get("stage")) != stage:
         raise TraceStageError("MANIFEST_INVALID")
     expected_data, expected_logs = _STAGE_FILES[stage]
@@ -340,10 +464,18 @@ def _validate_manifest(root: Path, manifest: Mapping[str, Any], stage: str, arti
         raise TraceStageError("PRECOMPUTED_PARTITION_MISMATCH")
     if manifest.get("splitter_mode") != SPLITTER_MODE or manifest.get("splitter_source_sha256") != splitter_source_sha256():
         raise TraceStageError("SENTENCE_INVENTORY_MISMATCH")
+    if terminal_invocation is not None and dict(manifest.get("terminal_invocation") or {}) != dict(terminal_invocation):
+        raise TraceStageError("INVOCATION_MISMATCH")
     return _sha_file(root / f"{stage}_manifest.json")
 
 
-def _load_predecessor(root: Path, stage: str, article_path: Path, articles: list[Mapping[str, Any]]) -> tuple[dict[str, Any], str]:
+def _load_predecessor(
+    root: Path,
+    stage: str,
+    article_path: Path,
+    articles: list[Mapping[str, Any]],
+    terminal_invocation: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
     path = root / f"{stage}_manifest.json"
     if not path.is_file():
         raise TraceStageError("PREDECESSOR_MISSING")
@@ -351,7 +483,7 @@ def _load_predecessor(root: Path, stage: str, article_path: Path, articles: list
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise TraceStageError("MANIFEST_INVALID") from exc
-    return manifest, _validate_manifest(root, manifest, stage, article_path, articles)
+    return manifest, _validate_manifest(root, manifest, stage, article_path, articles, terminal_invocation)
 
 
 def _stage_targets(stage: str) -> set[str]:
@@ -362,7 +494,14 @@ def _stage_targets(stage: str) -> set[str]:
     return targets
 
 
-def _assert_stage_start(root: Path, stage: str, article_path: Path, articles: list[Mapping[str, Any]], predecessor: str | None) -> None:
+def _assert_stage_start(
+    root: Path,
+    stage: str,
+    article_path: Path,
+    articles: list[Mapping[str, Any]],
+    predecessor: str | None,
+    terminal_invocation: Mapping[str, Any] | None = None,
+) -> None:
     targets = _stage_targets(stage)
     if any((root / name).exists() for name in targets):
         raise TraceStageError("OUTPUT_EXISTS")
@@ -373,12 +512,12 @@ def _assert_stage_start(root: Path, stage: str, article_path: Path, articles: li
             raise TraceStageError("OUTPUT_EXISTS")
         return
     expected_prev = {"02": "01", "03": "02", "04": "03"}[stage]
-    prev_manifest, prev_sha = _load_predecessor(root, expected_prev, article_path, articles)
+    prev_manifest, prev_sha = _load_predecessor(root, expected_prev, article_path, articles, terminal_invocation)
     chain_stage = expected_prev
     chain_manifest = prev_manifest
     while chain_stage != "01":
         chain_prev = {"02": "01", "03": "02"}[chain_stage]
-        _prior_manifest, prior_sha = _load_predecessor(root, chain_prev, article_path, articles)
+        _prior_manifest, prior_sha = _load_predecessor(root, chain_prev, article_path, articles, terminal_invocation)
         if chain_manifest.get("predecessor_manifest_sha256") != prior_sha:
             raise TraceStageError("SHA_MISMATCH")
         chain_stage = chain_prev
@@ -387,17 +526,24 @@ def _assert_stage_start(root: Path, stage: str, article_path: Path, articles: li
         raise TraceStageError("SHA_MISMATCH")
 
 
-def run_l1(articles: list[dict[str, Any]], article_path: Path, root: Path) -> dict[str, Any]:
+def run_l1(
+    articles: list[dict[str, Any]],
+    article_path: Path,
+    root: Path,
+    *,
+    terminal_invocation: Mapping[str, Any] | None = None,
+    sentence_span_iterator: Callable[[str], Iterator[tuple[int, int, int, str]]] = iter_article_body_sentence_spans,
+) -> dict[str, Any]:
     sentences: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     logs = [f"[L1] articles={len(articles)}/{len(articles)}"]
     for article in articles:
         article_id = str(article["article_idx"])
         body = str(article.get("article_text") or "")
-        for sid, start, end, text in iter_article_body_sentence_spans(body):
+        for sid, start, end, text in sentence_span_iterator(body):
             sentences.append({"article_idx": article_id, "sentence_id": sid, "char_start": start, "char_end": end, "text": text})
             logs.append(f"[L1] article={article_id} sentence={sid} offset={start}:{end} text={text}")
-        article_candidates = build_span_candidates(body, sentence_span_iterator=iter_article_body_sentence_spans)
+        article_candidates = build_span_candidates(body, sentence_span_iterator=sentence_span_iterator)
         candidates.extend({"article_idx": article_id, **candidate} for candidate in article_candidates)
         for candidate in article_candidates:
             if candidate.get("kind") == "value_unit":
@@ -407,50 +553,146 @@ def run_l1(articles: list[dict[str, Any]], article_path: Path, root: Path) -> di
     value_count = sum(1 for candidate in candidates if candidate.get("kind") == "value_unit")
     logs.append(f"[L1] sentences={len(sentences)}/{len(sentences)} values={value_count}/{value_count}")
     _emit_log(root, "01", logs)
-    manifest = _manifest(stage="01", root=root, article_path=article_path, articles=articles, predecessor_sha256=None, data_names=_STAGE_FILES["01"][0], log_names=_STAGE_FILES["01"][1])
+    manifest = _manifest(
+        stage="01", root=root, article_path=article_path, articles=articles,
+        predecessor_sha256=None, data_names=_STAGE_FILES["01"][0],
+        log_names=_STAGE_FILES["01"][1], terminal_invocation=terminal_invocation,
+    )
     _publish_manifest(root, manifest)
     return manifest
 
 
-def run_l2_stage(articles: list[dict[str, Any]], article_path: Path, root: Path, *, api_key: str = "") -> dict[str, Any]:
-    resolved_api_key = api_key or env_api_key()
-    if not resolved_api_key:
-        raise TraceStageError("L2_CALL_FAILED")
-    predictions, raw_manifest = run_l2(articles, api_key=resolved_api_key, retries=0, pause_seconds=0, sentence_span_iterator=iter_article_body_sentence_spans)
+def run_l2_stage(
+    articles: list[dict[str, Any]],
+    article_path: Path,
+    root: Path,
+    *,
+    api_key: str = "",
+    deterministic_query_front: bool = False,
+    terminal_invocation: Mapping[str, Any] | None = None,
+    sentence_span_iterator: Callable[[str], Iterator[tuple[int, int, int, str]]] = iter_article_body_sentence_spans,
+) -> dict[str, Any]:
+    if deterministic_query_front:
+        if not articles or any(str(article.get("input_kind") or "") != QUERY_ONLY_INPUT_KIND for article in articles):
+            raise TraceStageError("QUERY_CLAIM_FRONT_UNSUPPORTED:INPUT_KIND")
+        predictions: list[dict[str, Any]] = []
+        provenance: list[dict[str, Any]] = []
+        for article in articles:
+            article_id = str(article.get("article_idx") or "")
+            query = str(article.get("claim_query") or article.get("article_text") or "")
+            if str(article.get("article_text") or "") != query:
+                raise TraceStageError("QUERY_CLAIM_FRONT_UNSUPPORTED:BODY_QUERY_MISMATCH")
+            try:
+                front = build_query_claim_front(query, article_idx=article_id)
+            except ValueError as exc:
+                raise TraceStageError(str(exc.args[0]) if exc.args else "QUERY_CLAIM_FRONT_UNSUPPORTED:INVALID") from exc
+            predictions.append(dict(front["prediction"]))
+            provenance.append(dict(front["provenance"]))
+        raw_manifest = {
+            "contract_version": QUERY_FRONT_CONTRACT,
+            "producer": QUERY_FRONT_CONTRACT,
+            "articles": len(articles),
+            "sentences_predicted": len(predictions),
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "latency_ms_total": 0.0,
+            "article_runs": [
+                {"article_idx": str(article.get("article_idx") or ""), "attempts": 0, "status": "DETERMINISTIC"}
+                for article in articles
+            ],
+            "errors": [],
+            "generation_config": None,
+            "hcx_l2_calls": 0,
+            "front_provenance": provenance,
+        }
+    else:
+        resolved_api_key = api_key or env_api_key()
+        if not resolved_api_key:
+            raise TraceStageError("L2_CALL_FAILED")
+        try:
+            predictions, raw_manifest = run_l2(
+                articles,
+                api_key=resolved_api_key,
+                retries=0,
+                pause_seconds=0,
+                sentence_span_iterator=sentence_span_iterator,
+            )
+        except L2ReceiptError as exc:
+            error_code = (
+                exc.args[0]
+                if len(exc.args) == 1 and isinstance(exc.args[0], str)
+                else ""
+            )
+            if error_code == "L2_RESPONSE_INVALID":
+                raise TraceStageError("L2_RESPONSE_INVALID") from exc
+            raise TraceStageError("L2_STAGE_FAILED") from exc
     total_tokens = raw_manifest.get("total_tokens")
     if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
         raise TraceStageError("L2_RESPONSE_INVALID")
     if total_tokens > 60000:
         raise TraceStageError("CALL_BUDGET_EXHAUSTED")
-    materialized = materialize_operational_l2(articles, predictions, raw_manifest, external_model_calls=int(len(articles)))
-    projected = project_trace_operational_l2(materialized)
+    try:
+        materialized = materialize_operational_l2(
+            articles,
+            predictions,
+            raw_manifest,
+            external_model_calls=0 if deterministic_query_front else int(len(articles)),
+            sentence_span_iterator=sentence_span_iterator,
+        )
+        projected = project_trace_operational_l2(materialized)
+    except OperationalPipelineError as exc:
+        error_code = (
+            exc.args[0]
+            if len(exc.args) == 1 and isinstance(exc.args[0], str)
+            else ""
+        )
+        if error_code == "L2_RESPONSE_INVALID":
+            raise TraceStageError("L2_RESPONSE_INVALID") from exc
+        raise TraceStageError("L2_STAGE_FAILED") from exc
     flat: list[dict[str, Any]] = []
     result_rows: list[dict[str, Any]] = []
     for result in projected["results"]:
         start = len(flat)
-        selected = list(result.get("predictions") or []) if result.get("status") == "L2_READY" else []
+        selected = list(result.get("predictions") or []) if result.get("status") in DOWNSTREAM_L2_ELIGIBLE else []
         flat.extend(selected)
         result_rows.append({"article_idx": str(result.get("article_idx") or ""), "status": result.get("status"), "prediction_row_start": start, "prediction_row_end": len(flat)})
-    l2_call_ledger = enforce_call_limits({"hcx_l2": int(raw_manifest.get("articles") or len(articles))})
+    l2_call_ledger = enforce_call_limits({"hcx_l2": 0 if deterministic_query_front else int(raw_manifest.get("articles") or len(articles))})
     _atomic_jsonl(root / "02_l2_predictions.jsonl", flat)
     _atomic_jsonl(root / "02_l2_results.jsonl", result_rows)
     unresolved = sum(1 for error in projected.get("manifest", {}).get("errors", []) if error.get("kind") == "UNRESOLVED_SPANS")
     _emit_log(root, "02", [f"[L2] articles={len(articles)}/{len(articles)} predictions={len(flat)}/{len(flat)} unresolved={unresolved}/{unresolved}"])
     predecessor = _sha_file(root / "01_manifest.json") if (root / "01_manifest.json").exists() else None
-    manifest = _manifest(stage="02", root=root, article_path=article_path, articles=articles, predecessor_sha256=predecessor, data_names=_STAGE_FILES["02"][0], log_names=_STAGE_FILES["02"][1], operational=projected.get("manifest"))
+    manifest = _manifest(
+        stage="02", root=root, article_path=article_path, articles=articles,
+        predecessor_sha256=predecessor, data_names=_STAGE_FILES["02"][0],
+        log_names=_STAGE_FILES["02"][1], operational=projected.get("manifest"),
+        terminal_invocation=terminal_invocation,
+    )
     manifest["call_ledger"] = l2_call_ledger
     _publish_manifest(root, manifest)
     return manifest
 
 
-def run_layers_stage(articles: list[dict[str, Any]], article_path: Path, root: Path) -> dict[str, Any]:
+def run_layers_stage(
+    articles: list[dict[str, Any]],
+    article_path: Path,
+    root: Path,
+    *,
+    terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context: Mapping[str, Any] | None = None,
+    sentence_span_iterator: Callable[[str], Iterator[tuple[int, int, int, str]]] = iter_article_body_sentence_spans,
+) -> dict[str, Any]:
     rows = [json.loads(line) for line in (root / "02_l2_predictions.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     l2_results = [json.loads(line) for line in (root / "02_l2_results.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-    ready_ids = {str(row.get("article_idx") or "") for row in l2_results if row.get("status") == "L2_READY"}
+    ready_ids = {
+        str(row.get("article_idx") or "") for row in l2_results
+        if row.get("status") in DOWNSTREAM_L2_ELIGIBLE
+    }
     routed = run_stack(
         [article for article in articles if str(article.get("article_idx") or "") in ready_ids],
         rows,
-        sentence_span_iterator=iter_article_body_sentence_spans,
+        sentence_span_iterator=sentence_span_iterator,
     )
     _atomic_jsonl(root / "03_routed.jsonl", routed)
     details = [
@@ -462,7 +704,15 @@ def run_layers_stage(articles: list[dict[str, Any]], article_path: Path, root: P
     ]
     _emit_log(root, "03", details + [f"[L3-L5] routed={len(routed)}/{len(routed)}"])
     predecessor = _sha_file(root / "02_manifest.json") if (root / "02_manifest.json").exists() else None
-    manifest = _manifest(stage="03", root=root, article_path=article_path, articles=articles, predecessor_sha256=predecessor, data_names=_STAGE_FILES["03"][0], log_names=_STAGE_FILES["03"][1])
+    manifest = _manifest(
+        stage="03", root=root, article_path=article_path, articles=articles,
+        predecessor_sha256=predecessor, data_names=_STAGE_FILES["03"][0],
+        log_names=_STAGE_FILES["03"][1], terminal_invocation=terminal_invocation,
+        clarification_context_sha256=(
+            _sha_file(Path(clarification_context["_path"]))
+            if clarification_context and clarification_context.get("_path") else None
+        ),
+    )
     _publish_manifest(root, manifest)
     return manifest
 
@@ -478,6 +728,10 @@ def run_live_stage(
     profile_seed_override: str | Path | None = None,
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
+    deterministic_answer_only: bool = False,
+    terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context_path: str | Path | None = None,
+    binding_continuation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run live only from validated L2/L3 predecessor manifests."""
     # Keep the working directory as a short sibling.  Nesting it below a
@@ -488,9 +742,19 @@ def run_live_stage(
     if runtime_final.exists():
         raise TraceStageError("OUTPUT_EXISTS")
     try:
-        _assert_stage_start(root, "04", article_path, articles, "__ANY__")
+        _assert_stage_start(root, "04", article_path, articles, "__ANY__", terminal_invocation)
+        if clarification_context_path:
+            try:
+                predecessor_manifest = json.loads(
+                    (root / "03_manifest.json").read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from exc
+            if predecessor_manifest.get("clarification_context_sha256") != _sha_file(Path(clarification_context_path)):
+                raise TraceStageError("CLARIFICATION_CONTEXT_FINGERPRINT_MISMATCH")
         result = run_live_from_files(
             config_path, article_path, runtime_tmp,
+            include_technical_canary=False,
             operational_cache_override=runtime_tmp / "run_cache" / "operational_profiles.sqlite3",
             snapshot_root_override=runtime_tmp / "raw_snapshots",
             budget_ledger_override=runtime_tmp / "budget.sqlite3",
@@ -503,6 +767,9 @@ def run_live_stage(
             profile_seed_override=profile_seed_override,
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
+            deterministic_answer_only=deterministic_answer_only,
+            clarification_context_path=clarification_context_path,
+            binding_continuation_path=binding_continuation_path,
         )
         if int((result.get("l2") or {}).get("external_model_calls") or 0) != 0:
             raise TraceStageError("CALL_BUDGET_EXHAUSTED")
@@ -554,7 +821,15 @@ def run_live_stage(
         ])
         _emit_log(root, "04", lines)
         predecessor = _sha_file(root / "03_manifest.json")
-        manifest = _manifest(stage="04", root=root, article_path=article_path, articles=articles, predecessor_sha256=predecessor, data_names=_STAGE_FILES["04"][0], log_names=_STAGE_FILES["04"][1])
+        manifest = _manifest(
+            stage="04", root=root, article_path=article_path, articles=articles,
+            predecessor_sha256=predecessor, data_names=_STAGE_FILES["04"][0],
+            log_names=_STAGE_FILES["04"][1], terminal_invocation=terminal_invocation,
+            clarification_context_sha256=(
+                _sha_file(Path(clarification_context_path))
+                if clarification_context_path else None
+            ),
+        )
         manifest["call_ledger"] = call_ledger
         _publish_manifest(root, manifest)
         return manifest
@@ -576,6 +851,23 @@ def run_live_stage(
         ) from exc
 
 
+def prepare_resume(root: str | Path, resume_from_stage: str) -> None:
+    """Remove only downstream outputs before continuing a sealed checkpoint."""
+    path = Path(root).resolve()
+    if resume_from_stage not in {"layers", "retrieval", "binding", "live"}:
+        raise TraceStageError("RESUME_STAGE_INVALID")
+    stages = ("03", "04") if resume_from_stage == "layers" else ("04",)
+    for stage in stages:
+        for name in _stage_targets(stage):
+            target = path / name
+            if target.is_dir():
+                _remove_runtime_temp(target)
+            elif target.exists():
+                target.unlink()
+    for tmp in path.parent.glob(".rt04.*.tmp"):
+        _remove_runtime_temp(tmp)
+
+
 def run_trace(
     *,
     articles_path: str | Path,
@@ -587,37 +879,69 @@ def run_trace(
     profile_seed_override: str | Path | None = None,
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
+    terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context_path: str | Path | None = None,
+    sentence_span_iterator: Callable[[str], Iterator[tuple[int, int, int, str]]] = iter_article_body_sentence_spans,
 ) -> dict[str, Any]:
     article_path = Path(articles_path).resolve()
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    articles = _articles(article_path)
+    immutable_articles = _articles(article_path)
+    context = _load_clarification_context(clarification_context_path)
+    articles = (
+        _apply_clarification_context(immutable_articles, context)
+        if stage in {"layers", "live", "all"} else immutable_articles
+    )
     stages = {"l1": ["01"], "l2": ["02"], "layers": ["03"], "live": ["04"], "all": ["01", "02", "03", "04"]}[stage]
+    if terminal_invocation is not None:
+        if stage != "all" or bool(terminal_invocation.get("resume")) or str(terminal_invocation.get("stage_request") or "") != "all":
+            raise TraceStageError("INVOCATION_STAGE_INVALID")
+    query_only = bool(articles) and all(
+        str(article.get("input_kind") or "") == QUERY_ONLY_INPUT_KIND
+        for article in articles
+    )
     if stage in {"l1", "all"}:
-        _assert_stage_start(root, "01", article_path, articles, None)
+        _assert_stage_start(root, "01", article_path, articles, None, terminal_invocation)
     elif stage == "l2":
-        _assert_stage_start(root, "02", article_path, articles, "__ANY__")
+        _assert_stage_start(root, "02", article_path, articles, "__ANY__", terminal_invocation)
     elif stage == "layers":
-        _assert_stage_start(root, "03", article_path, articles, "__ANY__")
+        _assert_stage_start(root, "03", article_path, articles, "__ANY__", terminal_invocation)
     elif stage == "live":
-        _assert_stage_start(root, "04", article_path, articles, "__ANY__")
+        _assert_stage_start(root, "04", article_path, articles, "__ANY__", terminal_invocation)
     manifests: dict[str, Any] = {}
     try:
         if "01" in stages:
-            manifests["01"] = run_l1(articles, article_path, root)
+            manifests["01"] = run_l1(
+                articles, article_path, root,
+                terminal_invocation=terminal_invocation,
+                sentence_span_iterator=sentence_span_iterator,
+            )
         if "02" in stages:
             if "01" in stages:
-                _assert_stage_start(root, "02", article_path, articles, "__ANY__")
-            manifests["02"] = run_l2_stage(articles, article_path, root)
+                _assert_stage_start(root, "02", article_path, articles, "__ANY__", terminal_invocation)
+            manifests["02"] = run_l2_stage(
+                articles, article_path, root,
+                deterministic_query_front=query_only,
+                terminal_invocation=terminal_invocation,
+                sentence_span_iterator=sentence_span_iterator,
+            )
         if "03" in stages:
             if "02" in stages:
-                _assert_stage_start(root, "03", article_path, articles, "__ANY__")
-            manifests["03"] = run_layers_stage(articles, article_path, root)
+                _assert_stage_start(root, "03", article_path, articles, "__ANY__", terminal_invocation)
+            manifests["03"] = run_layers_stage(
+                articles, article_path, root,
+                terminal_invocation=terminal_invocation,
+                clarification_context=(
+                    {**context, "_path": str(Path(clarification_context_path).resolve())}
+                    if context and clarification_context_path else None
+                ),
+                sentence_span_iterator=sentence_span_iterator,
+            )
         if "04" in stages:
             if config_path is None:
                 raise TraceStageError("LIVE_PREFLIGHT_BLOCKED")
             if "03" in stages:
-                _assert_stage_start(root, "04", article_path, articles, "__ANY__")
+                _assert_stage_start(root, "04", article_path, articles, "__ANY__", terminal_invocation)
             manifests["04"] = run_live_stage(
                 articles,
                 article_path,
@@ -628,6 +952,14 @@ def run_trace(
                 profile_seed_override=profile_seed_override,
                 failure_recovery_shadow=failure_recovery_shadow,
                 user_intent_shadow=user_intent_shadow,
+                deterministic_answer_only=query_only,
+                terminal_invocation=terminal_invocation,
+                clarification_context_path=clarification_context_path,
+                binding_continuation_path=(
+                    Path(clarification_context_path).resolve().parent / "binding_continuation.json"
+                    if clarification_context_path and (Path(clarification_context_path).resolve().parent / "binding_continuation.json").is_file()
+                    else None
+                ),
             )
         return manifests
     except TraceStageError as exc:

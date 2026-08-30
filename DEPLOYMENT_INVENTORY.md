@@ -188,3 +188,137 @@ commit SHA: RECORDED_IN_HANDOFF_RESPONSE
 - focused 결과: canonical 238 passed, backend 3 passed. 외부 HCX/KOSIS/metadata 호출은 없었다.
 - 추가 server-only gate: `EVIDENCE_FIRST_STATISTICS_SHADOW_ENABLED=false`를 기본으로 유지한다.
 - PENDING: full differential comparator, actual live, server-issued date clarification challenge, EC2 활성화, commit/push.
+
+## 2026-08-29 single-SHA application integration
+
+- 기준 설계: `deploy/DESIGN_EC2_SINGLE_SHA_PIPELINE_INTEGRATION_V1_20260829.md`.
+- `origin/develop@5c33ac2` 위에 EC2 input-adapter commit 4개를 commit 단위로 이식했다. EC2의 dirty
+  worktree 파일은 통합 정본으로 사용하지 않았다.
+- URL/text/image 입력은 동일한 resumable article verifier에 연결되며 frontend와 backend가 opaque
+  `resume_token`을 왕복한다. 재개 시 저장된 L1/L2 bytes를 사용하고 기록된 `layers|live` stage부터
+  실행한다.
+- 기사 경로는 대표 LEVEL 한 건을 고르지 않고 routed target 전체를 operational runtime으로 전달한다.
+  명시적인 단일 질의 경로만 기존 target selection을 사용할 수 있다.
+- 결과 status는 완전한 official-cell receipt를 기준으로 `completed`, `completed_with_limits`,
+  `unverifiable`, `needs_user_input`, `structured_only`를 구분한다. Cell API 호출이 0이면
+  `completed`가 될 수 없다.
+- canonical profile은 `statistics_table.send_de`를 strict ISO 날짜로 보존한다. 의미·기간·단위·지역·
+  selector가 호환된 후보 집합에서만 최신 `send_de`를 우선하며 누락·형식 오류·semantic 혼합은
+  fail-closed한다.
+- API와 Nginx/frontend는 필수 `APP_RELEASE_SHA` build arg와 OCI revision label을 공유한다. frontend는
+  text/URL/image 검증 전에 `/api/version`의 server SHA와 build SHA를 비교하고 불일치·unknown을 차단한다.
+- `deploy/release_manifest.py`는 clean HEAD, untracked 0건, tracked bytes=HEAD, runtime closure 74/74,
+  api/nginx image digest와 Compose path를 모두 확인해야 manifest를 생성한다. manifest output은 release
+  checkout 밖의 server-only receipt 경로에 기록한다.
+- Compose application service는 `api`, `nginx`, internal-only `bge-query-encoder`뿐이다. PostgreSQL,
+  OpenSearch, Qdrant, redis-session은 기존 external service를 읽으며 새 service/volume을 만들지 않는다.
+- 구현 후보 focused test **27 passed**, release clean-worktree blocker focused **3 passed**, frontend
+  production build PASS, Compose service set `bge-query-encoder/api/nginx`, runtime closure **74/74**, diff-check
+  PASS다. 실제 commit SHA, image digest, release manifest와 EC2 E2E 결과는 배포 receipt에서 기록한다.
+
+PENDING until the EC2 promotion gate completes:
+
+- clean immutable release checkout에서 api/nginx image build 및 digest 봉인
+- API와 Nginx만 동일 SHA로 recreate
+- 날짜 재질의 resume에서 L1/HCX-L2 추가 호출 0 확인
+- 대표 복합 기사에서 target별 Retrieval/metadata binding/Cell API `> 0` 및 공식값 답변 확인
+- 배포 전후 PostgreSQL/OpenSearch/Qdrant/Redis/BGE container/data 불변 확인
+- historical range/rank operator의 별도 고도화
+
+## 2026-08-29 canonical L2 · 6-path retrieval · clarification integration
+
+- 구현 commit: `0da32d2fd5a6a181e556096fe86825d1b75c2c3f`
+- 설계: `deploy/DESIGN_CANONICAL_L2_RETRIEVAL_CLARIFICATION_V1_20260829.md`
+- differential baseline: `deploy/BASELINE_CANONICAL_L2_RETRIEVAL_CLARIFICATION_20260829.json`
+- runtime manifest SHA-256: `5d1c28b99f2e7feca1d4784fbf5e99d45ba132867bbb79e74b121ab025e5a827`
+
+포함 범위:
+
+- HCX raw 응답과 canonical L2를 분리하고 exact-only source span repair 및 상태 receipt를 추가했다.
+- `sentence:official`을 비활성화하고 sentence BM25/dense, indicator official/BM25/dense,
+  item official/BM25/dense 중 설계된 6개 기본 경로만 독립 실행·봉인한다.
+- Clarification Plan과 최대 1회의 Corrective Retrieval을 분리한 7-state coordinator,
+  dependency-aware resume, candidate/profile/query-register bundle seal을 연결했다.
+- 서버 봉인 query-register identity를 재계산해 continuation 이중 SHA 위조를 거부한다.
+- `QUERY_READY`의 완전 좌표와 KOSIS 공식 응답의 `ORG_ID`, `TBL_ID`, `ITM_ID`,
+  `PRD_SE`, `PRD_DE`, `C1..Cn`이 모두 일치할 때만 Cell API 결과를 인정한다.
+- frontend는 stale clarification plan 및 candidate selection을 무효화하고 새 plan receipt를 사용한다.
+
+검증 결과:
+
+- 전체 backend: `175 passed / 기존 봉인 6 failed`; 신규 실패 `0`, 기존 통과 감소 `0`.
+- 검색 adapter: `16 passed`.
+- 핵심 반례 focused suite: `22 passed`; 최종 Cell 응답 focused suite: `26 passed`.
+- frontend Vite production build: 성공.
+- overlay/compose/release/runtime 계약: `15 passed`.
+- runtime manifest closure: `74/74`, mismatch `0`.
+- `git diff --check`: 통과. 변경 diff에서 고정 비밀값은 발견되지 않았다.
+- 독립 승인: `APPROVED_FOR_COMMIT_AND_EC2_E2E`.
+
+PENDING:
+
+- 현재 작업 호스트에는 EC2 SSH private key, AWS CLI credential, remote Docker context가 없어
+  application overlay를 직접 recreate할 권한 경로를 확인하지 못했다.
+- 따라서 실제 HCX L2, PostgreSQL/OpenSearch/BGE/Qdrant, KOSIS Cell API를 잇는 EC2 E2E와
+  API/frontend 동일 release SHA 확인은 서버 배포 후 수행해야 한다.
+- 배포 시 기존 PostgreSQL, OpenSearch, Qdrant, redis-session, EBS, index/collection,
+  alias/current pointer는 변경하지 않는다.
+- reranker, redis-cache, `002_application_product_state`, historical range/rank operator는 별도 PENDING이다.
+
+## 2026-08-29 clarification indicator resume follow-up
+
+- 구현 commit: `bd8e74c5e7108c641160afbce744a9346354ab15`
+- runtime manifest SHA-256: `30981c89ca734ad03771b12abb6bb93e98913e3c2f876ffdfadcaa667663417f`
+- 변경 범위: 원문에 존재하지 않는 지표를 사용자가 보완한 경우, 해당 답변을 원문 span으로 위조하지 않고
+  `USER_CLARIFICATION` provenance로 ITEM binding과 공개된 전국 기본 범위 추론에만 사용한다. 기존 원문 span이
+  있으면 기존 exact/semantic binding을 우선한다.
+- 회귀 테스트: `test_missing_indicator_clarification_e2e_v1.py` 및 관련 기간·검색 suite `19 passed`.
+
+실제 EC2 적용 및 E2E 결과:
+
+- `/api/version`: `bd8e74c5e7108c641160afbce744a9346354ab15`, health `200`.
+- 데이터 계층 container ID와 시작 시각은 배포 전후 동일했다. PostgreSQL, OpenSearch, Qdrant,
+  redis-session, BGE encoder를 재생성·재시작하지 않았다.
+- `2025년에는 0.80명을 기록했다.`는 첫 요청에서 `INDICATOR_REQUIRED`를 반환하고, 사용자가 `합계출산율`을
+  답한 뒤 `resume.used=true`, `resume.from_stage=retrieval`로 재개됐다. Retrieval 6회, metadata binding,
+  Cell API 1회, 공식값 `0.799명`, 최종 status `completed`를 확인했다. 재개 과정에서 L1/L2/Layers는 재실행되지 않았다.
+- 복합 기사 실험은 날짜 재질의와 지표 재질의까지 502 없이 재개됐으나 최종 공식값까지는 실패했다. 첫 주장
+  `6.7%`는 L2가 `LEVEL/%`로 구조화되어 `UNIT_MISMATCH`, 두 번째 합계출산율 주장은
+  `PERIOD_FREQUENCY_MISMATCH`로 종료됐고 두 target 모두 Cell API `0`회였다. 이는 이번 indicator clarification
+  binding 수정의 실패가 아니라 복합 주장별 measurement/period 구조화 및 target-specific clarification의 잔여 병목이다.
+
+PENDING:
+
+- 복합 기사에서 `출생아 수`의 LEVEL 값과 전년 대비 `6.7%` CHANGE_RATE를 주장별로 분리하는 L2/L3 계약 보완
+- 상대 표현 `지난해`의 연간 period와 release-bound profile을 합성하는 target별 period binding 보완
+- 복합 주장마다 지표/항목 재질의를 분리하고, 잘못된 하나의 사용자 답변을 다른 target에 전파하지 않는 clarification scope
+- full suite collection blocker: 기존 `test_annual_requery_user_answer_v1.py`의 전역 `src.develop.run_pipeline_operational_v2`
+  stub이 다른 테스트의 trace import를 가로채는 테스트 격리 문제. 이번 변경에서 production code는 수정하지 않았다.
+
+## 2026-08-29 immutable release redeploy
+
+- 배포 규칙에 따라 `origin/develop@3a3d2627ebb3ab06967863880e14182d7a86a4a7`에서
+  clean feature worktree를 사용했다. 기능 수정 commit은
+  `f40b5aefd63d322b3be6506572f1a60b9c5df6b6`이며, 일반 push 후 EC2 immutable release로 배포했다.
+- 이번 기능 수정은 release-bound resolver가 내부 ITEM/DIMENSION ID가 다른 동일 공개 지표·지역
+  selector를 같은 호환 그룹으로 묶고 `statistics_table.send_de` 최신값을 적용하도록 보완한 것이다.
+  후보 membership receipt가 문자열 table_key를 누락하던 문제도 함께 수정했다.
+- EC2 Compose 최종 서비스는 `bge-query-encoder`, `api`, `nginx`뿐이며, 실행 명령은
+  `up -d --no-deps api nginx`였다. PostgreSQL, OpenSearch, Qdrant, redis-session, BGE는
+  재생성·재시작·초기화하지 않았다.
+- API/Nginx label과 `/api/version`은 위 release SHA와 일치했고, runtime manifest SHA는
+  `30981c89ca734ad03771b12abb6bb93e98913e3c2f876ffdfadcaa667663417f`였다.
+- 실측 E2E: `2025년 대구광역시의 합계출산율은 0.80명이다.` → L2 `1/1`, retrieval
+  candidate `39`, metadata compatible `2`, selected table `101:DT_1B8000H`,
+  `send_de=2026-03-19`, Cell API `1`회, 공식값 `0.806명`, HTTP `200`, 총 `9.640초`.
+  최종 응답은 공식값을 설명하는 `mismatch` 답변으로 생성됐다.
+- Public HTTP는 HTTPS로 `308` redirect, HTTPS certificate는
+  `news-verify.52.25.84.163.nip.io` / Let's Encrypt 유효 인증서였다. API health는 `200`이었다.
+- 배포 전후 변경 없음: BGE container
+  `288d4c542e8220588910ee5787466f6bb615217b5396eb8fdc1a581ba0d130bd`, PostgreSQL
+  `04a93362057869d71e43537bbb1d9b965c5c2b87a38ef80ab0702a32e6079124`, OpenSearch
+  `592b675a4c74c56088d842368b7e0d631decae5e24e9688b3fc55b7305fa7537`, Qdrant
+  `43e4a947fa8b076b53f60840249f570964b84c1617ae26bc686ed3471f68f668`, redis-session
+  `b6f872a38289bec09e07dd8b4ab51cc8590fc7548eeeb28c2616d7f5e59a207a`.
+- 검증 한계: 변경 관련 focused suite `21 passed`, `git diff --check` 통과. 전체 backend suite는
+  기존 테스트 격리/모듈 import 충돌로 collection 단계에서 중단되어 전체 기준선 통과로 주장하지 않는다.

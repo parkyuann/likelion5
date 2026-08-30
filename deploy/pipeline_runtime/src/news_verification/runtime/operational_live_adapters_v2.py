@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shutil
 import sqlite3
 import threading
+import time
+import unicodedata
 from typing import Any, Callable, Iterable, Mapping, Sequence
 import uuid
 
@@ -22,6 +26,251 @@ from src.news_verification.runtime.services.profile_provider import make_snapsho
 
 class LiveAdapterError(ValueError):
     pass
+
+
+class MonotonicTimingRecorder:
+    """Request-local timing recorder with a deliberately small public surface."""
+
+    CONTRACT_VERSION = "pipeline-timing-v1"
+
+    def __init__(self) -> None:
+        self._started = time.monotonic_ns()
+        self._spans: dict[str, dict[str, int]] = {}
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _ms(start_ns: int, end_ns: int) -> int:
+        return max(0, int(round((end_ns - start_ns) / 1_000_000)))
+
+    def observe(self, name: str, started_ns: int, *, calls: int = 1, **counts: int) -> int:
+        duration = self._ms(started_ns, time.monotonic_ns())
+        with self._lock:
+            record = self._spans.setdefault(str(name), {"sum_ms": 0, "calls": 0})
+            record["sum_ms"] += duration
+            record["calls"] += max(0, int(calls))
+            for key, value in counts.items():
+                record[key] = record.get(key, 0) + max(0, int(value))
+        return duration
+
+    def span(self, name: str, *, calls: int = 1):
+        recorder = self
+        started = time.monotonic_ns()
+
+        class _Span:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                recorder.observe(name, started, calls=calls)
+                return False
+
+        return _Span()
+
+    def snapshot(self, *, total_started_ns: int | None = None) -> dict[str, Any]:
+        with self._lock:
+            stages = {name: dict(values) for name, values in sorted(self._spans.items())}
+        started = self._started if total_started_ns is None else total_started_ns
+        return {
+            "contract_version": self.CONTRACT_VERSION,
+            "total_wall_ms": self._ms(started, time.monotonic_ns()),
+            "stages": stages,
+        }
+
+
+def _normalized_cache_text(value: Any) -> str:
+    # Must match backend.query_encoder.normalize_encoder_query exactly.
+    return " ".join(unicodedata.normalize("NFKC", str(value or "")).split())
+
+
+class RequestScopedProfileProvider:
+    """Positive/negative profile memoization for exactly one live request."""
+
+    def __init__(self, inner: Callable[[str], Mapping[str, Any] | None]) -> None:
+        self.inner = inner
+        self._cache: dict[tuple[str, str], Mapping[str, Any] | None] = {}
+        self._lock = threading.RLock()
+        self.logical_lookups = 0
+        self.physical_lookups = 0
+        self.cache_hits = 0
+        self.negative_hits = 0
+
+    def _key(self, table_key: str) -> tuple[str, str]:
+        release_id = str(getattr(self.inner, "release_id", "") or "")
+        return release_id, str(table_key)
+
+    def __call__(self, table_key: str) -> Mapping[str, Any] | None:
+        key = self._key(table_key)
+        with self._lock:
+            self.logical_lookups += 1
+            if key in self._cache:
+                self.cache_hits += 1
+                if self._cache[key] is None:
+                    self.negative_hits += 1
+                return deepcopy(self._cache[key]) if self._cache[key] is not None else None
+        self.physical_lookups += 1
+        try:
+            result = self.inner(str(table_key))
+        except Exception:
+            raise
+        snapshot = deepcopy(dict(result)) if isinstance(result, Mapping) else None
+        if snapshot is not None:
+            expected_release = str(getattr(self.inner, "release_id", "") or "")
+            actual_release = str(snapshot.get("release_id") or "")
+            actual_table = str(snapshot.get("table_key") or "")
+            profile_sha = str(snapshot.get("profile_sha256") or "")
+            if expected_release and actual_release != expected_release:
+                raise LiveAdapterError("METADATA_PROFILE_CONTRACT_MISMATCH")
+            if actual_table and actual_table != str(table_key):
+                raise LiveAdapterError("METADATA_PROFILE_CONTRACT_MISMATCH")
+            if profile_sha and not re.fullmatch(r"[0-9a-fA-F]{64}", profile_sha):
+                raise LiveAdapterError("METADATA_PROFILE_CONTRACT_MISMATCH")
+        with self._lock:
+            self._cache[key] = snapshot
+        return deepcopy(snapshot) if snapshot is not None else None
+
+    def prefetch(self, table_keys: Iterable[str]) -> dict[str, Mapping[str, Any] | None]:
+        keys = sorted({str(value) for value in table_keys if str(value)})
+        return {key: self(key) for key in keys}
+
+    def speculative(self, table_key: str, *, timeout_seconds: float) -> Mapping[str, Any] | None:
+        native = getattr(self.inner, "speculative", None)
+        if not callable(native) or timeout_seconds <= 0:
+            raise LiveAdapterError("SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED")
+        key = self._key(table_key)
+        with self._lock:
+            self.logical_lookups += 1
+            if key in self._cache:
+                self.cache_hits += 1
+                return deepcopy(self._cache[key]) if self._cache[key] is not None else None
+        self.physical_lookups += 1
+        result = native(str(table_key), timeout_seconds=timeout_seconds)
+        snapshot = deepcopy(dict(result)) if isinstance(result, Mapping) else None
+        with self._lock:
+            self._cache[key] = snapshot
+        return deepcopy(snapshot) if snapshot is not None else None
+
+    @property
+    def metadata_api_calls(self) -> int:
+        return int(getattr(self.inner, "metadata_api_calls", 0) or 0)
+
+    @property
+    def lookups(self) -> int:
+        return self.logical_lookups
+
+    def audit(self) -> dict[str, Any]:
+        inner_audit = getattr(self.inner, "audit", None)
+        return {
+            "contract": "request-scoped-profile-cache-v1",
+            "logical_lookups": self.logical_lookups,
+            "physical_lookups": self.physical_lookups,
+            "cache_hits": self.cache_hits,
+            "negative_hits": self.negative_hits,
+            "inner": inner_audit() if callable(inner_audit) else {},
+        }
+
+
+class RequestScopedEncoder:
+    """Request-local normalized query-vector cache; invalid vectors are never cached."""
+
+    def __init__(self, inner: Callable[[str], Sequence[float]]) -> None:
+        self.inner = inner
+        self._cache: dict[tuple[str, str, int, str], tuple[float, ...]] = {}
+        self._lock = threading.RLock()
+        self.logical_calls = 0
+        self.physical_calls = 0
+        self.cache_hits = 0
+
+    def __call__(self, text: str) -> Sequence[float]:
+        normalized = _normalized_cache_text(text)
+        query_sha = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        model_id = str(getattr(self.inner, "model_id", "") or "")
+        revision = str(getattr(self.inner, "model_revision", "") or "")
+        vector_size = int(getattr(self.inner, "vector_size", 1024) or 1024)
+        key = (model_id, revision, vector_size, query_sha)
+        with self._lock:
+            self.logical_calls += 1
+            cached = self._cache.get(key)
+            if cached is not None:
+                self.cache_hits += 1
+                return cached
+        self.physical_calls += 1
+        value = self.inner(text)
+        evidence: Mapping[str, Any] | None = None
+        if isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], Mapping):
+            vector = value[0]
+            evidence = value[1]
+        else:
+            vector = value
+        if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)) or len(vector) != vector_size:
+            raise LiveAdapterError("QUERY_ENCODER_CONTRACT_MISMATCH")
+        result = tuple(float(item) for item in vector)
+        if any(not math.isfinite(item) for item in result):
+            raise LiveAdapterError("QUERY_ENCODER_CONTRACT_MISMATCH")
+        if evidence is not None and evidence.get("normalized") is not True:
+            raise LiveAdapterError("QUERY_ENCODER_CONTRACT_MISMATCH")
+        norm = math.sqrt(sum(item * item for item in result))
+        if not 0.999 <= norm <= 1.001:
+            raise LiveAdapterError("QUERY_ENCODER_CONTRACT_MISMATCH")
+        with self._lock:
+            self._cache[key] = result
+        return result
+
+    def speculative(self, text: str, *, timeout_seconds: float) -> Sequence[float]:
+        native = getattr(self.inner, "speculative", None)
+        if not callable(native) or timeout_seconds <= 0:
+            raise LiveAdapterError("SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED")
+        value = native(text, timeout_seconds=timeout_seconds)
+        vector = value[0] if isinstance(value, tuple) and len(value) == 2 else value
+        if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)) or len(vector) != 1024:
+            raise LiveAdapterError("QUERY_ENCODER_CONTRACT_MISMATCH")
+        return tuple(float(item) for item in vector)
+
+    @property
+    def calls(self) -> int:
+        return self.physical_calls
+
+    def audit(self) -> dict[str, Any]:
+        return {
+            "contract": "request-scoped-query-vector-cache-v1",
+            "logical_calls": self.logical_calls,
+            "physical_calls": self.physical_calls,
+            "cache_hits": self.cache_hits,
+        }
+
+
+class RequestScopedRetrievalCache:
+    """Immutable request-local retrieval result cache."""
+
+    def __init__(self) -> None:
+        self._cache: dict[str, tuple[Any, Mapping[str, Any]]] = {}
+        self._lock = threading.RLock()
+        self.logical_calls = 0
+        self.physical_calls = 0
+        self.cache_hits = 0
+
+    def get_or_call(self, identity: Any, callback: Callable[[], tuple[Sequence[Any], Mapping[str, Any]]]):
+        key = identity if isinstance(identity, str) else json.dumps(identity, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        with self._lock:
+            self.logical_calls += 1
+            cached = self._cache.get(key)
+            if cached is not None:
+                self.cache_hits += 1
+                return tuple(deepcopy(cached[0])), deepcopy(dict(cached[1]))
+        value = callback()
+        candidates, audit = value
+        snapshot = (tuple(deepcopy(tuple(candidates))), deepcopy(dict(audit)))
+        with self._lock:
+            self.physical_calls += 1
+            self._cache[key] = snapshot
+        return tuple(deepcopy(snapshot[0])), deepcopy(snapshot[1])
+
+    def audit(self) -> dict[str, int | str]:
+        return {
+            "contract": "request-scoped-retrieval-cache-v1",
+            "logical_calls": self.logical_calls,
+            "physical_calls": self.physical_calls,
+            "cache_hits": self.cache_hits,
+        }
 
 
 def safe_adapter_failure(error_code: str, exc: BaseException, **metadata: Any) -> dict[str, Any]:
@@ -358,20 +607,56 @@ class CountingAdapter:
     def __init__(self, inner: Callable[..., Any]) -> None:
         self.inner = inner
         self.calls = 0
+        self.sum_ms = 0
+        self._lock = threading.Lock()
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        self.calls += 1
-        return self.inner(*args, **kwargs)
+        started = time.monotonic_ns()
+        try:
+            return self.inner(*args, **kwargs)
+        finally:
+            with self._lock:
+                self.calls += 1
+                self.sum_ms += max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+
+    def speculative(self, *args: Any, timeout_seconds: float, **kwargs: Any) -> Any:
+        native = getattr(self.inner, "speculative", None)
+        if not callable(native) or timeout_seconds <= 0:
+            raise LiveAdapterError("SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED")
+        started = time.monotonic_ns()
+        try:
+            return native(*args, timeout_seconds=timeout_seconds, **kwargs)
+        finally:
+            with self._lock:
+                self.calls += 1
+                self.sum_ms += max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+
+    def audit_cursor(self) -> int | None:
+        method = getattr(self.inner, "audit_cursor", None)
+        value = method() if callable(method) else None
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    def audits_since(self, cursor: int) -> list[dict[str, Any]]:
+        method = getattr(self.inner, "audits_since", None)
+        value = method(cursor) if callable(method) else []
+        return [dict(event) for event in value if isinstance(event, Mapping)] if isinstance(value, Sequence) else []
 
 
 class CountingEncoder:
     def __init__(self, client: Any) -> None:
         self.client = client
         self.calls = 0
+        self.sum_ms = 0
+        self._lock = threading.Lock()
 
     def __call__(self, text: str) -> Sequence[float]:
-        self.calls += 1
-        return self.client(text)
+        started = time.monotonic_ns()
+        try:
+            return self.client(text)
+        finally:
+            with self._lock:
+                self.calls += 1
+                self.sum_ms += max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
 
 
 class CountingReranker:
@@ -388,6 +673,8 @@ class CountingAnswerer:
     def __init__(self, client: Any) -> None:
         self.client = client
         self.calls = 0
+        self.sum_ms = 0
+        self._lock = threading.Lock()
 
     def render(
         self,
@@ -395,24 +682,36 @@ class CountingAnswerer:
         brief: Mapping[str, Any] | None,
         repair_code: str | None = None,
     ) -> Mapping[str, Any]:
-        self.calls += 1
-        return self.client.render(packet, brief, repair_code)
+        started = time.monotonic_ns()
+        try:
+            return self.client.render(packet, brief, repair_code)
+        finally:
+            with self._lock:
+                self.calls += 1
+                self.sum_ms += max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
 
 
 class FailClosedCellFetcher:
     def __init__(self, inner: Callable[[dict[str, Any]], Any]) -> None:
         self.inner = inner
         self.calls = 0
+        self.sum_ms = 0
+        self._lock = threading.Lock()
 
     def __call__(self, query: dict[str, Any]) -> Any:
-        self.calls += 1
-        required = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de", "obj_levels")
-        if any(not query.get(key) for key in required) or not isinstance(query.get("obj_levels"), dict):
-            return {"err": "CELL_QUERY_INCOMPLETE"}
+        started = time.monotonic_ns()
         try:
-            return self.inner(query)
-        except Exception as exc:
-            return {"err": "CELL_API_EXCEPTION", **safe_adapter_failure("CELL_API_EXCEPTION", exc)}
+            required = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de", "obj_levels")
+            if any(not query.get(key) for key in required) or not isinstance(query.get("obj_levels"), dict):
+                return {"err": "CELL_QUERY_INCOMPLETE"}
+            try:
+                return self.inner(query)
+            except Exception as exc:
+                return {"err": "CELL_API_EXCEPTION", **safe_adapter_failure("CELL_API_EXCEPTION", exc)}
+        finally:
+            with self._lock:
+                self.calls += 1
+                self.sum_ms += max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
 
 
 def write_live_outputs(output_root: str | Path, result: Mapping[str, Any], manifest: Mapping[str, Any]) -> None:
@@ -467,10 +766,7 @@ def write_live_outputs(output_root: str | Path, result: Mapping[str, Any], manif
 
 __all__ = [
     "CountingAdapter", "CountingAnswerer", "CountingEncoder", "CountingReranker", "FailClosedCellFetcher", "LiveAdapterError",
+    "MonotonicTimingRecorder", "RequestScopedProfileProvider", "RequestScopedEncoder", "RequestScopedRetrievalCache",
     "OperationalProfileProvider", "RunProfileProvider", "V6CatalogPassageStore", "load_live_articles", "sha256_file",
     "write_live_outputs",
 ]
-
-
-
-

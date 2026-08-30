@@ -16,6 +16,9 @@ from src.news_verification.runtime.r4c1_binding_proposer_v1 import propose_seman
 CONTRACT_VERSION = "r4c1-projection-v2"
 PROJECTION_CONTRACT_VERSION = CONTRACT_VERSION
 QUERY_FIELDS = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de", "obj_levels")
+_INDICATOR_METRIC_SUFFIX_RE = re.compile(
+    r"\s*(?:증가|감소|상승|하락|증감|변화|변동|성장)\s*(?:율|률|량|폭)$"
+)
 
 
 def _norm(value: Any) -> str:
@@ -193,6 +196,66 @@ def _context_provenance(atom: Mapping[str, Any], path: str) -> dict[str, Any] | 
     return result if _complete_span(result) else None
 
 
+def _user_clarification_provenance(
+    atom: Mapping[str, Any], path: str,
+) -> dict[str, Any] | None:
+    """Return non-span provenance for an explicit user-supplied constraint.
+
+    A clarification can resolve a missing selector, but it is not evidence
+    that the article itself used that label.  Keep the distinction explicit
+    so downstream binding may consume the constraint without manufacturing an
+    article span.
+    """
+    provenance = _base_claim_prov(atom)
+    clarification = provenance.get("user_clarification")
+    if not isinstance(clarification, Mapping):
+        return None
+    if (
+        str(clarification.get("source") or "") != "USER_CLARIFICATION"
+        or not str(clarification.get("question_id") or "").strip()
+        or not str(clarification.get("role") or "").strip()
+        or not str(clarification.get("answer_sha256") or "").strip()
+    ):
+        return None
+    return {
+        "article_idx": provenance.get("article_idx"),
+        "article_id": provenance.get("article_id"),
+        "sentence_id": provenance.get("sentence_id"),
+        "span_path": path,
+        "start": None,
+        "end": None,
+        "text": None,
+        "evidence_basis": "USER_CLARIFICATION",
+        "user_clarification": dict(clarification),
+    }
+
+
+def _indicator_subject_context_provenance(
+    atom: Mapping[str, Any], path: str,
+) -> dict[str, Any] | None:
+    """Recover one source-backed subject span when the whole indicator span is absent."""
+    provenance = _base_claim_prov(atom)
+    sentence = provenance.get("sentence_text")
+    indicator = str(_get(atom, "surface", "") or "").strip()
+    if not isinstance(sentence, str) or not sentence or not indicator:
+        return None
+    subject = _INDICATOR_METRIC_SUFFIX_RE.sub("", indicator).strip() or indicator
+    matches = _submatches(sentence, subject)
+    if len(matches) != 1:
+        return None
+    start, end, text = matches[0]
+    result = {
+        "article_idx": provenance.get("article_idx"),
+        "article_id": provenance.get("article_id"),
+        "sentence_id": provenance.get("sentence_id"),
+        "span_path": path,
+        "start": start,
+        "end": end,
+        "text": text,
+    }
+    return result if _complete_span(result) else None
+
+
 def _evidence(atom: Mapping[str, Any], *, profile_path: str, profile_label: Any, profile_id: Any,
               path: str, consumed: Mapping[str, Any] | None, rule: str, required: bool = True) -> dict[str, Any] | None:
     claim = dict(_base_claim_prov(atom))
@@ -202,6 +265,8 @@ def _evidence(atom: Mapping[str, Any], *, profile_path: str, profile_label: Any,
             return None
     elif required:
         claim = _context_provenance(atom, path) or {}
+        if not claim:
+            claim = _user_clarification_provenance(atom, path) or {}
         if not claim:
             return None
         claim["consumed_span"] = None
@@ -520,6 +585,7 @@ class CandidateProjection:
     projection_status: str
     hold_reasons: tuple[str, ...]
     canonical_sha256: str
+    slot_diagnostics: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def contract_version(self) -> str:
@@ -657,7 +723,13 @@ def _unit_compatibility(claim_unit: Any, profile_unit: Any) -> dict[str, Any] | 
     return None
 
 
-def _make_projection(table: str, assignments: Sequence[CandidateAssignment], abstained: Sequence[tuple[str, str]], reasons: Sequence[str]) -> CandidateProjection:
+def _make_projection(
+    table: str,
+    assignments: Sequence[CandidateAssignment],
+    abstained: Sequence[tuple[str, str]],
+    reasons: Sequence[str],
+    slot_diagnostics: Sequence[Mapping[str, Any]] = (),
+) -> CandidateProjection:
     ordered_assignments = tuple(sorted(assignments, key=lambda a: a.signature))
     data = {
         "table_key": table,
@@ -668,8 +740,61 @@ def _make_projection(table: str, assignments: Sequence[CandidateAssignment], abs
         "abstained": sorted(set(abstained)),
         "projection_status": "PROJECTED" if ordered_assignments else "ABSTAIN",
         "hold_reasons": tuple(sorted(set(reasons))),
+        "slot_diagnostics": [dict(item) for item in slot_diagnostics],
     }
-    return CandidateProjection(table, ordered_assignments, tuple(sorted(set(abstained))), data["projection_status"], tuple(sorted(set(reasons))), _sha(data))
+    return CandidateProjection(table, ordered_assignments, tuple(sorted(set(abstained))), data["projection_status"], tuple(sorted(set(reasons))), _sha(data), tuple(dict(item) for item in slot_diagnostics))
+
+
+def _slot_diagnostics(
+    table: str,
+    profile: Mapping[str, Any] | None,
+    assignments: Sequence[CandidateAssignment],
+    abstained: Sequence[tuple[str, str]],
+    reasons: Sequence[str],
+) -> tuple[dict[str, Any], ...]:
+    """Expose missing-slot evidence without turning it into a selector result."""
+    result: list[dict[str, Any]] = []
+    known_roles = {str(kind) for kind, _ in abstained}
+    role_reason = {
+        "ITEM": "indicator", "PERIOD": "period", "DIMENSION": "classification",
+        "UNIT": "unit",
+    }
+    if assignments:
+        bound = {str(binding.axis_kind) for assignment in assignments for binding in assignment.bindings}
+        for kind in ("ITEM", "PERIOD", "UNIT"):
+            if kind not in bound:
+                known_roles.add(kind)
+    dimensions = profile.get("dimensions") if isinstance(profile, Mapping) and isinstance(profile.get("dimensions"), list) else []
+    for dimension in dimensions:
+        if not isinstance(dimension, Mapping):
+            continue
+        label = str(dimension.get("obj_nm") or dimension.get("name") or "")
+        normalized = re.sub(r"\s+", "", label)
+        matches = [
+            role for role, terms in (("region", ("행정구역", "지역", "시도")), ("sex", ("성별", "성")), ("age", ("연령", "연령별", "나이")))
+            if any(term in normalized for term in terms)
+        ]
+        axis_role = matches[0] if len(matches) == 1 else "classification"
+        values = dimension.get("values") if isinstance(dimension.get("values"), list) else []
+        inventory = []
+        for value in values:
+            if isinstance(value, Mapping):
+                inventory.append({"label": str(value.get("obj_nm") or value.get("value_nm") or value.get("name") or ""), "axis_id": dimension.get("obj_id"), "value_id": value.get("value_id") or value.get("obj_id")})
+        status = "RESOLVED" if any(getattr(binding, "axis_id", None) == str(dimension.get("obj_id") or "") for assignment in assignments for binding in assignment.bindings) else "MISSING"
+        result.append({
+            "role": axis_role, "status": status, "table_key": table,
+            "profile_sha256": profile.get("profile_sha256") if isinstance(profile, Mapping) else None,
+            "axis_semantic_role": axis_role, "axis_inventory_path": "dimensions",
+            "option_inventory": inventory, "reason": "DIMENSION_UNBOUND" if status != "RESOLVED" else "",
+        })
+    for kind, reason in sorted(set(abstained)):
+        role = role_reason.get(str(kind), "classification")
+        result.append({"role": role, "status": "AMBIGUOUS" if "AMBIG" in str(reason) else "MISSING", "table_key": table, "profile_sha256": profile.get("profile_sha256") if isinstance(profile, Mapping) else None, "axis_semantic_role": role, "axis_inventory_path": None, "option_inventory": [], "reason": str(reason)})
+    for reason in sorted(set(reasons)):
+        role = "period" if str(reason).startswith("PERIOD") else "unit" if str(reason).startswith("UNIT") else None
+        if role and not any(item.get("role") == role for item in result):
+            result.append({"role": role, "status": "UNSUPPORTED" if "UNSUPPORTED" in str(reason) else "MISSING", "table_key": table, "profile_sha256": profile.get("profile_sha256") if isinstance(profile, Mapping) else None, "axis_semantic_role": role, "axis_inventory_path": None, "option_inventory": [], "reason": str(reason)})
+    return tuple(result)
 
 
 def _prune_strictly_subsumed_axis_matches(options: Sequence[AxisBinding]) -> list[AxisBinding]:
@@ -722,8 +847,18 @@ def _geographic_nationwide_default(
     if len(totals) != 1:
         return None
     vindex, value = totals[0]
+    context = _context_provenance(indicator_atom, "indicator.unqualified_nationwide_scope")
+    if context is None:
+        context = _indicator_subject_context_provenance(
+            indicator_atom, "indicator.unqualified_nationwide_scope"
+        )
+    context_atom = dict(indicator_atom)
+    context_provenance = dict(_base_claim_prov(indicator_atom))
+    if context is not None:
+        context_provenance["context_span"] = context
+    context_atom["provenance"] = context_provenance
     evidence = _evidence(
-        indicator_atom,
+        context_atom,
         profile_path=f"dimensions[{dindex}].values[{vindex}]",
         profile_label=value.get("value_name"),
         profile_id=value.get("value_id"),
@@ -758,11 +893,11 @@ def project_candidate_v2(
     allow_unqualified_nationwide: bool = False,
 ) -> CandidateProjection:
     if profile is None:
-        return _make_projection("", (), (), ("PROFILE_UNAVAILABLE",))
+        return _make_projection("", (), (), ("PROFILE_UNAVAILABLE",), ({"role": "classification", "status": "PROFILE_INCOMPLETE", "reason": "PROFILE_UNAVAILABLE", "option_inventory": []},))
     table_info = _profile_table(profile)
     table = table_info[0] if table_info else ""
     if _incomplete(profile):
-        return _make_projection(table, (), (), ("PROFILE_INCOMPLETE",))
+        return _make_projection(table, (), (), ("PROFILE_INCOMPLETE",), ({"role": "classification", "status": "PROFILE_INCOMPLETE", "table_key": table, "profile_sha256": profile.get("profile_sha256"), "reason": "PROFILE_INCOMPLETE", "option_inventory": []},))
 
     items = list(profile["items"])
     dimensions = list(profile["dimensions"])
@@ -779,15 +914,19 @@ def project_candidate_v2(
     # only for a singleton inventory and has no consumed indicator span.
     item_options: list[tuple[dict[str, Any], dict[str, Any] | None, str]] = []
     for idx, item in enumerate(items):
-        for start, end, text in _submatches(indicator, str(item.get("itm_nm"))):
+        source_matches = _submatches(indicator, str(item.get("itm_nm")))
+        source_bound = False
+        for start, end, text in source_matches:
             prov = _subspan_provenance(indicator_atom, start, end, text, f"indicator.item[{idx}]")
             if prov is not None:
                 item_options.append((item, prov, "indicator_item_subspan"))
-        for proposal in propose_semantic_alias_matches(
+                source_bound = True
+        semantic_proposals = propose_semantic_alias_matches(
             indicator,
             item.get("itm_nm"),
             allow_parenthetical_base=allow_unqualified_nationwide,
-        ):
+        )
+        for proposal in semantic_proposals:
             prov = _subspan_provenance(
                 indicator_atom,
                 proposal.start,
@@ -797,6 +936,16 @@ def project_candidate_v2(
             )
             if prov is not None:
                 item_options.append((item, prov, proposal.rule_id))
+                source_bound = True
+        if (
+            not source_bound
+            and not semantic_proposals
+            and _norm(indicator) == _norm(item.get("itm_nm"))
+            and _user_clarification_provenance(
+                indicator_atom, f"indicator.item[{idx}].user_clarification"
+            ) is not None
+        ):
+            item_options.append((item, None, "USER_CLARIFICATION_EXACT"))
     if not item_options:
         if len(items) == 1:
             context = _context_provenance(indicator_atom, "indicator.generic_item")
@@ -818,7 +967,12 @@ def project_candidate_v2(
         if item_evidence is None:
             reasons.append("CLAIM_PROVENANCE_MISSING")
             continue
-        checked_items.append((item, prov, rule, AxisBinding("ITEM", str(item["itm_id"]), None, "indicator", "EXACT_LABEL" if prov else "SINGLETON_INVENTORY", {
+        binding_basis = (
+            "USER_CLARIFICATION_EXACT"
+            if rule == "USER_CLARIFICATION_EXACT"
+            else "EXACT_LABEL" if prov else "SINGLETON_INVENTORY"
+        )
+        checked_items.append((item, prov, rule, AxisBinding("ITEM", str(item["itm_id"]), None, "indicator", binding_basis, {
             **item_evidence,
             "consumed_span": prov,
         })))
@@ -952,7 +1106,7 @@ def project_candidate_v2(
         if (
             not options
             and allow_unqualified_nationwide
-            and _get(region_atom, "status") != "EXPLICIT"
+            and _get(region_atom, "status") not in {"EXPLICIT", "AMBIGUOUS"}
         ):
             nationwide = _geographic_nationwide_default(
                 indicator_atom, dindex=dindex, dimension=dimension, values=values
@@ -1066,7 +1220,7 @@ def project_candidate_v2(
         reasons.append("UNIT_MISMATCH")
     if not assignments and not reasons:
         reasons.append("NO_COMPATIBLE_SERIES")
-    return _make_projection(table, assignments, abstained, reasons)
+    return _make_projection(table, assignments, abstained, reasons, _slot_diagnostics(table, profile, assignments, abstained, reasons))
 
 
 def _query_plan(assignment: CandidateAssignment) -> dict[str, Any] | None:
@@ -1675,7 +1829,7 @@ def project_candidate_monthly_v2j(
                                 ),
                             ))
         options = _prune_strictly_subsumed_axis_matches(options)
-        if not options and allow_unqualified_nationwide and _get(region_atom, "status") != "EXPLICIT":
+        if not options and allow_unqualified_nationwide and _get(region_atom, "status") not in {"EXPLICIT", "AMBIGUOUS"}:
             nationwide = _geographic_nationwide_default(
                 indicator_atom, dindex=dindex, dimension=dimension, values=values,
             )
@@ -1776,7 +1930,7 @@ def project_candidate_monthly_v2j(
         reasons.append("UNIT_MISMATCH")
     if not assignments and not reasons:
         reasons.append("NO_COMPATIBLE_SERIES")
-    return _make_projection(table, assignments, abstained, reasons)
+    return _make_projection(table, assignments, abstained, reasons, _slot_diagnostics(table, profile, assignments, abstained, reasons))
 
 
 def _monthly_identity_audit_v2h(

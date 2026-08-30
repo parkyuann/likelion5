@@ -24,6 +24,58 @@ except ImportError:  # pragma: no cover - direct script execution
     from l2_segmentation import call_hcx_l2_segmentation, call_hcx_l2_split
 
 
+class L2ReceiptError(ValueError):
+    """Raised when the L2 producer receipt violates its bounded contract."""
+
+
+_UNRESOLVED_SPAN_FIELDS = {"indicator_scope", "source_region"}
+_UNRESOLVED_SPAN_ERROR_CODES = {
+    "EMPTY",
+    "NOT_FOUND",
+    "AMBIGUOUS",
+    "OCCURRENCE_INDEX_INVALID",
+    "UNKNOWN",
+}
+
+
+def _validated_unresolved_span_receipt(
+    resolved: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]]]:
+    """Validate the producer/consumer boundary before writing the manifest."""
+    if not isinstance(resolved, dict):
+        raise L2ReceiptError("L2_RESPONSE_INVALID")
+    count = resolved.get("unresolved_spans")
+    details = resolved.get("unresolved_span_details")
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        or not isinstance(details, list)
+        or count != len(details)
+    ):
+        raise L2ReceiptError("L2_RESPONSE_INVALID")
+    for detail in details:
+        if not isinstance(detail, dict) or set(detail) != {
+            "sentence_id",
+            "field",
+            "source_span_text",
+            "span_error_code",
+        }:
+            raise L2ReceiptError("L2_RESPONSE_INVALID")
+        if (
+            isinstance(detail["sentence_id"], bool)
+            or not isinstance(detail["sentence_id"], int)
+            or not isinstance(detail["field"], str)
+            or detail["field"] not in _UNRESOLVED_SPAN_FIELDS
+            or not isinstance(detail["source_span_text"], str)
+            or len(detail["source_span_text"]) > 512
+            or not isinstance(detail["span_error_code"], str)
+            or detail["span_error_code"] not in _UNRESOLVED_SPAN_ERROR_CODES
+        ):
+            raise L2ReceiptError("L2_RESPONSE_INVALID")
+    return count, details
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [
         json.loads(line)
@@ -55,6 +107,7 @@ def run(
     }
     latency_total = 0.0
     article_runs: list[dict[str, Any]] = []
+    raw_l2_envelopes: list[dict[str, Any]] = []
     for article in articles:
         article_idx = str(article.get("article_idx"))
         title = str(article.get("title") or article.get("기사제목") or "")
@@ -72,6 +125,7 @@ def run(
                 last_error = exc
                 time.sleep(pause_seconds * (attempt + 1))
                 continue
+            unresolved_count, unresolved_details = _validated_unresolved_span_receipt(resolved)
             latency_total += latency_ms
             article_usage = {
                 "prompt_tokens": int(usage.get("promptTokens") or 0),
@@ -86,8 +140,22 @@ def run(
                 "article_idx": article_idx,
                 "attempts": attempt + 1,
                 "latency_ms": round(latency_ms, 1),
+                "status": str(resolved.get("canonical_status") or "L2_UNAVAILABLE"),
+                "reason_code": resolved.get("canonical_reason_code"),
+                "resolver_version": resolved.get("resolver_version"),
+                "repair_reason_code": resolved.get("repair_reason_code"),
+                "raw_prediction_sha256": (resolved.get("raw_envelope") or {}).get("raw_prediction_sha256"),
+                "canonical_l2_sha256": resolved.get("canonical_l2_sha256"),
                 **article_usage,
             })
+            raw_envelope = resolved.get("raw_envelope")
+            if isinstance(raw_envelope, dict):
+                raw_l2_envelopes.append({
+                    "article_idx": article_idx,
+                    **raw_envelope,
+                    "model": model,
+                    "attempt": attempt + 1,
+                })
             for sentence in resolved["sentences"]:
                 predictions.append({
                     "article_idx": article_idx,
@@ -99,11 +167,12 @@ def run(
                     "kind": "MISSING_SENTENCES",
                     "sentence_ids": resolved["missing_sentence_ids"],
                 })
-            if resolved["unresolved_spans"]:
+            if unresolved_count:
                 errors.append({
                     "article_idx": article_idx,
                     "kind": "UNRESOLVED_SPANS",
-                    "count": resolved["unresolved_spans"],
+                    "count": unresolved_count,
+                    "details": unresolved_details,
                 })
             last_error = None
             break
@@ -134,6 +203,7 @@ def run(
         "total_tokens": usage_total["total_tokens"],
         "latency_ms_total": round(latency_total, 1),
         "article_runs": article_runs,
+        "raw_l2_envelopes": raw_l2_envelopes,
         "errors": errors,
         "generation_config": generation_config or {
             "temperature": 0.1,

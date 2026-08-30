@@ -3,19 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import io
 import os
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Callable
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from backend.errors import BackendError
-
-ROOT = Path(__file__).resolve().parents[1]
-OCR_PROTOTYPE = ROOT / "src" / "hcx_ocr.py"
 
 MAX_UPLOAD_BYTES = int(os.getenv("OCR_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 MAX_IMAGE_PIXELS = int(os.getenv("OCR_MAX_IMAGE_PIXELS", "40000000"))
@@ -82,51 +77,33 @@ def _decode_image(data: bytes) -> tuple[Image.Image, tuple[int, int], str]:
     return image, original_size, media_type
 
 
-def _load_ocr_module() -> ModuleType:
-    if not OCR_PROTOTYPE.is_file():
+def _default_ocr(image: Image.Image) -> dict[str, Any]:
+    from backend import hcx_ocr_client
+
+    # HCX-005 is a CLOVA Studio Vision call. Keep its credential on the
+    # server only; no browser request ever sees this value.
+    if not (os.getenv("NCP_CLOVASTUDIO_API_KEY", "").strip() or os.getenv("HCX_API_KEY", "").strip()):
         raise BackendError(
-            "OCR_NOT_AVAILABLE",
-            "OCR 실행 모듈을 찾을 수 없습니다.",
+            "OCR_NOT_CONFIGURED",
+            "HCX-005 OCR API 키가 설정되지 않았습니다.",
             status_code=503,
         )
-    spec = importlib.util.spec_from_file_location("likelion_hcx_ocr", OCR_PROTOTYPE)
-    if spec is None or spec.loader is None:
-        raise BackendError("OCR_NOT_AVAILABLE", "OCR 모듈을 불러올 수 없습니다.", status_code=503)
-    module = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(module)
-    except ImportError as exc:
-        raise BackendError(
-            "OCR_DEPENDENCY_MISSING",
-            "OCR 실행에 필요한 패키지가 설치되지 않았습니다.",
-            status_code=503,
-        ) from exc
-    return module
-
-
-def _default_ocr(image: Image.Image) -> dict[str, Any]:
-    module = _load_ocr_module()
-    try:
-        result = module.run_ocr(
+        result = hcx_ocr_client.run_ocr(
             image,
             json_mode=False,
-            tiles=1,
+            tiles=hcx_ocr_client.auto_tiles(image),
         )
+    except BackendError:
+        raise
     except RuntimeError as exc:
-        message = str(exc)
-        if "API_KEY" in message or "api key" in message.lower():
-            raise BackendError(
-                "OCR_NOT_CONFIGURED",
-                "OCR API 키가 설정되지 않았습니다.",
-                status_code=503,
-            ) from exc
         raise BackendError(
             "OCR_PROCESSING_FAILED",
-            "OCR 서비스 호출 중 오류가 발생했습니다.",
+            "HCX-005 OCR 서비스 호출 중 오류가 발생했습니다.",
             status_code=502,
         ) from exc
-    result["model"] = module.MODEL
-    result["prompt_version"] = module.PROMPT_VERSION
+    result["model"] = hcx_ocr_client.MODEL
+    result["prompt_version"] = hcx_ocr_client.PROMPT_VERSION
     return result
 
 
@@ -188,6 +165,7 @@ def prepare_image_article(
 
     safe_filename = Path(filename or "upload").name
     content_hash = f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
+    image_sha256 = f"sha256:{hashlib.sha256(data).hexdigest()}"
     return {
         "type": "article_document",
         "status": "ready_for_verification",
@@ -202,6 +180,7 @@ def prepare_image_article(
             "content_type": detected_content_type,
             "byte_size": len(data),
             "content_hash": content_hash,
+            "image_sha256": image_sha256,
         },
         "extraction": {
             "status": "success" if not warnings else "success_with_warning",

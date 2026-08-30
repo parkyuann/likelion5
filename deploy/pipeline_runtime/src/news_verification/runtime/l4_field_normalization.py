@@ -32,6 +32,11 @@ try:
 except ImportError:  # pragma: no cover - direct script execution
     from value_direction import extract_value_direction
 
+try:
+    from .lexical_rules import _REGION_PATTERN
+except ImportError:  # pragma: no cover - direct script execution
+    from lexical_rules import _REGION_PATTERN
+
 
 LEVEL = "LEVEL"
 CHANGE_RATE = "CHANGE_RATE"
@@ -118,7 +123,20 @@ _EXPLICIT_PERIOD_RE = re.compile(
     r"\d{4}년(?:\s*\d+\s*분기|\s*\d+\s*월)?|"
     r"(?:올해|지난해|작년|지난달|이달)|(?<!\d)\d{1,2}월"
 )
-_DURATION_ONLY_RE = re.compile(r"\s*(?:최근|지난)?\s*\d+\s*(?:년|개월|분기|주)\s*(?:간|동안)?\s*")
+# A four-digit ``2025년`` is an annual cell period, not a duration.  Keep
+# genuine spans such as ``5년`` and ``최근 5년`` on the non-cell path while
+# preventing the duration recognizer from erasing an explicit year anchor.
+_DURATION_ONLY_RE = re.compile(
+    r"\s*(?:최근|지난)?\s*(?!(?:19|20)\d{2}\s*년(?:\s|$))"
+    r"\d+\s*(?:년|개월|분기|주)\s*(?:간|동안)?\s*"
+)
+_DURATION_OR_RANGE_RE = re.compile(
+    r"^(?:\d+\s*년\s*(?:연속|만에)|\d{4}\s*년\s*(?:이후|이래|부터))$"
+)
+_DURATION_OR_RANGE_IN_SENTENCE_RE = re.compile(
+    r"(?:\d+\s*년\s*(?:연속|만에)|\d{4}\s*년\s*(?:이후|이래|부터))"
+)
+_YEAR_SURFACE_RE = re.compile(r"^(?:19|20)\d{2}년?$|^(?:지난해|작년|올해)$")
 
 # Population nouns the retrieval layer can filter a table by.
 _POPULATION_RE = re.compile(
@@ -126,7 +144,7 @@ _POPULATION_RE = re.compile(
     r"주민|학생|환자|사업체|기업|농가|어가|청년|고령자|노인|외국인)"
 )
 _DIMENSION_RE = re.compile(
-    r"(?:대기업|중견기업|중소기업|수도권|비수도권|서울|경기|전국|남성|여성|"
+    rf"(?:{_REGION_PATTERN.pattern}|대기업|중견기업|중소기업|비수도권|남성|여성|"
     r"청년층|고령층|제조업|서비스업|건설업|농림어업|공공부문|민간부문)"
 )
 
@@ -432,16 +450,22 @@ def _period_pair(
 ) -> dict[str, Any]:
     """Build measurement/baseline periods without inventing an unknown basis."""
     raw = str(period_raw or "").strip()
+    # Duration and lower-bound/ranking expressions describe an operation over
+    # cells, not the period of one measurement cell.  Keep the raw expression
+    # in the outer evidence field, but never let it become the measurement
+    # endpoint used by a query plan.
+    non_cell_period = bool(_DURATION_OR_RANGE_RE.fullmatch(raw))
+    cell_raw = "" if non_cell_period else raw
     sentence = str(sentence_text or "")
     basis, baseline_marker, comparison_start = comparison_resolver(sentence, measurement)
-    baseline_only = bool(raw and _BASELINE_ONLY_RE.fullmatch(raw))
+    baseline_only = bool(cell_raw and _BASELINE_ONLY_RE.fullmatch(cell_raw))
     if baseline_only:
         measurement_raw = (
             _preceding_measurement_raw(sentence, comparison_start)
             or str(fallback_measurement_raw or "").strip()
         )
     else:
-        measurement_raw = raw
+        measurement_raw = cell_raw
     if basis == PERIOD_TO_PERIOD and _DURATION_ONLY_RE.fullmatch(measurement_raw):
         # ``5년 간`` is a distance between cells, not the measurement cell.
         # The legacy period_raw alias still preserves it as source evidence.
@@ -483,6 +507,7 @@ def _period_pair(
         "measurement": {"raw": measurement_raw, "absolute": measurement_absolute},
         "baseline": {"raw": baseline_raw, "absolute": baseline_absolute},
         "basis": basis,
+        "period_expression_role": "DURATION_OR_RANGE" if non_cell_period else "MEASUREMENT",
     }
 
 
@@ -543,6 +568,103 @@ def dimension_terms(indicator_label: object, sentence_text: object) -> list[str]
     return from_indicator or _terms(_DIMENSION_RE, sentence_text)
 
 
+def _compact_period_surface(value: object) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip()
+
+
+def _period_surface_in_sentence(period_raw: object, sentence_text: object) -> bool:
+    raw = _compact_period_surface(period_raw)
+    sentence = _compact_period_surface(sentence_text)
+    return bool(raw and sentence and raw in sentence)
+
+
+def _period_is_non_cell_expression(period_raw: object, sentence_text: object) -> bool:
+    raw = str(period_raw or "").strip()
+    if not raw:
+        return False
+    if _DURATION_OR_RANGE_RE.fullmatch(raw) or _DURATION_ONLY_RE.fullmatch(raw):
+        return True
+    compact_raw = _compact_period_surface(raw)
+    return any(
+        compact_raw in _compact_period_surface(match.group(0))
+        or _compact_period_surface(match.group(0)) in compact_raw
+        for match in _DURATION_OR_RANGE_IN_SENTENCE_RE.finditer(str(sentence_text or ""))
+    )
+
+
+def _unanchored_period(period_raw: object, sentence_text: object, assignment: dict[str, Any]) -> bool:
+    """Reject non-inherited period values that have no current-sentence span.
+
+    HCX may return a plausible-looking period such as ``최근`` even when that
+    surface is absent from the source sentence.  Such a value is not evidence
+    for a measurement cell and must be cleared so compose_all can either use a
+    bounded adjacent source-backed period or leave the claim unresolved.
+    """
+    raw = str(period_raw or "").strip()
+    if not raw or _period_is_non_cell_expression(raw, sentence_text):
+        return False
+    source = str(assignment.get("period_source") or "").strip().upper()
+    if source.startswith("INHERITED") and assignment.get("period_inheritance_provenance"):
+        return False
+    return not _period_surface_in_sentence(raw, sentence_text)
+
+
+def _has_conflicting_local_period(sentence_text: object) -> bool:
+    """A real local date/relative token blocks article-scope inheritance."""
+    sentence = str(sentence_text or "")
+    for match in _EXPLICIT_PERIOD_RE.finditer(sentence):
+        tail = sentence[match.end():]
+        if re.match(r"\s*(?:이후|이래|부터)", tail):
+            continue
+        return True
+    return False
+
+
+def _bounded_article_period_inheritance(
+    assignment: dict[str, Any], assignments: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Inherit one immediately preceding, source-backed article period only."""
+    if _has_conflicting_local_period(assignment.get("sentence_text")):
+        return None
+    try:
+        current_sentence_id = int(assignment.get("article_sentence_id"))
+    except (TypeError, ValueError):
+        return None
+    article_id = str(assignment.get("article_idx") or "")
+    previous_sentence_id = current_sentence_id - 1
+    previous = [
+        row for row in assignments
+        if str(row.get("article_idx") or "") == article_id
+        and row.get("article_sentence_id") is not None
+        and str(row.get("article_sentence_id")) == str(previous_sentence_id)
+    ]
+    usable = []
+    for row in previous:
+        raw = str(row.get("period_raw") or "").strip()
+        if (
+            raw
+            and not _period_is_non_cell_expression(raw, row.get("sentence_text"))
+            and _period_surface_in_sentence(raw, row.get("sentence_text"))
+        ):
+            usable.append((raw, row))
+    distinct = { _compact_period_surface(raw) for raw, _ in usable }
+    if len(distinct) != 1:
+        return None
+    raw, source = usable[0]
+    return {
+        "period_raw": raw,
+        "period_source": "INHERITED_ARTICLE_SCOPE",
+        "period_sentence_id": previous_sentence_id,
+        "period_inheritance_provenance": {
+            "rule_id": "adjacent-article-period-inheritance-v1",
+            "source_sentence_id": previous_sentence_id,
+            "source_period_raw": raw,
+            "target_sentence_id": current_sentence_id,
+            "conflict_check": "NO_LOCAL_MEASUREMENT_PERIOD",
+        },
+    }
+
+
 # Only rate and ratio suffixes are stripped.  Gold keeps the measure noun —
 # its item for ``대기업 수출액 증가율`` is ``수출액``, not ``수출`` — and it keeps the
 # population inside the item (``단기 근로자``), so neither is removed here.
@@ -569,6 +691,7 @@ def compose_fields(
     *,
     published_at: object = None,
     monthly_provenance_v2h: bool = False,
+    _period_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the six retrieval fields for one value."""
     raw_indicator = assignment.get("indicator_label") or ""
@@ -577,6 +700,13 @@ def compose_fields(
     sentence = assignment.get("sentence_text") or ""
     unit = assignment.get("value_unit")
     period_raw = _strip_governing_tail(str(assignment.get("period_raw") or ""))
+    period_meta = dict(_period_meta or {})
+    if _unanchored_period(period_raw, sentence, assignment):
+        period_meta["period_rejection"] = {
+            "rule_id": "source-anchored-period-required-v1",
+            "reason": "PERIOD_NOT_PRESENT_IN_SENTENCE",
+        }
+        period_raw = ""
     if not period_raw and stripped_periods:
         # The layout left the period empty but the indicator carried one, so
         # the information is moved rather than discarded.
@@ -592,13 +722,19 @@ def compose_fields(
     )
     pair_builder = period_pair_monthly_v2h if monthly_provenance_v2h else period_pair
     basis_builder = comparison_basis_monthly_v2h if monthly_provenance_v2h else comparison_basis
+    pair_raw = "" if _period_is_non_cell_expression(period_raw, sentence) else period_raw
     pair = pair_builder(
-        period_raw,
+        pair_raw,
         sentence,
         kind,
         published_at,
         assignment.get("region_period_raw"),
     )
+    if (
+        _period_is_non_cell_expression(period_raw, sentence)
+        or "period_expression_provenance" in period_meta
+    ):
+        pair["period_expression_role"] = "DURATION_OR_RANGE"
     baseline_level = assignment.get("indicator_pairing") == "PARENTHESIZED_BASELINE"
     if baseline_level:
         _, _, comparison_start = basis_builder(sentence, CHANGE_RATE)
@@ -626,7 +762,7 @@ def compose_fields(
         # query-plan code consumes the nested pair above; these preserve the
         # pre-R1 raw evidence instead of deleting it during the contract move.
         "period_raw": period_raw,
-        "period_absolute": absolute_period(period_raw, published_at),
+        "period_absolute": absolute_period(pair_raw, published_at),
         "population": population_terms(indicator, sentence),
         "item": item_terms(indicator),
         "dimension": dimension_terms(indicator, sentence),
@@ -652,9 +788,7 @@ def compose_fields(
             # The cell's own resolution and where its absolute came from.  Both
             # are recorded rather than folded into the absolute string so a
             # later comparator can refuse to equate two different resolutions.
-            "period_granularity": period_granularity(
-                pair["measurement"]["raw"] or period_raw
-            ),
+            "period_granularity": period_granularity(pair["measurement"]["raw"]),
             "period_resolution_basis": (
                 "UNRESOLVED" if not pair["measurement"]["absolute"] else
                 "EXPLICIT_SPAN"
@@ -675,6 +809,7 @@ def compose_fields(
             # ``상위 10개사``).  It catches business size and little else, so the
             # method is recorded and the metric reported separately.
             "dimension_method": "FACET_DICTIONARY_PARTIAL",
+            **period_meta,
         },
     }
 
@@ -686,11 +821,50 @@ def compose_all(
     monthly_provenance_v2h: bool = False,
 ) -> list[dict[str, Any]]:
     published = published_at_by_article or {}
+    prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for assignment in assignments:
+        row = dict(assignment)
+        meta: dict[str, Any] = {}
+        raw = str(row.get("period_raw") or "").strip()
+        sentence = str(row.get("sentence_text") or "")
+        if _period_is_non_cell_expression(raw, sentence):
+            # A duration/range (for example ``2년 연속``) is source evidence
+            # about an operation over cells, not a cell period itself.  Keep
+            # that evidence before replacing the working period with a
+            # bounded, adjacent source-backed measurement period.
+            expression_receipt = {
+                "expression_role": "DURATION_OR_RANGE",
+                "original_period_raw": raw,
+                "original_period_source": str(row.get("period_source") or ""),
+                "original_sentence_id": row.get("article_sentence_id"),
+            }
+            inherited = _bounded_article_period_inheritance(row, assignments)
+            if inherited is not None:
+                row.update(inherited)
+                meta["period_inheritance_provenance"] = dict(inherited["period_inheritance_provenance"])
+                expression_receipt["cell_period_resolution"] = "BOUNDED_ADJACENT_SOURCE_PERIOD"
+            else:
+                expression_receipt["cell_period_resolution"] = "UNRESOLVED"
+            meta["period_expression_provenance"] = expression_receipt
+        elif _unanchored_period(raw, sentence, row):
+            inherited = _bounded_article_period_inheritance(row, assignments)
+            if inherited is not None:
+                row.update(inherited)
+                meta["period_inheritance_provenance"] = dict(inherited["period_inheritance_provenance"])
+            else:
+                row["period_raw"] = ""
+                meta["period_rejection"] = {
+                    "rule_id": "source-anchored-period-required-v1",
+                    "reason": "PERIOD_NOT_PRESENT_IN_SENTENCE",
+                    "original_period_source": str(row.get("period_source") or ""),
+                }
+        prepared.append((row, meta))
     return [
         compose_fields(
             row,
             published_at=published.get(str(row.get("article_idx"))),
             monthly_provenance_v2h=monthly_provenance_v2h,
+            _period_meta=meta,
         )
-        for row in assignments
+        for row, meta in prepared
     ]

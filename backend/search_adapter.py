@@ -35,6 +35,8 @@ REQUIRED_QDRANT_FIELDS = REQUIRED_OPENSEARCH_FIELDS - {"text"}
 CANDIDATE_AUTHORITY = "CANDIDATE_GENERATION_ONLY"
 SEARCH_CHANNEL_TOP_K = 100
 SEARCH_WINDOW_MAX = 1000
+DENSE_BOUNDARY_CLOSED = "CLOSED"
+DENSE_BOUNDARY_DROPPED_UNCLOSED_CUTOFF_TIE = "DROPPED_UNCLOSED_CUTOFF_TIE"
 
 
 class SearchAdapter(Protocol):
@@ -165,7 +167,10 @@ class OpenSearchBM25Adapter:
             raise _fail("KOSIS_RELEASE_MISMATCH", "OpenSearch configured release가 존재하지 않습니다.")
         self._preflighted = True
 
-    def _body(self, query: str, size: int) -> dict[str, Any]:
+    def _body(self, query: str, size: int, *, fields: Iterable[str] | None = None) -> dict[str, Any]:
+        selected_fields = sorted(set(fields or ALLOWED_FIELDS))
+        if not selected_fields or not set(selected_fields).issubset(ALLOWED_FIELDS):
+            raise _fail("OPENSEARCH_FIELD_INVALID", "OpenSearch 검색 field가 허용되지 않습니다.", 422)
         return {
             "size": size,
             "track_total_hits": True,
@@ -175,7 +180,7 @@ class OpenSearchBM25Adapter:
                     "must": [{"match": {"text": {"query": query}}}],
                     "filter": [
                         {"term": {"snapshot_id": self.config.release_id}},
-                        {"terms": {"field": sorted(ALLOWED_FIELDS)}},
+                        {"terms": {"field": selected_fields}},
                     ],
                 }
             },
@@ -215,7 +220,14 @@ class OpenSearchBM25Adapter:
             },
         }
 
-    def search(self, query: str, *, limit: int, offset: int = 0) -> dict[str, Any]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        offset: int = 0,
+        fields: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
         """Return only release-pinned, deduplicated BM25 candidate envelopes."""
         try:
             page_limit, page_offset = int(limit), int(offset)
@@ -227,7 +239,11 @@ class OpenSearchBM25Adapter:
         if not normalized:
             raise _fail("EMPTY_SEARCH_QUERY", "검색어가 비어 있습니다.", 422)
         self.preflight()
-        response = self._request("POST", f"/{quote(self.config.index, safe='-_:.')}/_search", json=self._body(normalized, SEARCH_CHANNEL_TOP_K))
+        response = self._request(
+            "POST",
+            f"/{quote(self.config.index, safe='-_:.')}/_search",
+            json=self._body(normalized, SEARCH_CHANNEL_TOP_K, fields=fields),
+        )
         try:
             payload = response.json()
             hits_payload = payload["hits"]
@@ -464,46 +480,108 @@ class QdrantDenseAdapter:
         query_points_groups = getattr(self._client, "query_points_groups", None)
         if query_points_groups is None or qdrant_models is None:
             raise _fail("QDRANT_GROUP_QUERY_UNAVAILABLE", "Qdrant grouped query API를 사용할 수 없습니다.")
-        try:
-            result = query_points_groups(
-                collection_name=self.config.collection,
-                query=[float(value) for value in vector],
-                query_filter=query_filter,
-                group_by="table_key",
-                group_size=1,
-                limit=SEARCH_CHANNEL_TOP_K + 1,
-                search_params=qdrant_models.SearchParams(exact=True),
-                with_payload=True,
-                with_vectors=False,
-            )
-        except Exception as exc:
-            raise _fail("QDRANT_UNAVAILABLE", "Qdrant grouped dense 검색에 실패했습니다.") from exc
-        groups = _mapping_value(result, "groups")
-        if not isinstance(groups, list) or len(groups) > SEARCH_CHANNEL_TOP_K + 1:
-            raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant grouped 검색 응답이 올바르지 않습니다.")
         grouped: list[tuple[str, str, dict[str, Any]]] = []
-        seen_group_keys: set[str] = set()
-        for group in groups:
-            group_id = _mapping_value(group, "id")
-            hits = _mapping_value(group, "hits")
-            if group_id is None or not str(group_id).strip() or not isinstance(hits, list) or len(hits) != 1:
-                raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant table group 계약이 일치하지 않습니다.")
-            candidate = self._point(hits[0])
-            table_key = candidate["table_key"]
-            if str(group_id) != table_key:
-                raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant group key와 payload table_key가 다릅니다.")
-            if table_key in seen_group_keys:
-                raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant table group이 중복됩니다.")
-            seen_group_keys.add(table_key)
-            point_id = str(candidate["evidence"]["point_id"])
-            grouped.append((table_key, point_id, candidate))
-        grouped.sort(key=lambda item: (-float(item[2]["score"]), item[0], item[1]))
-        if len(grouped) == SEARCH_CHANNEL_TOP_K + 1 and float(grouped[99][2]["score"]) == float(grouped[100][2]["score"]):
+        requested_window = SEARCH_CHANNEL_TOP_K + 1
+        expansion_windows: list[int] = []
+        while True:
+            try:
+                result = query_points_groups(
+                    collection_name=self.config.collection,
+                    query=[float(value) for value in vector],
+                    query_filter=query_filter,
+                    group_by="table_key",
+                    group_size=1,
+                    limit=requested_window,
+                    search_params=qdrant_models.SearchParams(exact=True),
+                    with_payload=True,
+                    with_vectors=False,
+                )
+            except Exception as exc:
+                raise _fail("QDRANT_UNAVAILABLE", "Qdrant grouped dense 검색에 실패했습니다.") from exc
+            groups = _mapping_value(result, "groups")
+            if not isinstance(groups, list) or len(groups) > requested_window:
+                raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant grouped 검색 응답이 올바르지 않습니다.")
+            grouped = []
+            seen_group_keys: set[str] = set()
+            for group in groups:
+                group_id = _mapping_value(group, "id")
+                hits = _mapping_value(group, "hits")
+                if group_id is None or not str(group_id).strip() or not isinstance(hits, list) or len(hits) != 1:
+                    raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant table group 계약이 일치하지 않습니다.")
+                candidate = self._point(hits[0])
+                table_key = candidate["table_key"]
+                if str(group_id) != table_key:
+                    raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant group key와 payload table_key가 다릅니다.")
+                if table_key in seen_group_keys:
+                    raise _fail("QDRANT_PAYLOAD_CONTRACT_MISMATCH", "Qdrant table group이 중복됩니다.")
+                seen_group_keys.add(table_key)
+                point_id = str(candidate["evidence"]["point_id"])
+                grouped.append((table_key, point_id, candidate))
+            grouped.sort(key=lambda item: (-float(item[2]["score"]), item[0], item[1]))
+            boundary_closed = len(grouped) <= SEARCH_CHANNEL_TOP_K
+            cutoff_score: float | None = None
+            if len(grouped) > SEARCH_CHANNEL_TOP_K:
+                cutoff_score = float(grouped[SEARCH_CHANNEL_TOP_K - 1][2]["score"])
+                boundary_closed = float(grouped[SEARCH_CHANNEL_TOP_K][2]["score"]) < cutoff_score
+            if boundary_closed:
+                break
+            if requested_window >= SEARCH_WINDOW_MAX:
+                # A collection can expose more than SEARCH_CHANNEL_TOP_K groups
+                # with the same score at the cutoff.  There is no safe way to
+                # choose 100 representatives from that set without an explicit
+                # tie-break contract, so keep only the strictly-better groups.
+                # This is a bounded channel degradation; payload/vector/preflight
+                # failures above remain hard errors.
+                if cutoff_score is None:
+                    raise _fail("DENSE_BOUNDARY_TIE_UNRESOLVED", "dense Top-100 경계 동률을 결정할 수 없습니다.")
+                observed_tied_count = sum(
+                    1 for _, _, item in grouped if float(item["score"]) == cutoff_score
+                )
+                candidates = [
+                    item for _, _, item in grouped
+                    if float(item["score"]) > cutoff_score
+                ]
+                boundary_status = DENSE_BOUNDARY_DROPPED_UNCLOSED_CUTOFF_TIE
+                boundary_audit = {
+                    "boundary_status": boundary_status,
+                    "cutoff_score": cutoff_score,
+                    "observed_tied_count": observed_tied_count,
+                    "requested_window": requested_window,
+                    "expansions": list(expansion_windows),
+                }
+                break
+            # The boundary decision is made against the same sealed maximum
+            # window either way.  Intermediate 202/404/808 grouped queries do
+            # not add authority: if they close, the maximum window closes with
+            # the same Top-100; if they do not, only the maximum window can
+            # authorize bounded degradation.  Jump directly to that window to
+            # avoid repeatedly transferring the same exact-search groups.
+            requested_window = SEARCH_WINDOW_MAX
+            expansion_windows.append(requested_window)
+        else:  # pragma: no cover - the loop exits through a boundary decision
             raise _fail("DENSE_BOUNDARY_TIE_UNRESOLVED", "dense Top-100 경계 동률을 결정할 수 없습니다.")
-        candidates = [item[2] for item in grouped[:SEARCH_CHANNEL_TOP_K]]
+        if boundary_closed:
+            candidates = [item[2] for item in grouped[:SEARCH_CHANNEL_TOP_K]]
+            cutoff_score = float(grouped[SEARCH_CHANNEL_TOP_K - 1][2]["score"]) if len(grouped) >= SEARCH_CHANNEL_TOP_K else None
+            boundary_audit = {
+                "boundary_status": DENSE_BOUNDARY_CLOSED,
+                "cutoff_score": cutoff_score,
+                "observed_tied_count": (
+                    sum(1 for _, _, item in grouped if float(item["score"]) == cutoff_score)
+                    if cutoff_score is not None else 0
+                ),
+                "requested_window": requested_window,
+                "expansions": list(expansion_windows),
+            }
         for rank, candidate in enumerate(candidates, start=1):
-            candidate["evidence"] = {**candidate["evidence"], "rank": rank}
-        relation = "gte" if len(grouped) == SEARCH_CHANNEL_TOP_K + 1 else "eq"
+            candidate["evidence"] = {
+                **candidate["evidence"],
+                "rank": rank,
+                "group_window": requested_window,
+                "group_window_expansions": list(expansion_windows),
+                "boundary_status": boundary_audit["boundary_status"],
+            }
+        relation = "gte" if len(grouped) == requested_window else "eq"
         return {
             "candidates": candidates,
             "window": candidates,
@@ -511,4 +589,5 @@ class QdrantDenseAdapter:
             "total_relation": relation,
             "limit": SEARCH_CHANNEL_TOP_K,
             "offset": 0,
+            "audit": boundary_audit,
         }

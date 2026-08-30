@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 import re
+import time
 from typing import Any, Mapping, Protocol, Sequence
 import uuid
 
@@ -191,7 +193,7 @@ class Hcx007AnswerClient:
         "required": ["verdict", "headline", "explanation", "limitation", "citation_ids"],
     }
 
-    def __init__(self, api_key: str, *, timeout_seconds: int = 120) -> None:
+    def __init__(self, api_key: str, *, timeout_seconds: float = 120.0) -> None:
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
 
@@ -479,11 +481,55 @@ def generate_guarded_answer(
     )
 
 
+def answer_render_mode(value: str | None = None) -> str:
+    """Validate the single answer-render policy used by live execution."""
+    mode = str(value if value is not None else os.getenv("PIPELINE_ANSWER_RENDER_MODE", "DETERMINISTIC_ONLY")).strip().upper()
+    if mode not in {"DETERMINISTIC_ONLY", "HCX_SHADOW_SYNC"}:
+        raise RuntimeError("ANSWER_RENDER_MODE_INVALID")
+    return mode
+
+
+def render_answer(
+    packet: EvidencePacket,
+    hcx: HcxAnswerer | None,
+    *,
+    mode: str | None = None,
+    rag: RagReasoner | None = None,
+    use_rag: bool = False,
+) -> dict[str, Any]:
+    """Return the sealed deterministic answer; optionally attach one HCX shadow call.
+
+    The shadow call is deliberately observational.  It can never replace the
+    answer, verdict, official value, selector, or limitation from the sealed
+    packet.  This keeps presentation latency and authority separate.
+    """
+    selected = answer_render_mode(mode)
+    started_deterministic = time.monotonic_ns()
+    deterministic = deterministic_fallback(packet, fallback_reason="DETERMINISTIC_RENDER_DEFAULT")
+    deterministic["answer_timing"] = {
+        "sum_ms": max(0, int(round((time.monotonic_ns() - started_deterministic) / 1_000_000))),
+        "calls": 1,
+    }
+    if selected != "HCX_SHADOW_SYNC" or hcx is None:
+        deterministic["answer_shadow"] = {"mode": selected, "calls": 0}
+        return deterministic
+    started = time.monotonic_ns()
+    shadow: dict[str, Any] = {"mode": selected, "calls": 1}
+    try:
+        draft = hcx.render(packet, None)
+        # Validate only as an observational acceptance; discard all model text
+        # and preserve the deterministic public answer.
+        _validated_acceptance(packet, draft)
+        shadow["accepted"] = True
+    except Exception:
+        shadow["accepted"] = False
+    shadow["sum_ms"] = max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+    deterministic["answer_shadow"] = shadow
+    return deterministic
+
+
 __all__ = [
     "ANSWER_CONTRACT", "EvidenceDocument", "EvidencePacket", "Hcx007AnswerClient",
     "NcpRagReasoningClient", "build_evidence_packet", "deterministic_fallback",
-    "generate_guarded_answer", "validate_and_render_answer",
+    "generate_guarded_answer", "render_answer", "answer_render_mode", "validate_and_render_answer",
 ]
-
-
-

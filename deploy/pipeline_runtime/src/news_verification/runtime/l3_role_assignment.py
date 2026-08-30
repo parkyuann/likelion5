@@ -90,6 +90,85 @@ def _sentence_values(
     return grouped
 
 
+def _exact_region_evidence_by_sentence(
+    article_text: str,
+    *,
+    sentence_span_iterator: SentenceSpanIterator | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Expose one unambiguous article region as selector evidence.
+
+    ``source_region`` in L2 describes the statistical source, not a geographic
+    selector. A geographic phrase such as ``대구광역시`` therefore needs its
+    own source-grounded handoff. Only one exact L1 region candidate in a
+    sentence is accepted; multiple candidates remain unresolved downstream.
+    """
+    sentence_rows = (
+        sentence_offset_map(article_text, sentence_span_iterator=sentence_span_iterator)
+        if sentence_span_iterator is not None else sentence_offset_map(article_text)
+    )
+    starts = {
+        int(row["sentence_id"]): int(row.get("char_start") or 0)
+        for row in sentence_rows
+    }
+    candidates = (
+        build_span_candidates(article_text, sentence_span_iterator=sentence_span_iterator)
+        if sentence_span_iterator is not None else build_span_candidates(article_text)
+    )
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        if candidate.get("kind") == "dimension" and candidate.get("dimension_type") == "지역":
+            grouped.setdefault(int(candidate["sentence_id"]), []).append(candidate)
+    result: dict[int, dict[str, Any]] = {}
+    for sentence_id, rows in grouped.items():
+        distinct = {
+            (
+                int(row.get("char_start") or -1),
+                int(row.get("char_end") or -1),
+                str(row.get("text") or ""),
+            )
+            for row in rows
+        }
+        if sentence_id not in starts:
+            continue
+        if len(distinct) != 1:
+            result[sentence_id] = {
+                "surface": "",
+                "sentence_id": sentence_id,
+                "status": "AMBIGUOUS",
+                "dimension_type": "지역",
+                "candidate_surfaces": sorted({item[2] for item in distinct if item[2]}),
+                "evidence_basis": "ARTICLE_EXACT_DIMENSION_AMBIGUOUS",
+            }
+            continue
+        start, end, text = next(iter(distinct))
+        local_start = start - starts[sentence_id]
+        local_end = end - starts[sentence_id]
+        sentence = next(
+            (
+                str(row.get("text") or "")
+                for row in sentence_rows
+                if int(row["sentence_id"]) == sentence_id
+            ),
+            "",
+        )
+        if (
+            not text
+            or not (0 <= local_start < local_end <= len(sentence))
+            or sentence[local_start:local_end] != text
+        ):
+            continue
+        result[sentence_id] = {
+            "surface": text,
+            "sentence_id": sentence_id,
+            "start": local_start,
+            "end": local_end,
+            "text": text,
+            "dimension_type": "지역",
+            "evidence_basis": "ARTICLE_EXACT_DIMENSION",
+        }
+    return result
+
+
 def resolve_region_chain(
     layout: dict[int, dict[str, Any]],
     sentence_id: int,
@@ -352,11 +431,17 @@ def assign_roles(
     }
     values_by_sentence = (_sentence_values(article_text, sentence_span_iterator=sentence_span_iterator)
                           if sentence_span_iterator is not None else _sentence_values(article_text))
+    region_evidence_by_sentence = _exact_region_evidence_by_sentence(
+        article_text, sentence_span_iterator=sentence_span_iterator,
+    )
 
     assignments: list[dict[str, Any]] = []
     for sentence_id, values in sorted(values_by_sentence.items()):
         entry = layout.get(sentence_id, {})
         scopes = entry.get("indicator_scopes") or []
+        field_states = entry.get("field_states") if isinstance(entry.get("field_states"), dict) else {}
+        indicator_state = field_states.get("indicator") if isinstance(field_states.get("indicator"), dict) else {}
+        indicator_requires_clarification = indicator_state.get("state") in {"MISSING", "AMBIGUOUS"}
         region = resolve_region_chain(layout, sentence_id)
         period = entry.get("period_context") or {}
         sentence_text = sentences.get(sentence_id, "")
@@ -393,7 +478,7 @@ def assign_roles(
             compose = indicator is not None and region is not None and (
                 indicator_is_fragment(indicator.get("indicator_label"))
             )
-            if indicator is None or compose:
+            if (indicator is None or compose) and not indicator_requires_clarification:
                 inherited = _inherited_indicator(
                     layout,
                     sentence_id,
@@ -422,6 +507,10 @@ def assign_roles(
                 "period_source": "LOCAL" if period.get("period_raw") else "NONE",
                 "period_char_start": None,
                 "period_char_end": None,
+                "field_states": {
+                    "indicator": dict(indicator_state),
+                } if indicator_requires_clarification else {},
+                "clarification_required": "indicator" if indicator_requires_clarification else None,
             }
             sentence_period = local_sentence_periods[index] if not period.get("period_raw") else {}
             if not assignment["period_raw"] and sentence_period.get("raw"):
@@ -449,6 +538,9 @@ def assign_roles(
                 assignment["region_period_raw"] = str(
                     region_period.get("period_raw") or ""
                 )
+            region_evidence = region_evidence_by_sentence.get(sentence_id)
+            if region_evidence is not None:
+                assignment["region_evidence"] = dict(region_evidence)
             assignments.append(assignment)
     return assignments
 

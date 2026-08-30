@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date as calendar_date
 import gc
 import hashlib
 import json
@@ -27,9 +28,11 @@ from .deterministic_query_claim_front_v1 import (
     build_query_claim_front,
 )
 from .l1_value_candidates import build_span_candidates
-from .run_l2_segmentation import run as run_l2
+from .l2_segmentation import DOWNSTREAM_L2_ELIGIBLE
+from .run_l2_segmentation import L2ReceiptError, run as run_l2
 from .run_layer_stack import run_stack
 from .run_pipeline_operational_v2 import (
+    OperationalPipelineError,
     materialize_operational_l2,
     project_trace_operational_l2,
     run_live_from_files,
@@ -55,6 +58,14 @@ _STAGE_FILES = {
     "04": ({"04_stage_ledger.jsonl", "04_answers.jsonl"}, {"04_trace.log"}),
 }
 _SECRET_RE = re.compile(r"(?:Bearer\s+[A-Za-z0-9._~+/=-]+|(?:api[_-]?key|token)\s*[:=]\s*\S+)", re.I)
+_SECRET_ENV_NAME_RE = re.compile(
+    r"(?:^|_)(?:API_KEY|APIKEY|SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE_KEY|CREDENTIAL)(?:_|$)",
+    re.I,
+)
+_NON_SECRET_ENV_SUFFIX_RE = re.compile(
+    r"_(?:URL|URI|PATH|FILE|SOURCE|ID|REVISION|SHA256|HOST|PORT|PRESENT|ENABLED|NAME|COUNT|LIMIT|MODE|TYPE)$",
+    re.I,
+)
 
 
 class TraceStageError(RuntimeError):
@@ -196,7 +207,16 @@ def _atomic_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
 
 
 def _safe_env_secrets() -> list[str]:
-    return [value for value in os.environ.values() if isinstance(value, str) and len(value) >= 8]
+    values: list[str] = []
+    for name, value in os.environ.items():
+        if (
+            isinstance(value, str)
+            and len(value) >= 8
+            and _SECRET_ENV_NAME_RE.search(name)
+            and not _NON_SECRET_ENV_SUFFIX_RE.search(name)
+        ):
+            values.append(value)
+    return values
 
 
 def _scan_text(value: str) -> bool:
@@ -256,6 +276,7 @@ def _manifest(
     predecessor_sha256: str | None, data_names: set[str], log_names: set[str],
     operational: Mapping[str, Any] | None = None,
     terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context_sha256: str | None = None,
 ) -> dict[str, Any]:
     ids, bodies = _article_meta(articles)
     data = {name: _record(root / name) for name in sorted(data_names)}
@@ -285,7 +306,94 @@ def _manifest(
     }
     if terminal_invocation is not None:
         result["terminal_invocation"] = dict(terminal_invocation)
+    if clarification_context_sha256:
+        result["clarification_context_sha256"] = clarification_context_sha256
     return result
+
+
+def _load_clarification_context(path: str | Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    context_path = Path(path).resolve()
+    try:
+        value = json.loads(context_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from exc
+    if not isinstance(value, dict) or value.get("contract_version") not in {"clarification-context-v1", "clarification-context-v2"}:
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID")
+    answers = value.get("clarification_answers")
+    if not isinstance(answers, list) or len(answers) > 3 or not isinstance(value.get("article_body_sha256"), str):
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID")
+    return value
+
+
+def _apply_clarification_context(
+    articles: list[dict[str, Any]], context: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if context is None:
+        return articles
+    raw_answers = context.get("clarification_answers") or []
+    if any(not isinstance(answer, Mapping) for answer in raw_answers):
+        raise TraceStageError("CLARIFICATION_CONTEXT_INVALID")
+    answers = [dict(answer) for answer in raw_answers]
+    expected_sha = str(context.get("article_body_sha256") or "")
+    for article in articles:
+        body_sha = hashlib.sha256(str(article.get("article_text") or "").encode("utf-8")).hexdigest()
+        if expected_sha and body_sha != expected_sha:
+            raise TraceStageError("CLARIFICATION_CONTEXT_FINGERPRINT_MISMATCH")
+    article_date_answers = [
+        answer for answer in answers
+        if str(answer.get("role") or "").strip() == "article_date"
+    ]
+    resolved_date = ""
+    date_answer_sha = ""
+    if article_date_answers:
+        answer = article_date_answers[-1]
+        resolved_date = str(answer.get("value") or "").strip()
+        try:
+            if (not str(answer.get("question_id") or "").strip()
+                or str(answer.get("role") or "") != "article_date"
+                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", resolved_date)):
+                raise ValueError
+            calendar_date.fromisoformat(resolved_date)
+        except ValueError:
+            raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from None
+        date_answer_sha = hashlib.sha256(
+            json.dumps(
+                {"question_id": answer.get("question_id"), "role": "article_date", "value": resolved_date},
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    hydrated: list[dict[str, Any]] = []
+    for article in articles:
+        updated = {**article, "clarification_answers": answers}
+        if resolved_date:
+            body_sha = hashlib.sha256(str(article.get("article_text") or "").encode("utf-8")).hexdigest()
+            provenance = dict(
+                article.get("article_date_provenance")
+                if isinstance(article.get("article_date_provenance"), Mapping) else {}
+            )
+            provenance.update({
+                "source": "USER_CLARIFICATION",
+                "date_source": "user_feedback",
+                "source_path": "clarification_context",
+                "date_field": "date",
+                "article_text_sha256": body_sha,
+                "answer_sha256": date_answer_sha,
+            })
+            updated["date"] = resolved_date
+            updated["article_date"] = resolved_date
+            updated["article_date_provenance"] = provenance
+        fields = dict(updated.get("clarification_fields") if isinstance(updated.get("clarification_fields"), Mapping) else {})
+        for answer in answers:
+            role = str(answer.get("role") or "").strip()
+            value = str(answer.get("value") or "").strip()
+            if role and role != "article_date" and value:
+                fields[role] = value
+        if fields:
+            updated["clarification_fields"] = fields
+        hydrated.append(updated)
+    return hydrated
 
 
 def _publish_manifest(root: Path, manifest: dict[str, Any]) -> None:
@@ -502,25 +610,51 @@ def run_l2_stage(
         resolved_api_key = api_key or env_api_key()
         if not resolved_api_key:
             raise TraceStageError("L2_CALL_FAILED")
-        predictions, raw_manifest = run_l2(articles, api_key=resolved_api_key, retries=0, pause_seconds=0, sentence_span_iterator=sentence_span_iterator)
+        try:
+            predictions, raw_manifest = run_l2(
+                articles,
+                api_key=resolved_api_key,
+                retries=0,
+                pause_seconds=0,
+                sentence_span_iterator=sentence_span_iterator,
+            )
+        except L2ReceiptError as exc:
+            error_code = (
+                exc.args[0]
+                if len(exc.args) == 1 and isinstance(exc.args[0], str)
+                else ""
+            )
+            if error_code == "L2_RESPONSE_INVALID":
+                raise TraceStageError("L2_RESPONSE_INVALID") from exc
+            raise TraceStageError("L2_STAGE_FAILED") from exc
     total_tokens = raw_manifest.get("total_tokens")
     if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
         raise TraceStageError("L2_RESPONSE_INVALID")
     if total_tokens > 60000:
         raise TraceStageError("CALL_BUDGET_EXHAUSTED")
-    materialized = materialize_operational_l2(
-        articles,
-        predictions,
-        raw_manifest,
-        external_model_calls=0 if deterministic_query_front else int(len(articles)),
-        sentence_span_iterator=sentence_span_iterator,
-    )
-    projected = project_trace_operational_l2(materialized)
+    try:
+        materialized = materialize_operational_l2(
+            articles,
+            predictions,
+            raw_manifest,
+            external_model_calls=0 if deterministic_query_front else int(len(articles)),
+            sentence_span_iterator=sentence_span_iterator,
+        )
+        projected = project_trace_operational_l2(materialized)
+    except OperationalPipelineError as exc:
+        error_code = (
+            exc.args[0]
+            if len(exc.args) == 1 and isinstance(exc.args[0], str)
+            else ""
+        )
+        if error_code == "L2_RESPONSE_INVALID":
+            raise TraceStageError("L2_RESPONSE_INVALID") from exc
+        raise TraceStageError("L2_STAGE_FAILED") from exc
     flat: list[dict[str, Any]] = []
     result_rows: list[dict[str, Any]] = []
     for result in projected["results"]:
         start = len(flat)
-        selected = list(result.get("predictions") or []) if result.get("status") == "L2_READY" else []
+        selected = list(result.get("predictions") or []) if result.get("status") in DOWNSTREAM_L2_ELIGIBLE else []
         flat.extend(selected)
         result_rows.append({"article_idx": str(result.get("article_idx") or ""), "status": result.get("status"), "prediction_row_start": start, "prediction_row_end": len(flat)})
     l2_call_ledger = enforce_call_limits({"hcx_l2": 0 if deterministic_query_front else int(raw_manifest.get("articles") or len(articles))})
@@ -546,11 +680,15 @@ def run_layers_stage(
     root: Path,
     *,
     terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context: Mapping[str, Any] | None = None,
     sentence_span_iterator: Callable[[str], Iterator[tuple[int, int, int, str]]] = iter_article_body_sentence_spans,
 ) -> dict[str, Any]:
     rows = [json.loads(line) for line in (root / "02_l2_predictions.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     l2_results = [json.loads(line) for line in (root / "02_l2_results.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-    ready_ids = {str(row.get("article_idx") or "") for row in l2_results if row.get("status") == "L2_READY"}
+    ready_ids = {
+        str(row.get("article_idx") or "") for row in l2_results
+        if row.get("status") in DOWNSTREAM_L2_ELIGIBLE
+    }
     routed = run_stack(
         [article for article in articles if str(article.get("article_idx") or "") in ready_ids],
         rows,
@@ -570,6 +708,10 @@ def run_layers_stage(
         stage="03", root=root, article_path=article_path, articles=articles,
         predecessor_sha256=predecessor, data_names=_STAGE_FILES["03"][0],
         log_names=_STAGE_FILES["03"][1], terminal_invocation=terminal_invocation,
+        clarification_context_sha256=(
+            _sha_file(Path(clarification_context["_path"]))
+            if clarification_context and clarification_context.get("_path") else None
+        ),
     )
     _publish_manifest(root, manifest)
     return manifest
@@ -588,6 +730,8 @@ def run_live_stage(
     user_intent_shadow: bool = False,
     deterministic_answer_only: bool = False,
     terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context_path: str | Path | None = None,
+    binding_continuation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run live only from validated L2/L3 predecessor manifests."""
     # Keep the working directory as a short sibling.  Nesting it below a
@@ -599,6 +743,15 @@ def run_live_stage(
         raise TraceStageError("OUTPUT_EXISTS")
     try:
         _assert_stage_start(root, "04", article_path, articles, "__ANY__", terminal_invocation)
+        if clarification_context_path:
+            try:
+                predecessor_manifest = json.loads(
+                    (root / "03_manifest.json").read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from exc
+            if predecessor_manifest.get("clarification_context_sha256") != _sha_file(Path(clarification_context_path)):
+                raise TraceStageError("CLARIFICATION_CONTEXT_FINGERPRINT_MISMATCH")
         result = run_live_from_files(
             config_path, article_path, runtime_tmp,
             include_technical_canary=False,
@@ -615,6 +768,8 @@ def run_live_stage(
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
             deterministic_answer_only=deterministic_answer_only,
+            clarification_context_path=clarification_context_path,
+            binding_continuation_path=binding_continuation_path,
         )
         if int((result.get("l2") or {}).get("external_model_calls") or 0) != 0:
             raise TraceStageError("CALL_BUDGET_EXHAUSTED")
@@ -670,6 +825,10 @@ def run_live_stage(
             stage="04", root=root, article_path=article_path, articles=articles,
             predecessor_sha256=predecessor, data_names=_STAGE_FILES["04"][0],
             log_names=_STAGE_FILES["04"][1], terminal_invocation=terminal_invocation,
+            clarification_context_sha256=(
+                _sha_file(Path(clarification_context_path))
+                if clarification_context_path else None
+            ),
         )
         manifest["call_ledger"] = call_ledger
         _publish_manifest(root, manifest)
@@ -692,6 +851,49 @@ def run_live_stage(
         ) from exc
 
 
+def prepare_resume(
+    root: str | Path,
+    resume_from_stage: str,
+    *,
+    clarification_context_path: str | Path | None = None,
+) -> None:
+    """Remove downstream outputs and rebind the live predecessor context.
+
+    Retrieval/item/indicator clarification deliberately resumes after the
+    sealed L3-L5 artifacts.  In that path the stage-03 manifest is reused, so
+    its context digest must be advanced to the newly persisted user answer
+    before the live stage validates the predecessor.  Date/period
+    clarification reruns stage 03 and gets a fresh manifest instead.
+    """
+    path = Path(root).resolve()
+    if resume_from_stage not in {"layers", "retrieval", "binding", "live"}:
+        raise TraceStageError("RESUME_STAGE_INVALID")
+    stages = ("03", "04") if resume_from_stage == "layers" else ("04",)
+    for stage in stages:
+        for name in _stage_targets(stage):
+            target = path / name
+            if target.is_dir():
+                _remove_runtime_temp(target)
+            elif target.exists():
+                target.unlink()
+    for tmp in path.parent.glob(".rt04.*.tmp"):
+        _remove_runtime_temp(tmp)
+    if resume_from_stage != "layers" and clarification_context_path is not None:
+        manifest_path = path / "03_manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError
+            context_sha = _sha_file(Path(clarification_context_path).resolve())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise TraceStageError("CLARIFICATION_CONTEXT_INVALID") from exc
+        manifest["clarification_context_sha256"] = context_sha
+        _atomic_bytes(
+            manifest_path,
+            (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        )
+
+
 def run_trace(
     *,
     articles_path: str | Path,
@@ -704,12 +906,18 @@ def run_trace(
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
     terminal_invocation: Mapping[str, Any] | None = None,
+    clarification_context_path: str | Path | None = None,
     sentence_span_iterator: Callable[[str], Iterator[tuple[int, int, int, str]]] = iter_article_body_sentence_spans,
 ) -> dict[str, Any]:
     article_path = Path(articles_path).resolve()
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    articles = _articles(article_path)
+    immutable_articles = _articles(article_path)
+    context = _load_clarification_context(clarification_context_path)
+    articles = (
+        _apply_clarification_context(immutable_articles, context)
+        if stage in {"layers", "live", "all"} else immutable_articles
+    )
     stages = {"l1": ["01"], "l2": ["02"], "layers": ["03"], "live": ["04"], "all": ["01", "02", "03", "04"]}[stage]
     if terminal_invocation is not None:
         if stage != "all" or bool(terminal_invocation.get("resume")) or str(terminal_invocation.get("stage_request") or "") != "all":
@@ -749,6 +957,10 @@ def run_trace(
             manifests["03"] = run_layers_stage(
                 articles, article_path, root,
                 terminal_invocation=terminal_invocation,
+                clarification_context=(
+                    {**context, "_path": str(Path(clarification_context_path).resolve())}
+                    if context and clarification_context_path else None
+                ),
                 sentence_span_iterator=sentence_span_iterator,
             )
         if "04" in stages:
@@ -768,6 +980,12 @@ def run_trace(
                 user_intent_shadow=user_intent_shadow,
                 deterministic_answer_only=query_only,
                 terminal_invocation=terminal_invocation,
+                clarification_context_path=clarification_context_path,
+                binding_continuation_path=(
+                    Path(clarification_context_path).resolve().parent / "binding_continuation.json"
+                    if clarification_context_path and (Path(clarification_context_path).resolve().parent / "binding_continuation.json").is_file()
+                    else None
+                ),
             )
         return manifests
     except TraceStageError as exc:

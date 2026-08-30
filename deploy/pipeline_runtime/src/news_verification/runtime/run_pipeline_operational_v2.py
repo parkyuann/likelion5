@@ -9,18 +9,23 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from collections.abc import MutableMapping
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, replace
+from datetime import date as calendar_date, datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import threading
+import time
 from types import MappingProxyType
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 from urllib import request
 
+from backend.errors import BackendError
 from src.news_verification.runtime.bge_reranker_v2_service import MODEL_REVISION, SERVICE_CONTRACT
 from src.news_verification.runtime.bge_m3_ko_query_encoder_service import (
     HttpQueryEncoderClient,
@@ -28,13 +33,15 @@ from src.news_verification.runtime.bge_m3_ko_query_encoder_service import (
     SERVICE_CONTRACT as ENCODER_SERVICE_CONTRACT,
 )
 from src.news_verification.runtime.canonical_quantity import QuantityNormalizationError, compare_canonical, normalize_quantity
-from src.news_verification.runtime.operational_answer_v2 import Hcx007AnswerClient, build_evidence_packet, generate_guarded_answer
+from src.news_verification.runtime.operational_answer_v2 import Hcx007AnswerClient, answer_render_mode, build_evidence_packet, render_answer
 from src.news_verification.runtime.same_series_evidence_v1 import (
     FEATURE_GATE_ENV,
     SameSeriesEvidenceError,
+    indicator_family_key,
     select_primary_target,
     synthesize_same_series_evidence,
 )
+from src.develop.annual_requery_shadow_v1 import AnnualRequeryError, verify_annual_requery
 from src.news_verification.runtime.operational_gpu_receipts_v2 import GpuReceiptError, validate_gpu_receipts
 from src.news_verification.runtime.operational_live_adapters_v2 import (
     CountingAdapter,
@@ -43,7 +50,11 @@ from src.news_verification.runtime.operational_live_adapters_v2 import (
     CountingReranker,
     FailClosedCellFetcher,
     LiveAdapterError,
+    MonotonicTimingRecorder,
     OperationalProfileProvider,
+    RequestScopedEncoder,
+    RequestScopedProfileProvider,
+    RequestScopedRetrievalCache,
     V6CatalogPassageStore,
     load_live_articles,
     safe_adapter_failure,
@@ -51,9 +62,14 @@ from src.news_verification.runtime.operational_live_adapters_v2 import (
     write_live_outputs,
 )
 from src.news_verification.runtime.audit_budget_v1 import BudgetedCallable, HttpAttemptBudgetLedger
+from src.develop.l2_segmentation import (
+    CANONICAL_L2_STATUSES,
+    DOWNSTREAM_L2_ELIGIBLE as DOWNSTREAM_L2_ELIGIBLE_STATUSES,
+)
 from src.news_verification.runtime.l1_value_candidates import build_span_candidates, sentence_offset_map
 from src.news_verification.runtime.l3_role_assignment import attach_indicator_evidence_monthly_v2h
 from src.news_verification.runtime.adapters.shadow_compat import failure_recovery_api, user_intent_api
+from src.develop.failure_recovery_shadow_v1 import CLARIFICATION_ROLES, build_post_binding_clarification_plan
 
 def corrective_claim_query(*args: Any, **kwargs: Any) -> Any:
     return failure_recovery_api()[0](*args, **kwargs)
@@ -74,14 +90,29 @@ from src.news_verification.runtime.operational_article_acquisition_v2 import (
     acquire_article_url,
 )
 from src.news_verification.runtime.operational_retrieval_v2 import (
+    DISABLED_PATHS,
+    QUERY_REGISTER_VERSION,
+    RerankedCandidate,
+    RrfCandidate,
     build_candidate_passages,
+    build_query_register,
+    query_register_contract,
     rerank_top50,
     retrieve_parallel,
 )
 from src.news_verification.runtime.r4c1_claim_core_v2 import (
+    ClaimAtom,
+    ClaimCore,
     MonthlyClaimProvenanceError,
     build_claim_core_monthly_v2h,
     build_claim_core_v2,
+    canonical_bytes,
+)
+from src.news_verification.runtime.l4_field_normalization import (
+    NO_BASIS,
+    YOY,
+    comparison_basis,
+    comparison_basis_monthly_v2h,
 )
 from src.news_verification.contracts.query_plan_inventory import validate_query_plan_inventory
 from src.news_verification.runtime.services.terminal_partition import build_terminal_partition
@@ -94,6 +125,7 @@ from src.news_verification.runtime.r4c1_projection_v2 import (
     project_candidate_monthly_v2j,
     project_candidate_monthly_v2h,
     project_candidate_v2,
+    _query_plan,
     validate_target_monthly_v2h,
     validate_target_v2,
 )
@@ -104,6 +136,684 @@ def run_hcx_l2(*args: Any, **kwargs: Any) -> Any:
     return l2_runner()(*args, **kwargs)
 from src.news_verification.runtime.run_layer_stack import run_stack
 from src.news_verification.runtime.v6_search_channels import OfficialKosisSearchChannel, V6Bm25Channel, V6DenseChannel
+from src.news_verification.runtime.release_bound_live_adapters_v1 import (
+    RRF_ONLY_ORDERING,
+    RRF_ORDER_RERANKER_DISABLED,
+    build_release_bound_runtime,
+    release_runtime_enabled,
+)
+
+
+def _snapshot_target_call_counts(
+    search_channels: Mapping[str, Callable[..., Any]],
+    profile_provider: Any,
+) -> dict[str, Any]:
+    """Capture only integer counters at the start of one routed target."""
+    channel_calls: dict[str, int | None] = {}
+    channel_sum_ms: dict[str, int | None] = {}
+    audit_cursors: dict[str, int | None] = {}
+    for name, channel in search_channels.items():
+        value = getattr(channel, "calls", None)
+        channel_calls[str(name)] = value if isinstance(value, int) and not isinstance(value, bool) else None
+        duration = getattr(channel, "sum_ms", None)
+        channel_sum_ms[str(name)] = duration if isinstance(duration, int) and not isinstance(duration, bool) else None
+        cursor_method = getattr(channel, "audit_cursor", None)
+        cursor = cursor_method() if callable(cursor_method) else None
+        audit_cursors[str(name)] = cursor if isinstance(cursor, int) and not isinstance(cursor, bool) and cursor >= 0 else None
+    metadata_calls = getattr(profile_provider, "metadata_api_calls", None)
+    metadata_lookups = getattr(profile_provider, "lookups", None)
+    return {
+        "channel_calls": channel_calls,
+        "channel_sum_ms": channel_sum_ms,
+        "audit_cursors": audit_cursors,
+        "metadata_api_calls": metadata_calls
+        if isinstance(metadata_calls, int) and not isinstance(metadata_calls, bool)
+        else None,
+        "metadata_lookups": metadata_lookups
+        if isinstance(metadata_lookups, int) and not isinstance(metadata_lookups, bool)
+        else None,
+    }
+
+
+def _retrieval_identity(
+    claim_query: Mapping[str, Any],
+    *,
+    release_sha256_by_channel: Mapping[str, str],
+    path_top_k: int,
+    union_top_k: int,
+    register_kind: str,
+) -> dict[str, Any]:
+    """Build the release/query identity used by the request-local cache."""
+    payload = {
+        "release_binding_sha256": dict(sorted((str(k), str(v)) for k, v in release_sha256_by_channel.items())),
+        "query_register": dict(claim_query),
+        "query_register_kind": register_kind,
+        "channels": sorted(str(key) for key in release_sha256_by_channel),
+        "path_top_k": int(path_top_k),
+        "union_top_k": int(union_top_k),
+        "query_register_version": QUERY_REGISTER_VERSION,
+        "disabled_paths": list(DISABLED_PATHS),
+        "field_contract_sha256": hashlib.sha256(
+            json.dumps({"version": QUERY_REGISTER_VERSION, "disabled": list(DISABLED_PATHS)}, sort_keys=True).encode()
+        ).hexdigest(),
+    }
+    return payload
+
+
+def _retrieve_with_request_cache(
+    claim_query: Mapping[str, Any],
+    search_channels: Mapping[str, Callable[..., Any]],
+    *,
+    release_sha256_by_channel: Mapping[str, str],
+    path_top_k: int,
+    union_top_k: int,
+    retrieval_cache: RequestScopedRetrievalCache | None,
+    timeout_seconds: float | None = None,
+    channel_allowlist: frozenset[str] | None = None,
+    register_kind: str = "default",
+):
+    callback = lambda: retrieve_parallel(
+        claim_query,
+        search_channels,
+        release_sha256_by_channel=release_sha256_by_channel,
+        path_top_k=path_top_k,
+        union_top_k=union_top_k,
+        timeout_seconds=timeout_seconds,
+        channel_allowlist=channel_allowlist,
+        register_kind=register_kind,
+    )
+    if retrieval_cache is None:
+        return callback()
+    candidates, audit = retrieval_cache.get_or_call(
+        _retrieval_identity(
+            claim_query,
+            release_sha256_by_channel=release_sha256_by_channel,
+            path_top_k=path_top_k,
+            union_top_k=union_top_k,
+            register_kind=register_kind,
+        ),
+        callback,
+    )
+    return candidates, {**dict(audit), "request_cache": retrieval_cache.audit()}
+
+
+def _bounded_channel_audit_events(raw_events: Any) -> list[dict[str, Any]]:
+    """Validate and order every release dense audit event without dropping one."""
+    if not isinstance(raw_events, Sequence) or isinstance(raw_events, (str, bytes)):
+        raise OperationalPipelineError("DENSE_AUDIT_EVENTS_INVALID")
+    events: list[dict[str, Any]] = []
+    for raw in raw_events:
+        if not isinstance(raw, Mapping):
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        query_sha256 = raw.get("query_sha256")
+        status = raw.get("boundary_status")
+        if not isinstance(query_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", query_sha256):
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        if status not in {"CLOSED", "DROPPED_UNCLOSED_CUTOFF_TIE"}:
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        event: dict[str, Any] = {"query_sha256": query_sha256, "boundary_status": status}
+        for key in ("cutoff_score", "observed_tied_count", "requested_window"):
+            value = raw.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+            event[key] = value
+        expansions = raw.get("expansions")
+        if not isinstance(expansions, Sequence) or isinstance(expansions, (str, bytes)) or len(expansions) > 16:
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in expansions):
+            raise OperationalPipelineError("DENSE_AUDIT_EVENT_INVALID")
+        event["expansions"] = list(expansions)
+        events.append(event)
+    return sorted(events, key=lambda event: json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _target_call_deltas(
+    snapshot: Mapping[str, Any],
+    search_channels: Mapping[str, Callable[..., Any]],
+    profile_provider: Any,
+) -> dict[str, Any]:
+    """Return bounded non-negative per-target counter deltas."""
+    before_channels = snapshot.get("channel_calls")
+    if not isinstance(before_channels, Mapping):
+        before_channels = {}
+    channel_calls: dict[str, int] = {}
+    channel_sum_ms: dict[str, int] = {}
+    before_durations = snapshot.get("channel_sum_ms") if isinstance(snapshot.get("channel_sum_ms"), Mapping) else {}
+    for name, channel in search_channels.items():
+        before = before_channels.get(str(name))
+        after = getattr(channel, "calls", None)
+        if (
+            isinstance(before, int) and not isinstance(before, bool)
+            and isinstance(after, int) and not isinstance(after, bool)
+        ):
+            channel_calls[str(name)] = max(0, after - before)
+            after_duration = getattr(channel, "sum_ms", None)
+            before_duration = before_durations.get(str(name))
+            if isinstance(after_duration, int) and isinstance(before_duration, int):
+                channel_sum_ms[str(name)] = max(0, after_duration - before_duration)
+    channel_audits: dict[str, list[dict[str, Any]]] = {}
+    before_cursors = snapshot.get("audit_cursors")
+    if not isinstance(before_cursors, Mapping):
+        before_cursors = {}
+    for name, call_delta in channel_calls.items():
+        if call_delta <= 0:
+            continue
+        channel = search_channels[name]
+        cursor = before_cursors.get(name)
+        events_method = getattr(channel, "audits_since", None)
+        if not isinstance(cursor, int) or isinstance(cursor, bool) or not callable(events_method):
+            continue
+        events = _bounded_channel_audit_events(events_method(cursor))
+        if events:
+            channel_audits[name] = events
+    before_metadata = snapshot.get("metadata_api_calls")
+    after_metadata = getattr(profile_provider, "metadata_api_calls", None)
+    metadata_calls = (
+        max(0, after_metadata - before_metadata)
+        if isinstance(before_metadata, int) and not isinstance(before_metadata, bool)
+        and isinstance(after_metadata, int) and not isinstance(after_metadata, bool)
+        else None
+    )
+    before_lookups = snapshot.get("metadata_lookups")
+    after_lookups = getattr(profile_provider, "lookups", None)
+    metadata_lookups = (
+        max(0, after_lookups - before_lookups)
+        if isinstance(before_lookups, int) and not isinstance(before_lookups, bool)
+        and isinstance(after_lookups, int) and not isinstance(after_lookups, bool)
+        else None
+    )
+    return {
+        "retrieval": {
+            "calls": sum(channel_calls.values()),
+            "channel_calls": channel_calls,
+            "channel_durations_ms": channel_sum_ms,
+            "channel_audits": channel_audits,
+        },
+        "metadata_api_calls": metadata_calls,
+        "metadata_lookups": metadata_lookups,
+    }
+
+
+def _speculative_query_text(value: Any) -> str:
+    """Remove asserted measurements before a selector-only search probe."""
+    text = _NUMBER_TOKEN.sub(" ", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+class _SpeculativeDeadlineExceeded(TimeoutError):
+    pass
+
+
+def _binding_profile_sha(profile: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(
+        {key: value for key, value in profile.items() if key not in {"retrieved_at", "profile_sha256"}},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
+
+
+def _binding_sha(value: Any) -> str:
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
+
+
+def _query_register_identity_sha256(payload: Mapping[str, Any] | None) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+    return _binding_sha(dict(payload))
+
+
+def _candidate_bundle_sha256(
+    *,
+    release_id: str,
+    retrieval_rounds: Sequence[int],
+    query_register_version: str,
+    query_register_contract_sha256: str,
+    query_register_sha256: str,
+    candidate_membership_sha256: str,
+    profile_bundle_sha256: str,
+    projection_bundle_sha256: str,
+    corrective_plan_sha256: str | None,
+) -> str:
+    """Derive the binding bundle identity from every authority-bearing part."""
+    return _binding_sha({
+        "release_id": str(release_id),
+        "retrieval_rounds": list(retrieval_rounds),
+        "query_register_version": str(query_register_version),
+        "query_register_contract_sha256": str(query_register_contract_sha256),
+        "query_register_sha256": str(query_register_sha256),
+        "candidate_membership_sha256": str(candidate_membership_sha256),
+        "profile_bundle_sha256": str(profile_bundle_sha256),
+        "projection_bundle_sha256": str(projection_bundle_sha256),
+        "corrective_plan_sha256": corrective_plan_sha256,
+    })
+
+
+def _final_evidence_sha256(
+    *,
+    target_id: str,
+    release_id: str,
+    candidate_bundle_sha256: str,
+    profile_sha256: str,
+    query_plan: Mapping[str, Any],
+    query_ready_receipt: Mapping[str, Any],
+    cell_response_sha256: str | None,
+    cell_status: str,
+    official_unit: str,
+    evidence_packet_sha256: str,
+    answer_packet_sha256: str | None,
+    comparison: Mapping[str, Any],
+    annual_requery: Mapping[str, Any] | None,
+) -> str:
+    """Seal deterministic evidence and answer-packet identities together."""
+    return _binding_sha({
+        "target_id": target_id,
+        "release_id": release_id,
+        "candidate_bundle_sha256": candidate_bundle_sha256,
+        "profile_sha256": profile_sha256,
+        "query_plan": dict(query_plan),
+        "query_ready_receipt": dict(query_ready_receipt),
+        "cell_response_sha256": cell_response_sha256,
+        "cell_status": cell_status,
+        "official_unit": official_unit,
+        "evidence_packet_sha256": evidence_packet_sha256,
+        "answer_packet_sha256": answer_packet_sha256,
+        "comparison": dict(comparison),
+        "annual_requery": dict(annual_requery) if isinstance(annual_requery, Mapping) else annual_requery,
+    })
+
+
+_CELL_LEDGER_LOCK = threading.RLock()
+
+
+def _consume_target_cell_authorization(ledger: Mapping[str, Any] | None) -> bool:
+    """Atomically consume a mutable per-target Cell authorization.
+
+    A mapping that cannot be mutated is not an authorization ledger: allowing
+    it would make a second call indistinguishable from the first one.
+    """
+    if not isinstance(ledger, MutableMapping):
+        return False
+    with _CELL_LEDGER_LOCK:
+        current = ledger.get("cell_api")
+        if isinstance(current, bool) or current != 0:
+            return False
+        try:
+            ledger["cell_api"] = 1
+        except (TypeError, ValueError, KeyError):
+            return False
+        return ledger.get("cell_api") == 1
+
+
+def _validate_binding_continuation_runtime(
+    continuation: Mapping[str, Any],
+    *,
+    expected_release_id: str,
+    expected_query_register_identity_payload: Mapping[str, Any] | None,
+) -> tuple[frozenset[str], list[str], Mapping[str, Any]]:
+    if continuation.get("contract_version") != "binding-continuation-v1":
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    target_ids = continuation.get("target_ids")
+    membership = continuation.get("candidate_membership")
+    raw_profiles = continuation.get("raw_profiles")
+    projection_profiles = continuation.get("projection_profiles")
+    if (
+        not isinstance(target_ids, list) or not target_ids
+        or len(target_ids) != len(set(target_ids))
+        or any(not isinstance(value, str) or not value.strip() for value in target_ids)
+        or _binding_sha(target_ids) != continuation.get("target_scope_sha256")
+        or not isinstance(membership, list) or not membership
+        or len(membership) != len(set(membership))
+        or any(not isinstance(value, str) or not value.strip() for value in membership)
+        or _binding_sha(membership) != continuation.get("candidate_membership_sha256")
+        or not isinstance(raw_profiles, Mapping) or set(raw_profiles) != set(membership)
+        or not isinstance(projection_profiles, Mapping)
+        or _binding_sha(projection_profiles) != continuation.get("projection_bundle_sha256")
+    ):
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    query_register_version = str(continuation.get("query_register_version") or "")
+    query_register_contract_sha256 = str(continuation.get("query_register_contract_sha256") or "")
+    query_register_sha256 = str(continuation.get("query_register_sha256") or "")
+    expected_query_register_sha256 = _query_register_identity_sha256(expected_query_register_identity_payload)
+    retrieval_rounds = continuation.get("retrieval_rounds")
+    candidate_bundle_sha256 = str(continuation.get("candidate_bundle_sha256") or "")
+    corrective_plan_sha256 = continuation.get("corrective_plan_sha256")
+    if (
+        not query_register_version
+        or query_register_version != QUERY_REGISTER_VERSION
+        or query_register_contract_sha256 != _binding_sha(query_register_contract())
+        or not expected_query_register_sha256
+        or query_register_sha256 != expected_query_register_sha256
+        or not re.fullmatch(r"[0-9a-f]{64}", query_register_sha256)
+        or not isinstance(retrieval_rounds, list)
+        or not retrieval_rounds
+        or any(not isinstance(value, int) or value not in {0, 1} for value in retrieval_rounds)
+        or not re.fullmatch(r"[0-9a-f]{64}", candidate_bundle_sha256)
+        or (corrective_plan_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", str(corrective_plan_sha256)))
+    ):
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    release_id = str(continuation.get("release_id") or "")
+    receipt = []
+    for table_key in sorted(membership):
+        profile = raw_profiles.get(table_key)
+        if not isinstance(profile, Mapping):
+            raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+        profile_sha = str(profile.get("profile_sha256") or "")
+        profile_release = str(profile.get("release_id") or "")
+        if (
+            str(profile.get("table_key") or table_key) != table_key
+            or not release_id or profile_release != release_id
+            or profile_sha != _binding_profile_sha(profile)
+        ):
+            raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+        receipt.append({"table_key": table_key, "profile_sha256": profile_sha, "release_id": profile_release})
+    if (
+        _binding_sha(receipt) != continuation.get("profile_bundle_sha256")
+        or expected_release_id and release_id != expected_release_id
+    ):
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    expected_candidate_bundle = _candidate_bundle_sha256(
+        release_id=release_id,
+        retrieval_rounds=retrieval_rounds,
+        query_register_version=query_register_version,
+        query_register_contract_sha256=query_register_contract_sha256,
+        query_register_sha256=expected_query_register_sha256,
+        candidate_membership_sha256=_binding_sha(membership),
+        profile_bundle_sha256=str(continuation.get("profile_bundle_sha256") or ""),
+        projection_bundle_sha256=str(continuation.get("projection_bundle_sha256") or ""),
+        corrective_plan_sha256=(str(corrective_plan_sha256) if corrective_plan_sha256 is not None else None),
+    )
+    if expected_candidate_bundle != candidate_bundle_sha256:
+        raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
+    return frozenset(target_ids), list(membership), raw_profiles
+
+
+def _binding_or_retrieve_candidates(
+    *,
+    target_id: str,
+    target_scope: frozenset[str],
+    membership: Sequence[str],
+    retrieve: Callable[[], tuple[Any, Mapping[str, Any]]],
+) -> tuple[Any, Mapping[str, Any]]:
+    if target_id in target_scope:
+        candidates = tuple(RrfCandidate(key, 0.0, index, ()) for index, key in enumerate(membership, 1))
+        return candidates, {
+            "calls": 0, "physical_calls": 0, "channel_calls": {},
+            "candidate_membership": list(membership), "binding_continuation": True,
+        }
+    return retrieve()
+
+
+def _native_speculative_timeout_supported(adapter: Any) -> bool:
+    """Follow transparent wrappers and attest the leaf transport capability."""
+    seen: set[int] = set()
+    current = adapter
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        inner = getattr(current, "inner", None)
+        if inner is not None and inner is not current:
+            current = inner
+            continue
+        return callable(getattr(current, "speculative", None))
+    return False
+
+
+def _missing_high_impact_role(fields: Mapping[str, Any]) -> str | None:
+    """Return only the Gate-A roles allowed to trigger speculative retrieval."""
+    indicator = str(fields.get("indicator") or "").strip()
+    if not indicator or indicator.casefold() in {"unknown", "ambiguous", "unavailable"}:
+        return "indicator"
+    # ``item`` is not universally a separate routed slot: for many KOSIS
+    # claims the resolved indicator itself is the searchable item label.  Gate
+    # A may ask for a missing item only when the upstream route explicitly
+    # marks that slot as required; otherwise ordinary indicator-only claims
+    # must continue to retrieval.
+    item = fields.get("item")
+    if fields.get("item_required") is True and item in (None, "", (), []):
+        return "item"
+    return None
+
+
+def _indicator_failure_recovery(
+    row: Mapping[str, Any],
+    *,
+    target_id: str,
+) -> dict[str, Any]:
+    """Create the bounded producer record consumed by the backend projector."""
+    question_id = "clarify-indicator-" + hashlib.sha256(
+        target_id.encode("utf-8")
+    ).hexdigest()[:24]
+    unsigned: dict[str, Any] = {
+        "contract_version": "failure-recovery-shadow-v1",
+        "state_contract_version": "retrieval-clarification-state-v1",
+        "state": "DIRECT_FIELD_MISSING",
+        "action": "ASK_USER",
+        "reason": "INDICATOR_REQUIRED",
+        "question": {
+            "question_id": question_id,
+            "role": "indicator",
+            "prompt": "이 수치가 어떤 통계 지표를 의미하는지 알려주세요.",
+            "input_mode": "FREE_TEXT",
+            "allow_direct_input": True,
+            "options": [],
+            "answer": None,
+            "model_prefill": False,
+            "internal_ids_exposed": False,
+        },
+        "retry_budget": {"used": 0, "limit": 1},
+    }
+    digest = _binding_sha(unsigned)
+    return {**unsigned, "state_sha256": digest, "sha256": digest}
+
+
+def _speculative_clarification_plan(
+    row: Mapping[str, Any],
+    *,
+    article_text: str,
+    search_channels: Mapping[str, Callable[..., Any]],
+    release_sha256_by_channel: Mapping[str, str],
+    profile_provider: Callable[[str], Mapping[str, Any] | None],
+    retrieval_cache: RequestScopedRetrievalCache | None,
+    deadline_ms: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Run the bounded, read-only Gate-A probe for a missing indicator/item.
+
+    The returned options are proposals only.  This helper never performs
+    binding, cell reads, comparison, HCX rendering, or candidate promotion.
+    """
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    role = _missing_high_impact_role(fields)
+    started = time.monotonic_ns()
+    audit: dict[str, Any] = {
+        "contract_version": "speculative-retrieval-v1",
+        "enabled": True,
+        "deadline_ms": int(deadline_ms),
+        "max_targets": 1,
+        "max_queries": 2,
+        "path_top_k": 10,
+        "union_top_k": 30,
+        "profile_limit": 30,
+        "retry_limit": 0,
+        "role": role,
+        "queries_attempted": 0,
+        "candidates": 0,
+        "profiles": 0,
+        "cell_api_calls": 0,
+        "hcx_answer_calls": 0,
+    }
+    if role is None:
+        audit["status"] = "NOT_REQUIRED"
+        audit["wall_ms"] = max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+        return None, audit
+    sentence = _speculative_query_text(row.get("sentence_text"))
+    source = _speculative_query_text(
+        row.get("source_text") or row.get("source_region_text") or ""
+    )
+    queries: list[str] = []
+    for query in (sentence, source):
+        if query and query not in queries:
+            queries.append(query)
+    if not queries:
+        audit["status"] = "NO_CONTEXT"
+        audit["wall_ms"] = max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+        return {
+            "contract_version": "clarification-plan-v2",
+            "reason": f"{role.upper()}_REQUIRED",
+            "question": {
+                "id": "cq-" + hashlib.sha256(f"speculative:{role}:{row.get('target_id') or row.get('value_span_id') or ''}".encode()).hexdigest()[:24],
+                "role": role, "prompt": "어떤 통계 지표를 확인할지 알려주세요." if role == "indicator" else "어떤 항목 기준인지 알려주세요.",
+                "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [],
+                "speculative": True,
+            },
+            "resume_from_stage": "retrieval",
+            "changed_roles": [role],
+            "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
+            "reusable_artifacts": ["l1", "l2", "layers"],
+            "speculative_bundle": {"contract_version": "speculative-bundle-v1", "status": "NO_CONTEXT"},
+        }, audit
+
+    supported_channels = {
+        name: channel for name, channel in search_channels.items()
+        if _native_speculative_timeout_supported(channel)
+    }
+    excluded_channels = sorted(set(search_channels) - set(supported_channels))
+    profile_supported = _native_speculative_timeout_supported(profile_provider)
+    audit["native_timeout"] = {
+        "supported_channels": sorted(supported_channels),
+        "excluded_channels": excluded_channels,
+        "profile_supported": profile_supported,
+    }
+    audit["executor_tasks_submitted"] = 0
+    if not supported_channels or not profile_supported:
+        audit["status"] = "DEADLINE_EXCEEDED"
+        audit["wall_ms"] = max(0, int(round((time.monotonic_ns() - started) / 1_000_000)))
+        question_id = "cq-" + hashlib.sha256(
+            f"speculative:{role}:{hashlib.sha256(article_text.encode('utf-8')).hexdigest()}".encode()
+        ).hexdigest()[:24]
+        return {
+            "contract_version": "clarification-plan-v2", "reason": f"{role.upper()}_REQUIRED",
+            "question": {"id": question_id, "role": role, "prompt": "어떤 통계 지표를 확인할지 알려주세요.", "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "speculative": True},
+            "speculative": True, "resume_from_stage": "retrieval",
+            "changed_roles": [role], "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
+            "reusable_artifacts": ["l1", "l2", "layers"],
+            "speculative_bundle": {"contract_version": "speculative-bundle-v1", "status": "DEADLINE_EXCEEDED"},
+            "speculative_audit": audit,
+        }, audit
+
+    candidates_by_key: dict[str, Any] = {}
+    receipts: list[dict[str, Any]] = []
+    for query in queries[:2]:
+        elapsed = (time.monotonic_ns() - started) // 1_000_000
+        if elapsed >= int(deadline_ms):
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        audit["queries_attempted"] += 1
+        try:
+            remaining = int(deadline_ms) - int((time.monotonic_ns() - started) // 1_000_000)
+            candidates, retrieval_audit = _retrieve_with_request_cache(
+                    {"indicator": "", "item": "", "sentence": query, "_speculative": True},
+                    search_channels, release_sha256_by_channel=release_sha256_by_channel,
+                    path_top_k=10, union_top_k=30, retrieval_cache=retrieval_cache,
+                    timeout_seconds=remaining / 1000.0,
+                    channel_allowlist=frozenset(supported_channels),
+            )
+            audit["executor_tasks_submitted"] += len(supported_channels)
+        except _SpeculativeDeadlineExceeded:
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        except Exception as exc:
+            receipts.append({"status": "FAILED", "error_type": type(exc).__name__})
+            continue
+        receipts.append({"status": "OK", "candidate_count": len(candidates), "retrieval": retrieval_audit})
+        for candidate in candidates[:30]:
+            key = str(getattr(candidate, "table_key", "") or (candidate.get("table_key") if isinstance(candidate, Mapping) else ""))
+            if key:
+                candidates_by_key.setdefault(key, candidate)
+        if len(candidates_by_key) >= 30:
+            break
+    ordered_keys = sorted(candidates_by_key)[:30]
+    option_map: dict[str, list[dict[str, Any]]] = {}
+    profile_receipts: list[dict[str, Any]] = []
+    for table_key in ordered_keys:
+        if (time.monotonic_ns() - started) // 1_000_000 >= int(deadline_ms):
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        try:
+            remaining = int(deadline_ms) - int((time.monotonic_ns() - started) // 1_000_000)
+            speculative_profile = getattr(profile_provider, "speculative")
+            profile = speculative_profile(table_key, timeout_seconds=remaining / 1000.0)
+        except _SpeculativeDeadlineExceeded:
+            audit["status"] = "DEADLINE_EXCEEDED"
+            break
+        except Exception as exc:
+            profile_receipts.append({"table_key_sha256": hashlib.sha256(table_key.encode()).hexdigest(), "status": "FAILED", "error_type": type(exc).__name__})
+            continue
+        if not isinstance(profile, Mapping) or str(profile.get("meta_status") or "READY") not in {"READY", ""}:
+            continue
+        profile_sha = str(profile.get("profile_sha256") or "")
+        for item in profile.get("items") or ():
+            if not isinstance(item, Mapping):
+                continue
+            label = str(item.get("itm_nm") or item.get("item_name") or "").strip()
+            if not label:
+                continue
+            option_map.setdefault(label, []).append({
+                "table_key": table_key,
+                "profile_sha256": profile_sha,
+                "axis_id": "ITEM",
+                "value_id": str(item.get("itm_id") or item.get("item_id") or ""),
+            })
+        profile_receipts.append({"table_key_sha256": hashlib.sha256(table_key.encode()).hexdigest(), "profile_sha256": profile_sha, "status": "OK"})
+    labels = sorted(option_map)
+    question_id = "cq-" + hashlib.sha256(
+        f"speculative:{role}:{hashlib.sha256(article_text.encode('utf-8')).hexdigest()}".encode()
+    ).hexdigest()[:24]
+    options = [
+        {
+            "id": "co-" + hashlib.sha256(f"{question_id}:{label}".encode()).hexdigest()[:24],
+            "label": label,
+            "description": f"선행 검색에서 확인된 후보 통계표 {len(option_map[label])}개에 포함",
+            "applicable_candidate_count": len(option_map[label]),
+            "applicability": option_map[label],
+        }
+        for label in labels
+    ]
+    audit.update({
+        "status": audit.get("status") or ("OPTIONS_READY" if options else "FREE_TEXT_FALLBACK"),
+        "candidates": len(ordered_keys),
+        "profiles": len(profile_receipts),
+        "profile_receipts": profile_receipts,
+        "query_receipts": receipts,
+        "wall_ms": max(0, int(round((time.monotonic_ns() - started) / 1_000_000))),
+    })
+    plan = {
+        "contract_version": "clarification-plan-v2",
+        "reason": f"{role.upper()}_REQUIRED",
+        "question": {
+            "id": question_id, "role": role,
+            "prompt": "어떤 통계 지표를 확인할지 선택하거나 직접 입력해 주세요." if role == "indicator" else "어떤 통계 항목 기준인지 선택하거나 직접 입력해 주세요.",
+            "input_mode": "SEARCHABLE_OPTIONS" if len(options) > 20 else ("OPTIONS" if options else "FREE_TEXT"),
+            "allow_direct_input": True,
+            "options": options,
+            "speculative": True,
+        },
+        "candidate_membership_sha256": hashlib.sha256(json.dumps(ordered_keys, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(),
+        "profile_bundle_sha256": hashlib.sha256(json.dumps(profile_receipts, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "speculative": True,
+        "resume_from_stage": "retrieval",
+        "changed_roles": [role],
+        "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
+        "reusable_artifacts": ["l1", "l2", "layers"],
+        "speculative_bundle": {
+            "contract_version": "speculative-bundle-v1",
+            "candidate_membership": ordered_keys,
+            "candidate_membership_sha256": hashlib.sha256(json.dumps(ordered_keys, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(),
+            "profile_receipts": profile_receipts,
+            "authority": "SELECTOR_PROPOSAL_ONLY",
+        },
+        "speculative_audit": audit,
+    }
+    return plan, audit
 from src.news_verification.runtime.bge_reranker_v2_service import HttpRerankerClient
 from src.news_verification.runtime.adapters.shadow_compat import role_aware_dimension_api
 
@@ -127,7 +837,56 @@ def source_sentence(*args: Any, **kwargs: Any) -> Any:
     return role_aware_dimension_api()[4](*args, **kwargs)
 
 
+def _preserve_role_aware_sentence_inventory(
+    row: dict[str, Any], article_text: str, sentence: str,
+) -> tuple[Any, str]:
+    """Update the current sentence without dropping inherited source context."""
+    existing = row.get("sentences")
+    sentences = dict(existing) if isinstance(existing, Mapping) else {}
+    current_id = row.get("article_sentence_id", row.get("sentence_id"))
+    if current_id is not None:
+        sentences[current_id] = sentence
+
+    source_id = row.get("source_region_sentence_id")
+    source_id_text = str(source_id).strip() if source_id is not None else ""
+    try:
+        int(source_id)
+    except (TypeError, ValueError):
+        source_id_valid = False
+    else:
+        source_id_valid = bool(source_id_text) and source_id_text.casefold() != "none"
+    source_text = ""
+    if source_id_valid:
+        source_text = str(source_sentence(article_text, source_id) or "")
+        sentences[source_id] = source_text
+    row["sentences"] = sentences
+    return source_id, source_text
+
+
 CONTRACT_VERSION = "kosis-operational-article-verification-v2"
+RELEASE_BOUND_DOMINANCE_RULE_ID = "release-bound-evidence-specificity-dominance-v2"
+RELEASE_BOUND_DOMINANCE_RULE_VERSION = 2
+
+
+@dataclass(frozen=True)
+class RrfOnlyCandidate:
+    """RRF order without fabricated model scores when reranking is disabled."""
+
+    table_key: str
+    rank: int
+    rrf_score: float
+    ranking_mode: str = RRF_ONLY_ORDERING
+
+
+def _rrf_only_order(candidates: Sequence[Any]) -> tuple[RrfOnlyCandidate, ...]:
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (-float(candidate.rrf_score), int(candidate.best_rank), str(candidate.table_key)),
+    )
+    return tuple(
+        RrfOnlyCandidate(str(candidate.table_key), rank, float(candidate.rrf_score))
+        for rank, candidate in enumerate(ordered[:50], 1)
+    )
 
 
 def _evidence_first_enabled(value: bool | None = None) -> bool:
@@ -156,8 +915,6 @@ _TRACE_SPAN_ERROR_CODES = {
     "OCCURRENCE_INDEX_INVALID",
     "UNKNOWN",
 }
-
-
 def _trace_safe_error(error: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(error, Mapping):
         raise OperationalPipelineError("L2_RESPONSE_INVALID")
@@ -264,11 +1021,20 @@ def materialize_operational_l2(
     here: only rows returned by HCX are passed downstream.
     """
     errors = list(raw_manifest.get("errors") or [])
+    canonical_runs = {
+        str(run.get("article_idx") or ""): run
+        for run in (raw_manifest.get("article_runs") or [])
+        if isinstance(run, Mapping)
+    }
     failed = {
         str(error.get("article_idx") or "")
         for error in errors
         if str(error.get("kind") or "") not in {"UNRESOLVED_SPANS", "MISSING_SENTENCES"}
     }
+    failed.update(
+        article_id for article_id, run in canonical_runs.items()
+        if str(run.get("status") or "") in {"HOLD_NOT_FOUND", "HOLD_AMBIGUOUS", "L2_UNAVAILABLE"}
+    )
     source_inventory: dict[str, dict[int, dict[str, Any]]] = {}
     value_candidates: dict[str, dict[int, list[dict[str, Any]]]] = {}
     for article in articles:
@@ -390,6 +1156,7 @@ def materialize_operational_l2(
                     "source_span_text": scope.get("source_span_text"),
                     "reason": "INDICATOR_SCOPE_UNRESOLVED",
                 })
+                failed.add(article_id)
             else:
                 kept_scopes.append(scope)
         # Do not add a field to a raw prediction that did not contain one.
@@ -458,6 +1225,17 @@ def materialize_operational_l2(
     for article in articles:
         article_id = str(article.get("article_idx") or "")
         article_predictions = by_article.get(article_id, [])
+        canonical_run = canonical_runs.get(article_id, {})
+        canonical_status = str(canonical_run.get("status") or "")
+        canonical_reason = canonical_run.get("reason_code")
+        canonical_fields = {
+            "canonical_status": canonical_status or None,
+            "canonical_reason_code": canonical_reason,
+            "resolver_version": canonical_run.get("resolver_version"),
+            "repair_reason_code": canonical_run.get("repair_reason_code"),
+            "raw_prediction_sha256": canonical_run.get("raw_prediction_sha256"),
+            "canonical_l2_sha256": canonical_run.get("canonical_l2_sha256"),
+        }
         filtered_sentence_ids = {
             int(row["sentence_id"])
             for row in dispositions
@@ -466,14 +1244,21 @@ def materialize_operational_l2(
         all_source_sentences_filtered = bool(source_inventory.get(article_id)) and (
             filtered_sentence_ids == set(source_inventory[article_id])
         )
-        if article_id in failed or (
+        eligible = canonical_status in DOWNSTREAM_L2_ELIGIBLE_STATUSES
+        if article_id in failed or not eligible or (
             not article_predictions and not all_source_sentences_filtered
         ):
-            results.append({"article_idx": article_id, "status": "L2_UNAVAILABLE", "predictions": []})
+            # The canonical L2 disposition, not the presence of raw HCX rows,
+            # is the sole authority for downstream eligibility.  A hold or
+            # unavailable canonical result must never be promoted to READY.
+            final_status = canonical_status if canonical_status else "L2_UNAVAILABLE"
+            if final_status not in {"HOLD_NOT_FOUND", "HOLD_AMBIGUOUS", "L2_UNAVAILABLE"}:
+                final_status = "L2_UNAVAILABLE"
+            results.append({"article_idx": article_id, "status": final_status, "predictions": [], **canonical_fields})
         else:
-            results.append({"article_idx": article_id, "status": "L2_READY", "predictions": article_predictions})
+            results.append({"article_idx": article_id, "status": canonical_status, "predictions": article_predictions, **canonical_fields})
     manifest["l2_disposition_metrics"]["l2_ready_articles"]["numerator"] = sum(
-        row.get("status") == "L2_READY" for row in results
+        row.get("status") in DOWNSTREAM_L2_ELIGIBLE_STATUSES for row in results
     )
     return {"results": results, "manifest": manifest, "external_model_calls": external_model_calls}
 
@@ -482,6 +1267,31 @@ def _bounded_exception_code(exc: BaseException, fallback: str, allowed: set[str]
     """Preserve only an explicitly registered contract code, never a message."""
     candidate = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else ""
     return candidate if candidate in allowed else fallback
+
+
+_ANNUAL_REQUERY_REASON_CODES = frozenset({
+    "ANNUAL_FREQUENCY_REQUIRED",
+    "SINGLE_ANNUAL_CELL_REQUIRED",
+    "BASELINE_MUST_PRECEDE_MEASUREMENT",
+    "REQUERY_SERIES_MUTATED",
+    "CURRENT_TARGET_NOT_FOUND",
+    "ANNUAL_CHANGE_NOT_UNIQUE",
+    "ANNUAL_MEASUREMENT_UNSUPPORTED",
+    "CURRENT_CELL_NOT_RESOLVED",
+    "BASELINE_CELL_NOT_RESOLVED",
+    "OFFICIAL_CELL_NOT_NUMERIC",
+    "BASELINE_ZERO",
+})
+
+
+def _bounded_annual_requery_reason(exc: BaseException) -> str:
+    """Return only a registered annual reason, without exposing exception text."""
+    prefix = str(exc).strip().split(":", 1)[0].strip()
+    return (
+        prefix
+        if prefix in _ANNUAL_REQUERY_REASON_CODES
+        else "ANNUAL_REQUERY_NOT_EVALUATED"
+    )
 
 
 def _sha_file(path: Path) -> str:
@@ -497,6 +1307,195 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise OperationalPipelineError(f"JSON_OBJECT_REQUIRED:{path}")
     return value
+
+
+_CLARIFICATION_ROLES = CLARIFICATION_ROLES
+_CLARIFICATION_PERIOD_RE = re.compile(
+    r"^(?:\d{4}|\d{4}-\d{2}|\d{4}년\s*[1-4]분기|\d{4}년\s*(?:0?[1-9]|1[0-2])월)$"
+)
+
+
+def _load_articles_for_clarification(
+    path: str | Path,
+    clarification_context_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Live input loader that defers a missing date to the binding stage."""
+    source = Path(path)
+    try:
+        text = source.read_text(encoding="utf-8")
+        if source.suffix.lower() == ".jsonl":
+            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        else:
+            value = json.loads(text)
+            rows = value if isinstance(value, list) else [value]
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LiveAdapterError("ARTICLE_INPUT_INVALID") from exc
+    if not rows or any(not isinstance(row, dict) for row in rows):
+        raise LiveAdapterError("ARTICLE_INPUT_OBJECTS_REQUIRED")
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        article_id = str(row.get("article_idx") or "").strip()
+        title = str(row.get("title") or "").strip()
+        body = str(row.get("article_text") or "").strip()
+        published = str(row.get("date") or "").strip()
+        if not article_id or article_id in seen or not title or not body:
+            raise LiveAdapterError("ARTICLE_REQUIRED_FIELD_MISSING")
+        if published:
+            try:
+                calendar_date.fromisoformat(published[:10])
+            except ValueError as exc:
+                raise LiveAdapterError("ARTICLE_DATE_INVALID") from exc
+        seen.add(article_id)
+        result.append({**row, "article_idx": article_id, "title": title, "article_text": body, "date": published})
+    if clarification_context_path is None:
+        return result
+    try:
+        context_path = Path(clarification_context_path).resolve()
+        context = _read_json(context_path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, OperationalPipelineError) as exc:
+        raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID") from exc
+    answers = context.get("clarification_answers")
+    expected_sha = str(context.get("article_body_sha256") or "")
+    if context.get("contract_version") not in {"clarification-context-v1", "clarification-context-v2"} or not isinstance(answers, list) or len(answers) > 3:
+        raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID")
+    if expected_sha and any(
+        hashlib.sha256(str(row.get("article_text") or "").encode("utf-8")).hexdigest() != expected_sha
+        for row in result
+    ):
+        raise LiveAdapterError("CLARIFICATION_CONTEXT_FINGERPRINT_MISMATCH")
+    hydrated: list[dict[str, Any]] = []
+    date_answers = [
+        answer
+        for answer in answers
+        if isinstance(answer, Mapping) and str(answer.get("role") or "").strip() == "article_date"
+    ]
+    for row in result:
+        updated = {
+            **row,
+            "clarification_answers": list(answers),
+            "_corrective_round_used": int(context.get("corrective_round") or 0),
+        }
+        if date_answers:
+            answer = date_answers[-1]
+            body_sha = hashlib.sha256(str(updated["article_text"]).encode("utf-8")).hexdigest()
+            try:
+                date_provenance = _article_date_provenance_from_clarification(
+                    answer,
+                    article_text_sha256=body_sha,
+                )
+            except OperationalPipelineError as exc:
+                raise LiveAdapterError("CLARIFICATION_CONTEXT_INVALID") from exc
+            resolved_date = str(answer.get("value") or "").strip()
+            updated["date"] = resolved_date
+            updated["article_date"] = resolved_date
+            updated["article_date_provenance"] = date_provenance
+        hydrated.append(updated)
+    return hydrated
+
+
+def _clarification_answer_sha(answer: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(dict(answer), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _article_date_provenance_from_clarification(
+    answer: Mapping[str, Any],
+    *,
+    article_text_sha256: str,
+) -> dict[str, str]:
+    question_id = str(answer.get("question_id") or "").strip()
+    role = str(answer.get("role") or "").strip()
+    value = str(answer.get("value") or "").strip()
+    if (
+        not question_id
+        or role != "article_date"
+        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+    ):
+        raise OperationalPipelineError("CLARIFICATION_INVALID")
+    try:
+        calendar_date.fromisoformat(value)
+    except ValueError as exc:
+        raise OperationalPipelineError("CLARIFICATION_INVALID") from exc
+    answer_sha = _clarification_answer_sha(
+        {"question_id": question_id, "role": role, "value": value}
+    )
+    return {
+        "source": "USER_CLARIFICATION",
+        "question_id": question_id,
+        "role": role,
+        "date_source": "user_feedback",
+        "source_path": "clarification_context",
+        "date_field": "date",
+        "article_text_sha256": article_text_sha256,
+        "answer_sha256": answer_sha,
+    }
+
+
+def _merge_user_clarifications(row: Mapping[str, Any], article: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(row)
+    if int(article.get("_corrective_round_used") or 0) > 0:
+        merged["_corrective_round_used"] = 1
+    raw_answers = article.get("clarification_answers")
+    if raw_answers in (None, []):
+        return merged
+    if not isinstance(raw_answers, list) or len(raw_answers) > 3:
+        raise OperationalPipelineError("CLARIFICATION_INVALID")
+    fields = dict(merged.get("retrieval_fields") if isinstance(merged.get("retrieval_fields"), Mapping) else {})
+    clarifications: dict[str, dict[str, Any]] = dict(
+        merged.get("user_clarifications") if isinstance(merged.get("user_clarifications"), Mapping) else {}
+    )
+    for answer in raw_answers:
+        if not isinstance(answer, Mapping):
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        role = str(answer.get("role") or "").strip()
+        question_id = str(answer.get("question_id") or "").strip()
+        value = str(answer.get("value") or "").strip()
+        option_id = str(answer.get("option_id") or "").strip()
+        if role not in _CLARIFICATION_ROLES or not question_id or not value:
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        if role == "article_date":
+            try:
+                calendar_date.fromisoformat(value)
+            except ValueError as exc:
+                raise OperationalPipelineError("CLARIFICATION_INVALID") from exc
+        elif role == "period" and not _CLARIFICATION_PERIOD_RE.fullmatch(value):
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        elif role != "period" and not 1 <= len(value) <= 120:
+            raise OperationalPipelineError("CLARIFICATION_INVALID")
+        prior = clarifications.get(role)
+        if prior and str(prior.get("value") or "") != value:
+            raise OperationalPipelineError("CLARIFICATION_CONFLICT")
+        record = {
+            "question_id": question_id, "role": role, "value": value,
+            "source": "USER_CLARIFICATION",
+            "answer_sha256": _clarification_answer_sha({"question_id": question_id, "role": role, "value": value}),
+        }
+        if option_id:
+            record["option_id"] = option_id
+        clarifications[role] = record
+        if role == "article_date":
+            article_text = str(article.get("article_text") or row.get("article_text") or "")
+            merged["article_date"] = value
+            merged["date"] = value
+            merged["article_date_provenance"] = _article_date_provenance_from_clarification(
+                {"question_id": question_id, "role": role, "value": value},
+                article_text_sha256=hashlib.sha256(article_text.encode("utf-8")).hexdigest(),
+            )
+        elif role == "period":
+            normalized = value.replace("-", ".")
+            if "년" in value:
+                normalized = re.sub(r"년\s*", ".", value).replace("월", "").replace("분기", " Q")
+            fields["period_absolute"] = normalized
+            fields["period_raw"] = value
+        else:
+            fields[role] = value
+    if clarifications:
+        merged["semantic_constraints"] = list(clarifications.values())
+    merged["retrieval_fields"] = fields
+    merged["user_clarifications"] = clarifications
+    return merged
 
 
 def _service_urls(
@@ -792,6 +1791,34 @@ class Top50Resolution:
     projections: tuple[CandidateProjection, ...]
     candidate_membership: tuple[str, ...]
     projected_count: int
+    # Generic resolution used to carry only the four fields above.  Keep
+    # defaults so existing positional construction remains source-compatible,
+    # while pinning the already-read profiles for the live selection step.
+    pinned_raw_profiles: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    pinned_projection_profiles: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    retrieval_rounds: tuple[int, ...] = ()
+    query_register_version: str = QUERY_REGISTER_VERSION
+    query_register_sha256: str | None = None
+    query_register_contract_sha256: str | None = None
+
+
+def _pin_profile_snapshots(
+    scope: Sequence[str],
+    profiles: Sequence[Mapping[str, Any] | None],
+) -> Mapping[str, Mapping[str, Any]]:
+    """Freeze in-memory profile snapshots without performing a provider read."""
+
+    pinned: dict[str, Mapping[str, Any]] = {}
+    for table_key, profile in zip(scope, profiles):
+        if isinstance(profile, Mapping):
+            # Copy before exposing the snapshot so a transform or later
+            # caller mutation cannot alter the profile used for the receipt.
+            pinned[str(table_key)] = MappingProxyType(deepcopy(dict(profile)))
+    return MappingProxyType(pinned)
 
 
 @dataclass(frozen=True)
@@ -1098,6 +2125,330 @@ def resolve_top50_monthly_v2j(
     )
 
 
+def _release_bound_item_specificity(assignment: CandidateAssignment) -> dict[str, Any]:
+    item = next(
+        (binding for binding in assignment.bindings if binding.axis_kind == "ITEM"),
+        None,
+    )
+    evidence = item.evidence if item is not None else {}
+    consumed = evidence.get("consumed_span") if isinstance(evidence, Mapping) else None
+    source_backed = bool(
+        isinstance(consumed, Mapping)
+        and isinstance(consumed.get("start"), int)
+        and isinstance(consumed.get("end"), int)
+        and consumed.get("end") > consumed.get("start")
+        and bool(consumed.get("text"))
+    )
+    binding_basis = str(item.binding_basis if item is not None else "")
+    exact_or_semantic = binding_basis in {"EXACT_LABEL", "SEMANTIC_ALIAS"} or (
+        isinstance(evidence, Mapping)
+        and str(evidence.get("match_rule") or "").endswith("semantic_alias")
+    )
+    specific = source_backed and exact_or_semantic and binding_basis != "SINGLETON_INVENTORY"
+    return {
+        "source_backed_consumed_span": source_backed,
+        "exact_or_semantic_item": exact_or_semantic,
+        "binding_basis": binding_basis,
+        "score": 1 if specific else 0,
+    }
+
+
+def _release_bound_geo_binding(binding: Any) -> bool:
+    if getattr(binding, "axis_kind", "") != "DIMENSION":
+        return False
+    if getattr(binding, "binding_basis", "") != "DISCLOSED_NATIONWIDE_DEFAULT":
+        return False
+    evidence = getattr(binding, "evidence", {})
+    disclosure = evidence.get("inference_disclosure") if isinstance(evidence, Mapping) else None
+    return isinstance(disclosure, Mapping) and disclosure.get("rule_id") == "unqualified-geographic-axis-nationwide"
+
+
+def _release_bound_explicit_geo_binding(binding: Any) -> bool:
+    """Recognize an article-backed region without relying on internal axis IDs."""
+    if getattr(binding, "axis_kind", "") != "DIMENSION":
+        return False
+    if str(getattr(binding, "bound_atom", "")) == "region":
+        return True
+    evidence = getattr(binding, "evidence", {})
+    axis_evidence = evidence.get("axis_evidence") if isinstance(evidence, Mapping) else None
+    axis_label = str(axis_evidence.get("profile_label") or "") if isinstance(axis_evidence, Mapping) else ""
+    return any(token in axis_label for token in ("행정구역", "시도", "시군구", "지역"))
+
+
+def _release_bound_is_geo_binding(binding: Any) -> bool:
+    return _release_bound_geo_binding(binding) or _release_bound_explicit_geo_binding(binding)
+
+
+def _release_bound_public_binding_signature(binding: Any) -> tuple[Any, ...]:
+    """Use public selector evidence so equivalent tables can share send_de policy.
+
+    Internal ITEM/DIMENSION IDs are table-local.  They must not prevent a
+    release-bound freshness comparison when the article-backed labels and
+    selector roles are the same.  If a public label is unavailable, retain the
+    internal identity as a fail-closed discriminator instead of guessing.
+    """
+    evidence = getattr(binding, "evidence", {})
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    if getattr(binding, "axis_kind", "") == "DIMENSION":
+        value_evidence = evidence.get("value_evidence")
+        value_evidence = value_evidence if isinstance(value_evidence, Mapping) else {}
+        label = str(value_evidence.get("profile_label") or evidence.get("profile_label") or "").strip()
+    else:
+        label = str(evidence.get("profile_label") or "").strip()
+    if label:
+        label = re.sub(r"\s+", "", label)
+        signature = (
+            str(getattr(binding, "axis_kind", "")),
+            str(getattr(binding, "bound_atom", "")),
+            "PUBLIC_LABEL",
+            label,
+        )
+        if getattr(binding, "axis_kind", "") == "PERIOD":
+            return (*signature, str(getattr(binding, "value_id", "")))
+        return signature
+    return (
+        str(getattr(binding, "axis_kind", "")),
+        str(getattr(binding, "bound_atom", "")),
+        "INTERNAL_ID_FALLBACK",
+        str(getattr(binding, "axis_id", "")),
+        str(getattr(binding, "value_id", "")),
+    )
+
+
+def _release_bound_semantic_signature(assignment: CandidateAssignment) -> tuple[Any, ...]:
+    return tuple(sorted(
+        _release_bound_public_binding_signature(binding)
+        for binding in assignment.bindings
+        if not _release_bound_is_geo_binding(binding)
+    ))
+
+
+def _release_bound_geo_signature(assignment: CandidateAssignment) -> tuple[Any, ...]:
+    result: list[tuple[Any, ...]] = []
+    for binding in assignment.bindings:
+        if not _release_bound_is_geo_binding(binding):
+            continue
+        evidence = binding.evidence if isinstance(binding.evidence, Mapping) else {}
+        value_evidence = evidence.get("value_evidence") if isinstance(evidence.get("value_evidence"), Mapping) else {}
+        result.append(
+            (
+                str(value_evidence.get("profile_label") or evidence.get("profile_label") or ""),
+            )
+        )
+    return tuple(result)
+
+
+def _release_bound_geo_cardinality(
+    assignment: CandidateAssignment, profile: Mapping[str, Any] | None,
+) -> tuple[int, ...] | None:
+    if not isinstance(profile, Mapping):
+        return None
+    dimensions = profile.get("dimensions")
+    if not isinstance(dimensions, list):
+        return None
+    cardinalities: list[int] = []
+    for binding in assignment.bindings:
+        if not _release_bound_is_geo_binding(binding):
+            continue
+        evidence = binding.evidence if isinstance(binding.evidence, Mapping) else {}
+        axis_evidence = evidence.get("axis_evidence") if isinstance(evidence.get("axis_evidence"), Mapping) else {}
+        path = str(axis_evidence.get("profile_inventory_path") or "")
+        match = re.fullmatch(r"dimensions\[(\d+)\]", path)
+        if match is None:
+            return None
+        index = int(match.group(1))
+        if index >= len(dimensions) or not isinstance(dimensions[index], Mapping):
+            return None
+        values = dimensions[index].get("values")
+        if not isinstance(values, list) or not values:
+            return None
+        cardinalities.append(len(values))
+    return tuple(cardinalities) if cardinalities else None
+
+
+def _release_bound_send_de(profile: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(profile, Mapping):
+        return None
+    raw = profile.get("send_de")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = calendar_date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed.isoformat() if parsed.isoformat() == raw else None
+
+
+def _release_bound_candidate_receipt(
+    assignment: CandidateAssignment, profile: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    item = _release_bound_item_specificity(assignment)
+    nationwide_geo_bindings = [binding for binding in assignment.bindings if _release_bound_geo_binding(binding)]
+    dimension_bindings = [binding for binding in assignment.bindings if binding.axis_kind == "DIMENSION"]
+    cardinality = _release_bound_geo_cardinality(assignment, profile)
+    send_de = _release_bound_send_de(profile)
+    return {
+        "table_key": assignment.table_key,
+        "signature": str(assignment.signature),
+        "send_de": send_de,
+        "send_de_valid": send_de is not None,
+        "item_specificity": item,
+        "components": {
+            "non_geo_semantic_signature": str(_release_bound_semantic_signature(assignment)),
+            "geo_signature": str(_release_bound_geo_signature(assignment)),
+            "all_geographic_axes_disclosed_nationwide": bool(dimension_bindings) and len(nationwide_geo_bindings) == len(dimension_bindings),
+            "geo_dimension_cardinality": list(cardinality) if cardinality is not None else None,
+        },
+        "score": {
+            "item_source_specificity": item["score"],
+            "coarser_geo_cardinality": -min(cardinality) if cardinality else None,
+        },
+    }
+
+
+def _apply_release_bound_evidence_specificity_dominance(
+    resolution: TargetResolution,
+    projections: Sequence[CandidateProjection],
+    profiles_by_table: Mapping[str, Mapping[str, Any] | None],
+) -> TargetResolution:
+    if resolution.hold_reason != "MULTIPLE_COMPATIBLE_SERIES":
+        return resolution
+    records = [
+        {
+            "assignment": assignment,
+            "receipt": _release_bound_candidate_receipt(
+                assignment, profiles_by_table.get(assignment.table_key)
+            ),
+        }
+        for projection in projections
+        for assignment in projection.assignments
+    ]
+    receipt: dict[str, Any] = {
+        "rule_id": RELEASE_BOUND_DOMINANCE_RULE_ID,
+        "rule_version": RELEASE_BOUND_DOMINANCE_RULE_VERSION,
+        "candidates": [row["receipt"] for row in records],
+        "score_components": [
+            "item_source_specificity",
+            "coarser_geo_cardinality",
+            "latest_send_de",
+        ],
+        "chosen_table": None,
+        "decision": "NOT_UNIQUE",
+        "latest_send_de_decision": {
+            "status": "NOT_APPLIED",
+            "latest_send_de": None,
+            "reason": "EVIDENCE_SPECIFICITY_NOT_TIED",
+        },
+    }
+    if not records:
+        return resolution
+
+    specific = [
+        row for row in records if row["receipt"]["item_specificity"]["score"] == 1
+    ]
+    considered = specific if specific else records
+    if len(considered) == 1:
+        chosen = considered[0]["assignment"]
+    else:
+        chosen = None
+        selector_groups = {
+            (
+                _release_bound_semantic_signature(row["assignment"]),
+                _release_bound_geo_signature(row["assignment"]),
+            )
+            for row in considered
+        }
+
+        # Publication date is usable only inside one already-compatible
+        # semantic/cell-selector group.  It deliberately precedes the
+        # geographic cardinality rule: a newer compatible table must win even
+        # when its geographic inventory is finer.
+        date_pool = considered
+        send_dates = [row["receipt"].get("send_de") for row in date_pool]
+        valid_send_dates = all(
+            isinstance(value, str)
+            and _release_bound_send_de({"send_de": value}) == value
+            for value in send_dates
+        )
+        if len(selector_groups) == 1:
+            if not valid_send_dates:
+                receipt["latest_send_de_decision"] = {
+                    "status": "FAIL_CLOSED",
+                    "latest_send_de": None,
+                    "reason": "SEND_DE_MISSING_OR_INVALID",
+                }
+            else:
+                latest = max(send_dates)
+                latest_rows = [
+                    row for row in date_pool
+                    if row["receipt"].get("send_de") == latest
+                ]
+                latest_decision = "CHOSEN" if len(latest_rows) == 1 else "TIE_SUBSET"
+                receipt["latest_send_de_decision"] = {
+                    "status": latest_decision,
+                    "latest_send_de": latest,
+                    "reason": "SEMANTIC_PERIOD_SELECTOR_TIE",
+                }
+                if len(latest_rows) == 1:
+                    chosen = latest_rows[0]["assignment"]
+                else:
+                    # If publication dates tie, apply coarser geography only
+                    # within that tied subset; never let an older candidate
+                    # participate in this specificity decision.
+                    latest_cardinalities = [
+                        _release_bound_geo_cardinality(
+                            row["assignment"], profiles_by_table.get(row["assignment"].table_key)
+                        )
+                        for row in latest_rows
+                    ]
+                    if all(value is not None and len(value) == 1 for value in latest_cardinalities):
+                        minimum = min(value[0] for value in latest_cardinalities if value is not None)
+                        winners = [
+                            row for row, value in zip(latest_rows, latest_cardinalities)
+                            if value is not None and value[0] == minimum
+                        ]
+                        if len(winners) == 1:
+                            chosen = winners[0]["assignment"]
+                            receipt["latest_send_de_decision"]["status"] = "CHOSEN_COARSER_GEO"
+                        else:
+                            receipt["latest_send_de_decision"]["status"] = "NOT_UNIQUE"
+
+    if chosen is None:
+        return TargetResolution(
+            resolution.outcome,
+            resolution.hold_reason,
+            resolution.query_plan,
+            resolution.chosen_table_key,
+            resolution.compatible_series,
+            {**resolution.audit, "release_bound_evidence_specificity_dominance": receipt},
+            hashlib.sha256(
+                canonical_bytes({
+                    "outcome": resolution.outcome,
+                    "hold_reason": resolution.hold_reason,
+                    "query_plan": resolution.query_plan,
+                    "chosen_table_key": resolution.chosen_table_key,
+                    "compatible_series": resolution.compatible_series,
+                    "audit": {**resolution.audit, "release_bound_evidence_specificity_dominance": receipt},
+                })
+            ).hexdigest(),
+        )
+    plan = _query_plan(chosen)
+    if plan is None:
+        return resolution
+    receipt["chosen_table"] = chosen.table_key
+    receipt["decision"] = "CHOSEN"
+    audit = {**resolution.audit, "release_bound_evidence_specificity_dominance": receipt}
+    data = {
+        "outcome": "QUERY_READY",
+        "hold_reason": None,
+        "query_plan": plan,
+        "chosen_table_key": chosen.table_key,
+        "compatible_series": resolution.compatible_series,
+        "audit": audit,
+    }
+    return TargetResolution(**data, canonical_sha256=hashlib.sha256(canonical_bytes(data)).hexdigest())
+
+
 def resolve_top50(
     claim_core: Any,
     ranked_candidates: Sequence[Any],
@@ -1106,14 +2457,23 @@ def resolve_top50(
     profile_transform: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     allow_unqualified_nationwide: bool = False,
     table_context_terms: Sequence[str] = (),
+    release_bound_mode: bool = False,
 ) -> Top50Resolution:
-    """Project every fixed-scope candidate before global uniqueness."""
+    """Project every fixed-scope candidate before global uniqueness.
+
+    ``release_bound_mode`` is an explicit opt-in for evidence-specificity
+    dominance.  The ordinary resolver remains unchanged when it is false.
+    """
     scope = tuple(str(getattr(row, "table_key", None) or row["table_key"]) for row in ranked_candidates[:50])
     if len(scope) != len(set(scope)):
         raise OperationalPipelineError("DUPLICATE_CANDIDATE_SCOPE")
     profiles = [profile_provider(table_key) for table_key in scope]
+    raw_profiles = tuple(profiles)
     if profile_transform is not None:
-        profiles = [profile_transform(profile) if profile is not None else None for profile in profiles]
+        profiles = [
+            profile_transform(deepcopy(profile)) if profile is not None else None
+            for profile in profiles
+        ]
     normalized_terms = [
         re.sub(r"[\s\-_./:(),]+", "", str(term or "")).casefold()
         for term in table_context_terms
@@ -1143,7 +2503,20 @@ def resolve_top50(
     if len(projections) != len(scope):
         raise OperationalPipelineError("EARLY_PROJECTION_EXIT")
     resolution = validate_target_v2(projections)
-    return Top50Resolution(resolution, projections, scope, len(projections))
+    if release_bound_mode:
+        resolution = _apply_release_bound_evidence_specificity_dominance(
+            resolution,
+            projections,
+            {table_key: profile for table_key, profile in zip(scope, profiles)},
+        )
+    return Top50Resolution(
+        resolution,
+        projections,
+        scope,
+        len(projections),
+        pinned_raw_profiles=_pin_profile_snapshots(scope, raw_profiles),
+        pinned_projection_profiles=_pin_profile_snapshots(scope, profiles),
+    )
 
 
 def assignment_for_resolution(result: Top50Resolution) -> CandidateAssignment | None:
@@ -1158,20 +2531,96 @@ def assignment_for_resolution(result: Top50Resolution) -> CandidateAssignment | 
     return matches[0] if len(matches) == 1 else None
 
 
+# KOSIS Param API의 공식 셀 row 계약은 대문자 키를 사용한다. 확인되지 않은
+# 소문자/내부 별칭으로 누락된 좌표를 보완하지 않는다.
+_KOSIS_CELL_RESPONSE_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "ORG_ID": ("ORG_ID",),
+    "TBL_ID": ("TBL_ID",),
+    "ITM_ID": ("ITM_ID",),
+    "PRD_SE": ("PRD_SE",),
+    "PRD_DE": ("PRD_DE",),
+}
+
+
+def _kosis_cell_response_value(row: Mapping[str, Any], field: str) -> tuple[bool, Any]:
+    """Return a contract-approved response field without guessing missing data."""
+    for key in _KOSIS_CELL_RESPONSE_ALIASES.get(field, (field,)):
+        if key in row:
+            return True, row[key]
+    return False, None
+
+
+def _cell_response_mismatch(
+    query_plan: Mapping[str, Any],
+    *,
+    field: str,
+    expected: Any,
+    actual: Any = None,
+    cell_api_called: bool = True,
+    reason: str = "RESPONSE_FIELD_MISMATCH",
+) -> dict[str, Any]:
+    return {
+        "status": "CELL_QUERY_MISMATCH",
+        "query": dict(query_plan),
+        "cell_api_called": cell_api_called,
+        "mismatch": {"field": field, "expected": expected, "actual": actual, "reason": reason},
+    }
+
+
 def fetch_exact_single_cell(
     query_plan: Mapping[str, Any],
     fetcher: Callable[[dict[str, Any]], list[dict[str, Any]] | dict[str, Any]],
+    *,
+    query_ready_receipt: Mapping[str, Any] | None = None,
+    candidate_bundle_sha256: str | None = None,
+    target_call_ledger: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fetch one official cell and fail closed on zero, multiple, or API error."""
+    if not isinstance(query_ready_receipt, Mapping) or query_ready_receipt.get("state") != "QUERY_READY":
+        return {
+            "status": "QUERY_READY_RECEIPT_REQUIRED",
+            "query": dict(query_plan),
+            "cell_api_called": False,
+        }
+    expected_plan_sha = hashlib.sha256(canonical_bytes(dict(query_plan))).hexdigest()
+    if str(query_ready_receipt.get("query_plan_sha256") or "") != expected_plan_sha:
+        return {"status": "QUERY_READY_RECEIPT_INVALID", "query": dict(query_plan), "cell_api_called": False}
+    if candidate_bundle_sha256 is not None and str(query_ready_receipt.get("candidate_bundle_sha256") or "") != str(candidate_bundle_sha256):
+        return {"status": "QUERY_READY_RECEIPT_INVALID", "query": dict(query_plan), "cell_api_called": False}
+    required = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de")
+    if any(not str(query_plan.get(key) or "").strip() for key in required):
+        return {"status": "QUERY_PLAN_INCOMPLETE", "query": dict(query_plan), "cell_api_called": False}
+    obj_levels = query_plan.get("obj_levels")
+    if (
+        not isinstance(obj_levels, Mapping)
+        or any(not isinstance(key, str) or not str(value or "").strip() for key, value in obj_levels.items())
+        or str(query_plan["start_prd_de"]) > str(query_plan["end_prd_de"])
+    ):
+        return {"status": "QUERY_PLAN_INCOMPLETE", "query": dict(query_plan), "cell_api_called": False}
+    selector_sha256 = hashlib.sha256(canonical_bytes(dict(sorted((str(key), str(value)) for key, value in obj_levels.items())))).hexdigest()
+    period_sha256 = hashlib.sha256(canonical_bytes({
+        "prd_se": str(query_plan["prd_se"]),
+        "start_prd_de": str(query_plan["start_prd_de"]),
+        "end_prd_de": str(query_plan["end_prd_de"]),
+    })).hexdigest()
+    if (
+        query_ready_receipt.get("selector_unique") is not True
+        or str(query_ready_receipt.get("selector_sha256") or "") != selector_sha256
+        or str(query_ready_receipt.get("period_sha256") or "") != period_sha256
+    ):
+        return {"status": "QUERY_READY_RECEIPT_INVALID", "query": dict(query_plan), "cell_api_called": False}
+    if not _consume_target_cell_authorization(target_call_ledger):
+        return {"status": "CELL_API_ONE_CALL_GUARD", "query": dict(query_plan), "cell_api_called": False}
     response = fetcher(dict(query_plan))
+    cell_called = True
     if isinstance(response, dict):
-        return {"status": "CELL_API_ERROR", "query": dict(query_plan), "response": response}
+        return {"status": "CELL_API_ERROR", "query": dict(query_plan), "response": response, "cell_api_called": cell_called}
     if not isinstance(response, list):
-        return {"status": "CELL_RESPONSE_INVALID", "query": dict(query_plan)}
+        return {"status": "CELL_RESPONSE_INVALID", "query": dict(query_plan), "cell_api_called": cell_called}
     if not response:
-        return {"status": "NO_CELL", "query": dict(query_plan), "rows": []}
+        return {"status": "NO_CELL", "query": dict(query_plan), "rows": [], "cell_api_called": cell_called}
     if len(response) != 1:
-        return {"status": "MULTIPLE_CELLS", "query": dict(query_plan), "row_count": len(response)}
+        return {"status": "MULTIPLE_CELLS", "query": dict(query_plan), "row_count": len(response), "cell_api_called": cell_called}
     cell = dict(response[0])
     checks = {
         "ORG_ID": query_plan.get("org_id"),
@@ -1179,48 +2628,62 @@ def fetch_exact_single_cell(
         "ITM_ID": query_plan.get("itm_id"),
     }
     for key, expected in checks.items():
-        actual = cell.get(key)
-        if actual not in (None, "") and str(actual) != str(expected):
-            return {
-                "status": "CELL_QUERY_MISMATCH",
-                "query": dict(query_plan),
-                "mismatch": {"field": key, "expected": expected, "actual": actual},
-            }
-    response_frequency = cell.get("PRD_SE")
+        present, actual = _kosis_cell_response_value(cell, key)
+        if not present or actual in (None, "") or not str(actual).strip():
+            return _cell_response_mismatch(
+                query_plan, field=key, expected=expected, actual=actual,
+                cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+            )
+        if str(actual) != str(expected):
+            return _cell_response_mismatch(
+                query_plan, field=key, expected=expected, actual=actual,
+                cell_api_called=cell_called,
+            )
+    frequency_present, response_frequency = _kosis_cell_response_value(cell, "PRD_SE")
     requested_frequency = query_plan.get("prd_se")
+    if not frequency_present or response_frequency in (None, "") or not str(response_frequency).strip():
+        return _cell_response_mismatch(
+            query_plan, field="PRD_SE", expected=requested_frequency, actual=response_frequency,
+            cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+        )
     annual_alias = {str(response_frequency), str(requested_frequency)} == {"A", "Y"}
     if (
-        response_frequency not in (None, "")
-        and str(response_frequency) != str(requested_frequency)
+        str(response_frequency) != str(requested_frequency)
         and not annual_alias
     ):
-        return {
-            "status": "CELL_QUERY_MISMATCH",
-            "query": dict(query_plan),
-            "mismatch": {
-                "field": "PRD_SE",
-                "expected": requested_frequency,
-                "actual": response_frequency,
-                "normalization_rule": "kosis-param-annual-a-y-v1",
-            },
-        }
-    period = cell.get("PRD_DE")
-    if period not in (None, "") and not (
+        mismatch = _cell_response_mismatch(
+            query_plan, field="PRD_SE", expected=requested_frequency, actual=response_frequency,
+            cell_api_called=cell_called,
+        )
+        mismatch["mismatch"]["normalization_rule"] = "kosis-param-annual-a-y-v1"
+        return mismatch
+    period_present, period = _kosis_cell_response_value(cell, "PRD_DE")
+    if not period_present or period in (None, "") or not str(period).strip():
+        return _cell_response_mismatch(
+            query_plan, field="PRD_DE", expected=[query_plan.get("start_prd_de"), query_plan.get("end_prd_de")],
+            actual=period, cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+        )
+    if not (
         str(query_plan.get("start_prd_de")) <= str(period) <= str(query_plan.get("end_prd_de"))
     ):
-        return {
-            "status": "CELL_QUERY_MISMATCH",
-            "query": dict(query_plan),
-            "mismatch": {"field": "PRD_DE", "expected": [query_plan.get("start_prd_de"), query_plan.get("end_prd_de")], "actual": period},
-        }
+        return _cell_response_mismatch(
+            query_plan, field="PRD_DE", expected=[query_plan.get("start_prd_de"), query_plan.get("end_prd_de")],
+            actual=period, cell_api_called=cell_called,
+        )
     for index, expected in enumerate((query_plan.get("obj_levels") or {}).values(), 1):
-        actual = cell.get(f"C{index}")
-        if actual not in (None, "") and str(actual) != str(expected):
-            return {
-                "status": "CELL_QUERY_MISMATCH",
-                "query": dict(query_plan),
-                "mismatch": {"field": f"C{index}", "expected": expected, "actual": actual},
-            }
+        field = f"C{index}"
+        present = field in cell
+        actual = cell.get(field)
+        if not present or actual in (None, "") or not str(actual).strip():
+            return _cell_response_mismatch(
+                query_plan, field=field, expected=expected, actual=actual,
+                cell_api_called=cell_called, reason="RESPONSE_FIELD_MISSING",
+            )
+        if str(actual) != str(expected):
+            return _cell_response_mismatch(
+                query_plan, field=field, expected=expected, actual=actual,
+                cell_api_called=cell_called,
+            )
     response_sha = hashlib.sha256(
         json.dumps(response, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
@@ -1232,6 +2695,7 @@ def fetch_exact_single_cell(
         "response_contract": {
             "period_frequency_rule": "kosis-param-annual-a-y-v1" if annual_alias else "exact",
         },
+        "cell_api_called": cell_called,
     }
 
 
@@ -1263,6 +2727,57 @@ def _target_id(row: Mapping[str, Any]) -> str:
     return f"{row.get('article_idx')}:{row.get('value_span_id') or row.get('sentence_id') or 'target'}"
 
 
+def _cell_budget_target_id(claim_target_id: str, query_plan: Mapping[str, Any]) -> str:
+    """Return a deterministic identity for one claim and one exact cell.
+
+    The ledger's per-target limit remains one attempt.  The target therefore
+    has to distinguish logical claims that happen to read the same period,
+    while still collapsing byte-equivalent duplicate requests.  Annual KOSIS
+    period spellings ``A`` and ``Y`` are the same coordinate for this purpose.
+    """
+    claim_id = str(claim_target_id or "").strip()
+    if not claim_id:
+        raise ValueError("CELL_BUDGET_CLAIM_TARGET_ID_REQUIRED")
+    if not isinstance(query_plan, Mapping):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+
+    required = ("org_id", "tbl_id", "itm_id", "prd_se", "start_prd_de", "end_prd_de")
+    if any(not str(query_plan.get(key) or "").strip() for key in required):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+    obj_levels = query_plan.get("obj_levels")
+    if not isinstance(obj_levels, Mapping):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+    if any(
+        not isinstance(key, str)
+        or not str(key).strip()
+        or not str(value or "").strip()
+        for key, value in obj_levels.items()
+    ):
+        raise ValueError("CELL_BUDGET_COORDINATE_INCOMPLETE")
+
+    prd_se = str(query_plan["prd_se"])
+    if prd_se.upper() in {"A", "Y"}:
+        prd_se = "Y"
+    coordinate = {
+        "org_id": str(query_plan["org_id"]),
+        "tbl_id": str(query_plan["tbl_id"]),
+        "itm_id": str(query_plan["itm_id"]),
+        "prd_se": prd_se,
+        "start_prd_de": str(query_plan["start_prd_de"]),
+        "end_prd_de": str(query_plan["end_prd_de"]),
+        "obj_levels": {
+            key: str(value) for key, value in sorted(obj_levels.items(), key=lambda item: item[0])
+        },
+    }
+    payload = {
+        "version": "cell-budget-target-v1",
+        "claim_target_id": claim_id,
+        "coordinate": coordinate,
+    }
+    digest = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    return f"cell:v1:{digest}"
+
+
 def _bounded_article_date_provenance(article: Mapping[str, Any], article_text: str) -> dict[str, Any]:
     """Carry the bounded input date provenance into routed evidence."""
     input_provenance = article.get("article_date_provenance")
@@ -1276,6 +2791,188 @@ def _bounded_article_date_provenance(article: Mapping[str, Any], article_text: s
     provenance.setdefault("date_field", "date")
     provenance["article_text_sha256"] = hashlib.sha256(article_text.encode("utf-8")).hexdigest()
     return provenance
+
+
+def _uses_monthly_claim_contract(row: Mapping[str, Any]) -> bool:
+    """Select monthly-v2h only for a lossless monthly source expression."""
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measurement = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    absolute = str(measurement.get("absolute") or fields.get("period_absolute") or "").strip()
+    raw = str(measurement.get("raw") or fields.get("period_raw") or "").strip()
+    return bool(
+        re.fullmatch(r"\d{4}-\d{2}", absolute)
+        and re.search(r"(?:월|month)|\d{4}[-./]\d{1,2}", raw, re.IGNORECASE)
+    )
+
+
+def _annual_claim_contract(row: Mapping[str, Any], query_plan: Mapping[str, Any]) -> bool:
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    measurement = str(fields.get("measurement_type") or "").upper()
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measure = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    absolute = str(measure.get("absolute") or fields.get("period_absolute") or "")
+    return (
+        measurement in {"LEVEL", "CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"}
+        and str(query_plan.get("prd_se") or "") in {"Y", "A"}
+        and bool(re.fullmatch(r"\d{4}", absolute))
+    )
+
+
+def _annual_change_only_row(row: Mapping[str, Any]) -> bool:
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    measurement = str(fields.get("measurement_type") or "").upper()
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measure = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    absolute = str(measure.get("absolute") or fields.get("period_absolute") or "").strip()
+    return measurement in {"CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"} and bool(
+        re.fullmatch(r"\d{4}", absolute)
+    )
+
+
+def _release_bound_annual_period_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Collapse one source-backed annual YOY duplicate only in release-bound mode."""
+    result = dict(row)
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    measurement = str(fields.get("measurement_type") or "").upper()
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measurement_period = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    current_absolute = str(
+        measurement_period.get("absolute") or fields.get("period_absolute") or ""
+    ).strip()
+    if (
+        measurement not in {"CHANGE_RATE", "CHANGE_POINT", "DIFFERENCE"}
+        or period.get("basis") not in {None, "", NO_BASIS}
+        or not re.fullmatch(r"\d{4}", current_absolute)
+    ):
+        return result
+    sentence = str(row.get("sentence_text") or "")
+    generic_basis, _generic_marker, _generic_start = comparison_basis(sentence, measurement)
+    collapsed_basis, marker, marker_start = comparison_basis_monthly_v2h(sentence, measurement)
+    if (
+        generic_basis != NO_BASIS
+        or collapsed_basis != YOY
+        or marker_start is None
+        or not marker
+    ):
+        return result
+    marker_end = marker_start + len(marker)
+    if sentence[marker_start:marker_end] != marker:
+        return result
+    baseline_absolute = str(int(current_absolute) - 1)
+    receipt = {
+        "rule_id": "release-bound-annual-yoy-same-span-collapse-v1",
+        "rule_version": 1,
+        "source_span": {
+            "start": marker_start,
+            "end": marker_end,
+            "text": sentence[marker_start:marker_end],
+        },
+        "collapsed_bases": ["YOY", "PERIOD_TO_PERIOD"],
+        "selected_basis": YOY,
+        "measurement_absolute": current_absolute,
+        "baseline_absolute": baseline_absolute,
+    }
+    normalized_period = {
+        **dict(period),
+        "basis": YOY,
+        "baseline": {"raw": marker, "absolute": baseline_absolute},
+        "release_bound_basis_receipt": receipt,
+    }
+    result["retrieval_fields"] = {**dict(fields), "period": normalized_period}
+    result["release_bound_annual_period_receipt"] = receipt
+    return result
+
+
+def _annual_change_projection_core(row: Mapping[str, Any]) -> ClaimCore:
+    """Project an annual change claim against a LEVEL item's series unit.
+
+    A percent/difference claim is an operation over two official LEVEL cells;
+    its claim unit must not be used as the profile ITEM unit during binding.
+    The original claim unit remains in the atom provenance for audit, while
+    the projection-facing unit atom is intentionally UNKNOWN.
+    """
+    core = build_claim_core_v2(row)
+    if not _annual_change_only_row(row):
+        return core
+    atoms = dict(core.atoms)
+    period_atom = atoms.get("period")
+    period_receipt = row.get("release_bound_annual_period_receipt")
+    if period_atom is not None and isinstance(period_receipt, Mapping):
+        atoms["period"] = ClaimAtom(
+            period_atom.role,
+            period_atom.surface,
+            period_atom.status,
+            {
+                **dict(period_atom.provenance),
+                "release_bound_period_basis_receipt": dict(period_receipt),
+            },
+        )
+    unit_atom = atoms.get("unit")
+    if unit_atom is None:
+        return core
+    unit_provenance = {
+        **dict(unit_atom.provenance),
+        "projection_unit_policy": "ANNUAL_CHANGE_USES_LEVEL_ITEM_UNIT",
+        "claim_unit": str(unit_atom.surface or ""),
+    }
+    atoms["unit"] = ClaimAtom("unit", "", "UNKNOWN", unit_provenance)
+    proposal = {**core.proposal_view, "unit": ""}
+    data = {
+        "atoms": {name: asdict(atom) for name, atom in atoms.items()},
+        "proposal_view": proposal,
+        "provenance": core.provenance,
+        "contract_version": core.contract_version,
+    }
+    digest = hashlib.sha256(canonical_bytes(data)).hexdigest()
+    return ClaimCore(atoms, proposal, core.provenance, core.contract_version, digest)
+
+
+def _profile_item_unit(profile: Mapping[str, Any] | None, item_id: Any) -> str:
+    if not isinstance(profile, Mapping):
+        return ""
+    expected = str(item_id or "")
+    for item in profile.get("items") or ():
+        if isinstance(item, Mapping) and str(item.get("itm_id") or "") == expected:
+            return str(item.get("unit_nm") or item.get("unit_name") or "")
+    return ""
+
+
+def _evidence_family_key(row: Mapping[str, Any]) -> tuple[str, Any, str, str]:
+    fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+    sentence_id = row.get("article_sentence_id", row.get("sentence_id"))
+    period = fields.get("period") if isinstance(fields.get("period"), Mapping) else {}
+    measurement = period.get("measurement") if isinstance(period.get("measurement"), Mapping) else {}
+    period_absolute = str(measurement.get("absolute") or fields.get("period_absolute") or "")
+    family = indicator_family_key(str(fields.get("indicator") or row.get("indicator_label") or ""))
+    return (str(row.get("article_idx") or ""), sentence_id, family, period_absolute)
+
+
+def _evidence_family_groups(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, Any, str, str], tuple[Mapping[str, Any], ...]]:
+    groups: dict[tuple[str, Any, str, str], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
+        if str(fields.get("measurement_type") or "") not in {"LEVEL", "CHANGE_RATE", "CHANGE_POINT"}:
+            continue
+        groups.setdefault(_evidence_family_key(row), []).append(row)
+    return {key: tuple(value) for key, value in groups.items()}
+
+
+def _annual_range_claim(sentence: str) -> bool:
+    """Recognize range/ranking language without assigning a value to it."""
+    return bool(re.search(r"(?:\d+년\s*만에|\d{4}년\s*이후|역대\s*\d+번째|\d+년\s*연속)", sentence))
+
+
+def _evidence_first_ledger_projection(
+    top50: Any, *, target_id: str, article_date_limitation: str,
+) -> dict[str, Any]:
+    """Project monthly-only receipt fields without weakening generic identity."""
+    return {
+        "target_id": target_id,
+        "article_date_limitation": article_date_limitation,
+        "profile_receipts": list(getattr(top50, "profile_receipts", ()) or ()),
+        "membership_receipt_sha256": getattr(top50, "membership_receipt_sha256", None),
+    }
 
 
 ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H = (
@@ -1405,7 +3102,24 @@ def run_technical_canary(
             "reason": "QUERY_PLAN_INVENTORY_INVALID",
             "inventory_errors": inventory_errors,
         }
-    cell_result = fetch_exact_single_cell(query_plan, cell_fetcher)
+    cell_result = fetch_exact_single_cell(
+        query_plan,
+        cell_fetcher,
+        query_ready_receipt={
+            "state": "QUERY_READY",
+            "query_plan_sha256": hashlib.sha256(canonical_bytes(query_plan)).hexdigest(),
+            "selector_unique": True,
+            "selector_sha256": hashlib.sha256(canonical_bytes(dict(sorted(
+                (str(key), str(value)) for key, value in (query_plan.get("obj_levels") or {}).items()
+            )))).hexdigest(),
+            "period_sha256": hashlib.sha256(canonical_bytes({
+                "prd_se": str(query_plan.get("prd_se") or ""),
+                "start_prd_de": str(query_plan.get("start_prd_de") or ""),
+                "end_prd_de": str(query_plan.get("end_prd_de") or ""),
+            })).hexdigest(),
+        },
+        target_call_ledger={"cell_api": 0},
+    )
     official_unit = _official_unit_for_query(profile, query_plan)
     comparison: dict[str, Any] = {}
     if cell_result.get("status") == "CELL_RESOLVED":
@@ -1433,7 +3147,7 @@ def run_technical_canary(
             "LIMITATION": reason,
         },
     )
-    answer = generate_guarded_answer(packet, hcx_answerer)
+    answer = render_answer(packet, hcx_answerer, mode="DETERMINISTIC_ONLY")
     return {
         "namespace": "TECHNICAL_CANARY",
         "metric_inclusion": False,
@@ -1478,9 +3192,16 @@ def run_new_articles_v2(
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
     evidence_first_statistics_shadow: bool | None = None,
+    release_bound_mode: bool | None = None,
+    answer_render_mode_name: str | None = None,
+    retrieval_cache: RequestScopedRetrievalCache | None = None,
+    timing: MonotonicTimingRecorder | None = None,
+    binding_continuation: Mapping[str, Any] | None = None,
+    binding_query_register_identity_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the complete live contract with injectable external adapters."""
     evidence_first_statistics_shadow = _evidence_first_enabled(evidence_first_statistics_shadow)
+    release_bound_mode = release_runtime_enabled() if release_bound_mode is None else bool(release_bound_mode)
     if (precomputed_l2 is None) != (precomputed_routed is None):
         raise OperationalPipelineError("PRECOMPUTED_INPUT_INCOMPLETE")
     if precomputed_l2 is not None and precomputed_routed is not None:
@@ -1504,7 +3225,10 @@ def run_new_articles_v2(
         result_ids = [str(row.get("article_idx") or "") for row in results]
         if result_ids != expected_ids:
             raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
-        ready_ids = {str(row.get("article_idx") or "") for row in results if row.get("status") == "L2_READY"}
+        ready_ids = {
+            str(row.get("article_idx") or "") for row in results
+            if row.get("status") in DOWNSTREAM_L2_ELIGIBLE_STATUSES
+        }
         routed_rows = list(precomputed_routed.get("rows") or [])
         routed_article_ids = [str(row.get("article_idx") or "") for row in routed_rows]
         routed_target_ids = [str(row.get("target_id") or row.get("value_span_id") or "") for row in routed_rows]
@@ -1530,6 +3254,10 @@ def run_new_articles_v2(
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
             evidence_first_statistics_shadow=evidence_first_statistics_shadow,
+            release_bound_mode=release_bound_mode,
+            answer_render_mode_name=answer_render_mode_name,
+            retrieval_cache=retrieval_cache,
+            timing=timing,
         )
         if len(pilot.get("stage_ledger") or []) == 0 or len(pilot.get("answers") or []) == 0:
             raise OperationalPipelineError("AUDIT_PILOT_BARRIER_PARTITION_MISSING")
@@ -1554,6 +3282,10 @@ def run_new_articles_v2(
             failure_recovery_shadow=failure_recovery_shadow,
             user_intent_shadow=user_intent_shadow,
             evidence_first_statistics_shadow=evidence_first_statistics_shadow,
+            release_bound_mode=release_bound_mode,
+            answer_render_mode_name=answer_render_mode_name,
+            retrieval_cache=retrieval_cache,
+            timing=timing,
         )
         pilot_manifest, batch_manifest = pilot.get("l2", {}), batch.get("l2", {})
         merged_l2 = {**pilot_manifest, **batch_manifest,
@@ -1574,7 +3306,10 @@ def run_new_articles_v2(
         if budget_ledger is not None and answerer is not None:
             from src.news_verification.runtime.audit_budget_v1 import BudgetedAnswerer
             answerer = BudgetedAnswerer(answerer, budget_ledger, budget_run_id or "audit", target_id)
-        return generate_guarded_answer(packet, answerer, rag=rag, use_rag=use_rag)
+        return render_answer(
+            packet, answerer, mode=answer_render_mode_name,
+            rag=rag, use_rag=use_rag,
+        )
 
     if precomputed_l2 is None:
         l2 = run_operational_l2(articles, api_key=l2_api_key, runner=l2_runner, budget_ledger=budget_ledger, budget_run_id=budget_run_id)
@@ -1582,7 +3317,10 @@ def run_new_articles_v2(
         l2 = dict(precomputed_l2)
         l2["external_model_calls"] = 0
         l2["reused_model_calls"] = int(l2.get("reused_model_calls") or len(articles))
-    ready_ids = {row["article_idx"] for row in l2["results"] if row["status"] == "L2_READY"}
+    ready_ids = {
+        row["article_idx"] for row in l2["results"]
+        if row["status"] in DOWNSTREAM_L2_ELIGIBLE_STATUSES
+    }
     predictions = [row for result in l2["results"] for row in result["predictions"]]
     if precomputed_routed is None:
         routed = stack_runner([article for article in articles if str(article.get("article_idx")) in ready_ids], predictions)
@@ -1590,13 +3328,15 @@ def run_new_articles_v2(
     else:
         routed = list(precomputed_routed.get("rows") or [])
         stack_recomputed = False
-    # Keep the stack result as an immutable evidence-only snapshot.  Claim
-    # selection is allowed to narrow the execution target below, but evidence
-    # synthesis must still see the complete LEVEL/change sibling population.
+    # Keep the stack result as an immutable evidence-only snapshot.  Article
+    # mode (claim_query is None) executes every routed target; primary
+    # selection is evidence-synthesis audit only.  Explicit query mode may
+    # still narrow membership below.
     routed_evidence_snapshot = (
         tuple(MappingProxyType(dict(row)) for row in routed if isinstance(row, Mapping))
         if evidence_first_statistics_shadow else ()
     )
+    evidence_family_groups = _evidence_family_groups(routed_evidence_snapshot)
     primary_info: dict[str, Any] | None = None
     primary_selection_error: str | None = None
     if evidence_first_statistics_shadow:
@@ -1639,19 +3379,49 @@ def run_new_articles_v2(
             "user_intent": user_intent,
             "primary_selection_source": "value_span_id_same_series_group",
         }
-        if intent_clarification:
-            query_selection = {**claim_query_selection, **primary_audit}
-        elif primary_info is None:
-            routed = []
+        if claim_query is None:
+            routed = [dict(row) for row in routed_evidence_snapshot]
             query_selection = {
                 **claim_query_selection,
                 **primary_audit,
-                "status": "PRIMARY_TARGET_NOT_EVALUATED",
-                "reason": primary_selection_error or "PRIMARY_TARGET_AMBIGUOUS",
-                "target_id": None,
-                "value_span_id": None,
-                "primary_target_id": None,
+                "status": "FAMILY_TARGETS_PRESERVED",
+                "value_used": False,
+                "family_count": len(evidence_family_groups),
+                "family_keys": [list(key) for key in sorted(evidence_family_groups, key=str)],
+                "target_ids": [_target_id(row) for row in routed_evidence_snapshot],
             }
+        elif intent_clarification:
+            query_selection = {**claim_query_selection, **primary_audit}
+        elif primary_info is None:
+            query_fallback_selected = (
+                claim_query is not None
+                and len(routed) == 1
+                and claim_query_selection.get("status") == "SELECTED"
+            )
+            if query_fallback_selected:
+                selected = dict(routed[0])
+                selected_value_span_id = str(selected.get("value_span_id") or "")
+                query_selection = {
+                    **claim_query_selection,
+                    **primary_audit,
+                    "status": "PRIMARY_SELECTED_BY_QUERY_FALLBACK",
+                    "value_used": False,
+                    "target_id": selected_value_span_id or claim_query_selection.get("target_id"),
+                    "value_span_id": selected_value_span_id or claim_query_selection.get("value_span_id"),
+                    "primary_target_id": _target_id(selected),
+                    "primary_error": primary_selection_error or "PRIMARY_TARGET_AMBIGUOUS",
+                }
+            else:
+                routed = []
+                query_selection = {
+                    **claim_query_selection,
+                    **primary_audit,
+                    "status": "PRIMARY_TARGET_NOT_EVALUATED",
+                    "reason": primary_selection_error or "PRIMARY_TARGET_AMBIGUOUS",
+                    "target_id": None,
+                    "value_span_id": None,
+                    "primary_target_id": None,
+                }
         else:
             primary = primary_info["primary"]
             primary_value_span_id = str(primary.get("value_span_id") or "")
@@ -1677,6 +3447,23 @@ def run_new_articles_v2(
     ledgers: list[dict[str, Any]] = []
     answers: list[dict[str, Any]] = []
     represented_articles: set[str] = set()
+    speculative_used = False
+    target_started_ns = 0
+    binding_target_scope: frozenset[str] = frozenset()
+    binding_membership: list[str] = []
+    binding_profiles: Mapping[str, Any] = {}
+    if isinstance(binding_continuation, Mapping):
+        binding_target_scope, binding_membership, binding_profiles = _validate_binding_continuation_runtime(
+            binding_continuation,
+            expected_release_id=os.getenv("KOSIS_RELEASE_ID", ""),
+            expected_query_register_identity_payload=binding_query_register_identity_payload,
+        )
+        routed_target_scope = {
+            f"{item.get('article_idx')}:{item.get('value_span_id') or item.get('sentence_id') or 'target'}"
+            for item in routed if isinstance(item, Mapping)
+        }
+        if not binding_target_scope.issubset(routed_target_scope):
+            raise OperationalPipelineError("RESUME_ARTIFACT_INVALIDATED")
     if intent_clarification and user_intent is not None:
         prompts = [str(question.get("prompt") or "") for question in user_intent.get("questions") or []]
         for article_id in sorted(ready_ids):
@@ -1696,7 +3483,7 @@ def run_new_articles_v2(
             })
             represented_articles.add(article_id)
     for l2_result in l2["results"]:
-        if l2_result["status"] == "L2_READY":
+        if l2_result["status"] in DOWNSTREAM_L2_ELIGIBLE_STATUSES:
             continue
         article_id = str(l2_result["article_idx"])
         set_article_phase(article_id)
@@ -1711,18 +3498,57 @@ def run_new_articles_v2(
         answers.append(answer)
         ledgers.append({"article_idx": article_id, "resolution": "L2_UNAVAILABLE", "answer": answer})
         represented_articles.add(article_id)
+    def append_target_ledger(
+        payload: Mapping[str, Any],
+        *,
+        target_call_snapshot: Mapping[str, Any],
+        candidate_membership: Sequence[Any] = (),
+        retrieval_audit: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Attach bounded per-target call receipts to every routed ledger."""
+        ledger = dict(payload)
+        membership = []
+        for value in candidate_membership:
+            if isinstance(value, str):
+                table_key = value
+            else:
+                table_key = getattr(value, "table_key", None)
+            if table_key is None and isinstance(value, Mapping):
+                table_key = value.get("table_key")
+            text = str(table_key or "").strip()
+            if text:
+                membership.append(text)
+        audit = dict(retrieval_audit) if isinstance(retrieval_audit, Mapping) else {}
+        deltas = _target_call_deltas(target_call_snapshot, search_channels, profile_provider)
+        audit.update(deltas["retrieval"])
+        audit["candidate_membership"] = membership
+        ledger["retrieval"] = audit
+        ledger["candidate_membership"] = membership
+        ledger["metadata_api_calls"] = deltas["metadata_api_calls"]
+        ledger["metadata_lookups"] = deltas["metadata_lookups"]
+        if target_started_ns:
+            ledger["timing"] = {
+                "wall_ms": max(0, int(round((time.monotonic_ns() - target_started_ns) / 1_000_000))),
+                "retrieval_wall_ms": int(audit.get("wall_ms") or 0),
+            }
+        ledgers.append(ledger)
+
     for row in routed:
+        target_started_ns = time.monotonic_ns()
+        target_call_snapshot = _snapshot_target_call_counts(search_channels, profile_provider)
         article_id = str(row.get("article_idx"))
         set_article_phase(article_id)
         target_id = f"{article_id}:{row.get('value_span_id') or row.get('sentence_id') or 'target'}"
+        target_continuation = target_id in binding_target_scope
         represented_articles.add(article_id)
         article = article_index[article_id]
         sentence = str(row.get("sentence_text") or "")
         article_text = str(article.get("article_text") or "")
         date = str(article.get("date") or article.get("article_date") or "")
-        row = dict(row)
-        if sentence and sentence in article_text and date:
-            row["article_date"] = date
+        row = _merge_user_clarifications(row, article)
+        effective_date = str(row.get("article_date") or date)
+        if sentence and sentence in article_text and effective_date:
+            row["article_date"] = effective_date
             if evidence_first_statistics_shadow:
                 row["article_text"] = article_text
                 input_date_receipt = article.get("article_date_provenance")
@@ -1733,11 +3559,79 @@ def run_new_articles_v2(
                     item["sentence_id"]: item["text"]
                     for item in sentence_offset_map(article_text)
                 }
-                row = attach_indicator_evidence_monthly_v2h(row, article_text)
+                if _uses_monthly_claim_contract(row):
+                    row = attach_indicator_evidence_monthly_v2h(row, article_text)
             else:
                 row["article_date_provenance"] = _bounded_article_date_provenance(article, article_text)
         routing_class = str(row.get("routing_class") or "")
-        if routing_class and routing_class != "KOSIS_CANDIDATE":
+        answered_indicator = (
+            row.get("user_clarifications", {}).get("indicator")
+            if isinstance(row.get("user_clarifications"), Mapping)
+            else None
+        )
+        if (
+            routing_class
+            and routing_class != "KOSIS_CANDIDATE"
+            and not (
+                routing_class == "CLARIFICATION_REQUIRED"
+                and row.get("clarification_required") == "indicator"
+                and answered_indicator
+            )
+        ):
+            if (
+                routing_class == "CLARIFICATION_REQUIRED"
+                and row.get("clarification_required") == "indicator"
+            ):
+                answered_indicator = (
+                    row.get("user_clarifications", {}).get("indicator")
+                    if isinstance(row.get("user_clarifications"), Mapping)
+                    else None
+                )
+                if answered_indicator:
+                    # The L2 evidence remains missing; the user answer is a
+                    # separate retrieval constraint.  Only the downstream
+                    # gate changes so resume can continue from retrieval.
+                    row["routing_class"] = "KOSIS_CANDIDATE"
+                    row["reason"] = "USER_CLARIFICATION_INDICATOR"
+                    row["authoritative_retrieval_authorized"] = True
+                    routing_class = "KOSIS_CANDIDATE"
+                else:
+                    failure_recovery = _indicator_failure_recovery(
+                        row, target_id=target_id,
+                    )
+                    question = dict(failure_recovery["question"])
+                    answer = {
+                        "article_idx": article_id,
+                        "target_id": target_id,
+                        "verdict": "CLARIFICATION_REQUIRED",
+                        "headline": "추가 정보가 필요합니다.",
+                        "explanation": question["prompt"],
+                        "limitation": "INDICATOR_REQUIRED",
+                        "questions": [question],
+                        "fallback": False,
+                    }
+                    answers.append(answer)
+                    append_target_ledger({
+                        "article_idx": article_id,
+                        "target_id": target_id,
+                        "value_span_id": row.get("value_span_id"),
+                        "l1_l5": {
+                            "routing_class": routing_class,
+                            "confidence": row.get("confidence"),
+                            "reason": row.get("reason"),
+                            "authoritative_retrieval_authorized": False,
+                        },
+                        "resolution": "CLARIFICATION_REQUIRED",
+                        "failure_recovery_shadow": failure_recovery,
+                        "cell_values_used": False,
+                        "answer": answer,
+                        "call_ledger": {
+                            "cell_api": 0,
+                            "answer_deterministic": 0,
+                            "answer_hcx_shadow": 0,
+                        },
+                    }, target_call_snapshot=target_call_snapshot)
+                    continue
             gate_reason = f"L5_{routing_class}:{row.get('reason') or 'UNSPECIFIED'}"
             packet = build_evidence_packet(
                 verdict="UNVERIFIABLE",
@@ -1752,7 +3646,7 @@ def run_new_articles_v2(
                 **answer_for(packet, target_id),
             }
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": article_id,
                 "value_span_id": row.get("value_span_id"),
                 "l1_l5": {
@@ -1763,10 +3657,13 @@ def run_new_articles_v2(
                 "resolution": gate_reason,
                 "user_intent_shadow": user_intent,
                 "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot)
             continue
         monthly_core = None
-        if evidence_first_statistics_shadow:
+        monthly_contract = evidence_first_statistics_shadow and _uses_monthly_claim_contract(row)
+        if release_bound_mode and not monthly_contract:
+            row = _release_bound_annual_period_row(row)
+        if monthly_contract:
             try:
                 monthly_core = build_claim_core_monthly_v2h(row)
             except MonthlyClaimProvenanceError as exc:
@@ -1786,14 +3683,14 @@ def run_new_articles_v2(
                     **answer_for(packet, target_id),
                 }
                 answers.append(answer)
-                ledgers.append({
+                append_target_ledger({
                     "article_idx": article_id,
                     "target_id": target_id,
                     "value_span_id": row.get("value_span_id"),
                     "resolution": asdict(preprojection_resolution),
                     "article_date_limitation": ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H,
                     "answer": answer,
-                })
+                }, target_call_snapshot=target_call_snapshot)
                 continue
         retrieval_fields = row.get("retrieval_fields") if isinstance(row.get("retrieval_fields"), Mapping) else {}
         claim_query = {
@@ -1803,12 +3700,11 @@ def run_new_articles_v2(
         }
         source_terms: tuple[dict[str, str], ...] = ()
         if role_aware_dimension_shadow:
-            source_text = source_sentence(article_text, row.get("source_region_sentence_id"))
+            source_id, source_text = _preserve_role_aware_sentence_inventory(
+                row, article_text, sentence,
+            )
             source_terms = extract_source_terms(source_text)
             claim_query["source_terms"] = source_terms
-            source_id = row.get("source_region_sentence_id")
-            current_id = row.get("article_sentence_id", row.get("sentence_id"))
-            row["sentences"] = {current_id: sentence, source_id: source_text}
             period_surface = str(
                 retrieval_fields.get("period_absolute") or row.get("period_raw") or ""
             ).strip()
@@ -1819,23 +3715,119 @@ def run_new_articles_v2(
                 and source_text.count(period_surface) == 1
             ):
                 row["period_sentence_id"] = source_id
+        speculative_enabled = os.getenv(
+            "PIPELINE_SPECULATIVE_RETRIEVAL_ENABLED", "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not target_continuation and not speculative_used and speculative_enabled:
+            try:
+                deadline_ms = int(os.getenv("PIPELINE_SPECULATIVE_DEADLINE_MS", "2500"))
+            except ValueError:
+                deadline_ms = 2500
+            deadline_ms = max(500, min(3000, deadline_ms))
+            speculative_plan, speculative_audit = _speculative_clarification_plan(
+                row,
+                article_text=article_text,
+                search_channels=search_channels,
+                release_sha256_by_channel=release_sha256_by_channel,
+                profile_provider=profile_provider,
+                retrieval_cache=retrieval_cache,
+                deadline_ms=deadline_ms,
+            )
+            if speculative_plan is not None:
+                speculative_used = True
+                append_target_ledger({
+                    "article_idx": article_id,
+                    "target_id": target_id,
+                    "value_span_id": row.get("value_span_id"),
+                    "resolution": "CLARIFICATION_REQUIRED",
+                    "clarification_plan": speculative_plan,
+                    "speculative_retrieval": speculative_audit,
+                    "failure_recovery_shadow": {
+                        "contract_version": "clarification-plan-v2",
+                        "action": "ASK_USER",
+                        "reason": speculative_plan.get("reason"),
+                        "clarification_plan": speculative_plan,
+                        "cell_values_used": False,
+                    },
+                    "call_ledger": {"cell_api": 0, "answer_deterministic": 0, "answer_hcx_shadow": 0},
+                }, target_call_snapshot=target_call_snapshot, candidate_membership=(), retrieval_audit={
+                    "speculative": True,
+                    "candidate_membership": [],
+                })
+                continue
         failure_recovery: dict[str, Any] = {
             "contract_version": "failure-recovery-shadow-v1", "action": "DISABLED",
             "retry_budget": {"used": 0, "limit": 1},
         }
         try:
-            candidates, retrieval_audit = retrieve_parallel(
+            candidates, retrieval_audit = _binding_or_retrieve_candidates(
+                target_id=target_id,
+                target_scope=binding_target_scope,
+                membership=binding_membership,
+                retrieve=lambda: _retrieve_with_request_cache(
                 claim_query,
                 search_channels,
                 release_sha256_by_channel=release_sha256_by_channel,
                 path_top_k=20,
                 union_top_k=100,
+                retrieval_cache=retrieval_cache,
+                ),
             )
+            if target_continuation:
+                retrieval_audit = {
+                    **retrieval_audit,
+                    "query_register_version": binding_continuation.get("query_register_version"),
+                    "query_register_contract_sha256": binding_continuation.get("query_register_contract_sha256"),
+                    "query_register_sha256": binding_continuation.get("query_register_sha256"),
+                    "retrieval_rounds": list(binding_continuation.get("retrieval_rounds") or []),
+                    "corrective_plan_sha256": binding_continuation.get("corrective_plan_sha256"),
+                    "retrieval_semantic_sha256": binding_continuation.get("retrieval_semantic_sha256"),
+                }
+            # Source/report terms are useful context but are not part of the
+            # six-path denominator.  Their candidates enter only by this
+            # explicit, separately receipted union.
+            if not target_continuation and source_terms:
+                context_candidates, context_audit = _retrieve_with_request_cache(
+                    {"source_terms": source_terms},
+                    search_channels,
+                    release_sha256_by_channel=release_sha256_by_channel,
+                    path_top_k=20,
+                    union_top_k=100,
+                    retrieval_cache=retrieval_cache,
+                    register_kind="context",
+                )
+                base_membership = [candidate.table_key for candidate in candidates]
+                context_membership = [candidate.table_key for candidate in context_candidates]
+                candidates = merge_candidate_rounds(candidates, context_candidates, limit=100)
+                retrieval_audit = {
+                    **retrieval_audit,
+                    "context_register": context_audit,
+                    "candidate_fusion": {
+                        "mode": "EXPLICIT_BASE_CONTEXT_UNION",
+                        "base_candidate_membership": base_membership,
+                        "context_candidate_membership": context_membership,
+                        "base_candidate_count": len(base_membership),
+                        "context_candidate_count": len(context_membership),
+                    },
+                    "candidate_membership": [candidate.table_key for candidate in candidates],
+                    "retrieval_semantic_sha256": _binding_sha({
+                        "base": retrieval_audit,
+                        "context": context_audit,
+                        "candidate_membership": [candidate.table_key for candidate in candidates],
+                    }),
+                }
         except RuntimeError as exc:
             retrieval_code = _bounded_exception_code(exc, "RETRIEVAL_UNAVAILABLE", {
                 "KOSIS_SEARCH_UNAVAILABLE", "KOSIS_SEARCH_INVALID_RESPONSE", "V6_BM25_EMPTY_QUERY",
                 "V6_BM25_UNAVAILABLE", "V6_BM25_QUERY_FAILED", "V6_QUERY_VECTOR_DIMENSION_MISMATCH",
-                "V6_DENSE_QUERY_FAILED",
+                "V6_DENSE_QUERY_FAILED", "OPENSEARCH_UNAVAILABLE", "OPENSEARCH_MAPPING_INVALID",
+                "OPENSEARCH_INDEX_NOT_CONCRETE", "OPENSEARCH_INDEX_CONFIG_MISMATCH",
+                "OPENSEARCH_FIELD_INVALID", "QDRANT_UNAVAILABLE", "QDRANT_QUERY_API_UNAVAILABLE",
+                "QDRANT_GROUP_QUERY_UNAVAILABLE", "QDRANT_VECTOR_INVALID", "QDRANT_PAYLOAD_CONTRACT_MISMATCH",
+                "QDRANT_COLLECTION_CONTRACT_MISMATCH", "QDRANT_COLLECTION_NOT_CONCRETE",
+                "KOSIS_RELEASE_MISMATCH", "CROSS_STORE_RELEASE_MISMATCH", "METADATA_PROFILE_INCOMPLETE",
+                "METADATA_PROFILE_CONTRACT_MISMATCH", "METADATA_PROFILE_READ_FAILED",
+                "QUERY_ENCODER_UNAVAILABLE", "QUERY_ENCODER_CONTRACT_MISMATCH",
             })
             retrieval_failure = safe_adapter_failure(retrieval_code, exc)
             reason = retrieval_failure["error_code"]
@@ -1846,23 +3838,57 @@ def run_new_articles_v2(
             )
             answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": article_id, "value_span_id": row.get("value_span_id"),
                 "resolution": reason, "failure": retrieval_failure,
                 "user_intent_shadow": user_intent, "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot)
             continue
-        if not candidates and failure_recovery_shadow:
+        if retrieval_audit.get("all_paths_failed"):
+            failure_recovery = {
+                **failure_recovery,
+                "state": "RETRIEVAL_INSUFFICIENT",
+                "action": "STOP",
+                "reason": "ALL_RETRIEVAL_PATHS_FAILED",
+                "retry_budget": {"used": 0, "limit": 1},
+            }
+        context_audit = retrieval_audit.get("context_register")
+        has_contract_failure = any(
+            status == "FAILED_CONTRACT"
+            for status in (retrieval_audit.get("path_status") or {}).values()
+        ) or (
+            isinstance(context_audit, Mapping)
+            and any(status == "FAILED_CONTRACT" for status in (context_audit.get("path_status") or {}).values())
+        )
+        if has_contract_failure:
+            reason = "RETRIEVAL_PATH_CONTRACT_INVALID"
+            packet = build_evidence_packet(
+                verdict="UNVERIFIABLE", claim_source={"sentence": sentence}, binding_plan={},
+                official_cell={}, comparison={}, limitation={"reason": reason},
+                placeholders={"CLAIM": sentence, "LIMITATION": reason},
+            )
+            answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
+            answers.append(answer)
+            append_target_ledger({
+                "article_idx": article_id, "value_span_id": row.get("value_span_id"),
+                "retrieval": retrieval_audit, "resolution": reason,
+                "failure_recovery_shadow": {**failure_recovery, "state": "UNVERIFIABLE_FINAL"},
+                "user_intent_shadow": user_intent, "answer": answer,
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
+            continue
+        if not target_continuation and not candidates and failure_recovery_shadow and not retrieval_audit.get("all_paths_failed"):
             failure_recovery = plan_failure_recovery(row, None)
             if failure_recovery.get("action") == "CORRECTIVE_RETRIEVAL":
                 try:
                     correction_query = corrective_claim_query(claim_query, failure_recovery)
-                    round1, round1_audit = retrieve_parallel(
+                    round1, round1_audit = _retrieve_with_request_cache(
                         correction_query,
                         search_channels,
                         release_sha256_by_channel=release_sha256_by_channel,
                         path_top_k=20,
                         union_top_k=100,
+                        retrieval_cache=retrieval_cache,
+                        register_kind="corrective",
                     )
                     candidates = merge_candidate_rounds(candidates, round1, limit=100)
                     failure_recovery = {
@@ -1872,6 +3898,15 @@ def run_new_articles_v2(
                         "round1_candidate_membership": [candidate.table_key for candidate in round1],
                         "union_candidate_membership": [candidate.table_key for candidate in candidates],
                         "recovered_candidate_membership": bool(candidates),
+                    }
+                    retrieval_audit = {
+                        **retrieval_audit,
+                        "retrieval_rounds": [retrieval_audit, round1_audit],
+                        "candidate_membership": [candidate.table_key for candidate in candidates],
+                        "retrieval_semantic_sha256": _binding_sha({
+                            "rounds": [retrieval_audit, round1_audit],
+                            "candidate_membership": [candidate.table_key for candidate in candidates],
+                        }),
                     }
                 except Exception as exc:
                     failure_recovery = {
@@ -1892,28 +3927,40 @@ def run_new_articles_v2(
             answer = answer_for(packet, target_id, rag=rag_reasoner, use_rag=use_rag)
             answer = {"article_idx": article_id, "target_id": target_id, **answer}
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": row.get("article_idx"), "value_span_id": row.get("value_span_id"),
-                "retrieval": retrieval_audit, "resolution": "NO_CANDIDATES",
+                "retrieval": retrieval_audit,
+                "resolution": "RETRIEVAL_INSUFFICIENT" if retrieval_audit.get("all_paths_failed") else "NO_CANDIDATES",
                 "failure_recovery_shadow": failure_recovery,
                 "user_intent_shadow": user_intent, "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
             continue
-        candidate_records = (
-            candidate_record_provider([candidate.table_key for candidate in candidates])
-            if candidate_record_provider is not None
-            else catalog_records
-        )
-        passages = build_candidate_passages(candidates, candidate_records)
-        try:
-            rerank_text = (
-                build_role_aware_reranker_query(
-                    claim_query["indicator"], source_terms, retrieval_fields.get("period_absolute")
-                )
-                if role_aware_dimension_shadow
-                else str(claim_query["indicator"])
+        if release_bound_mode:
+            candidate_records = ()
+            passages = ()
+        else:
+            candidate_records = (
+                candidate_record_provider([candidate.table_key for candidate in candidates])
+                if candidate_record_provider is not None
+                else catalog_records
             )
-            reranked = rerank_top50(rerank_text, candidates, passages, reranker)
+            passages = build_candidate_passages(candidates, candidate_records)
+        try:
+            if target_continuation:
+                rerank_text = ""
+                reranked = tuple(RerankedCandidate(key, index, 0.0, 0.0, 0.0) for index, key in enumerate(binding_membership, 1))
+            elif release_bound_mode:
+                rerank_text = ""
+                reranked = _rrf_only_order(candidates)
+            else:
+                rerank_text = (
+                    build_role_aware_reranker_query(
+                        claim_query["indicator"], source_terms, retrieval_fields.get("period_absolute")
+                    )
+                    if role_aware_dimension_shadow
+                    else str(claim_query["indicator"])
+                )
+                reranked = rerank_top50(rerank_text, candidates, passages, reranker)
         except RuntimeError as exc:
             reranker_code = _bounded_exception_code(exc, "RERANKER_UNAVAILABLE", {
                 "RERANKER_UNAVAILABLE", "RERANKER_CONTRACT_MISMATCH", "RERANKER_CUDA_UNAVAILABLE",
@@ -1928,56 +3975,82 @@ def run_new_articles_v2(
             )
             answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
             answers.append(answer)
-            ledgers.append({
+            append_target_ledger({
                 "article_idx": article_id, "value_span_id": row.get("value_span_id"),
                 "retrieval": retrieval_audit, "resolution": reason,
                 "failure": reranker_failure, "user_intent_shadow": user_intent,
                 "answer": answer,
-            })
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=candidates, retrieval_audit=retrieval_audit)
             continue
-        prefetch = getattr(profile_provider, "prefetch", None)
+        if target_continuation:
+            profile_provider_for_binding = lambda key: deepcopy(binding_profiles.get(str(key)))
+            prefetch = None
+        else:
+            profile_provider_for_binding = profile_provider
+            prefetch = getattr(profile_provider, "prefetch", None)
         if callable(prefetch):
             prefetch(candidate.table_key for candidate in reranked)
-        core = monthly_core if evidence_first_statistics_shadow else build_claim_core_v2(row)
-        resolver = resolve_top50_monthly_v2j if evidence_first_statistics_shadow else resolve_top50
-        top50 = resolver(
-            core, reranked, profile_provider,
-            profile_transform=infer_profile_units if role_aware_dimension_shadow else None,
-            allow_unqualified_nationwide=role_aware_dimension_shadow,
-            table_context_terms=[
+        core = (
+            monthly_core
+            if monthly_contract
+            else _annual_change_projection_core(row)
+            if release_bound_mode
+            else build_claim_core_v2(row)
+        )
+        resolver = resolve_top50_monthly_v2j if monthly_contract else resolve_top50
+        resolver_kwargs = {
+            "profile_transform": infer_profile_units if role_aware_dimension_shadow else None,
+            "allow_unqualified_nationwide": role_aware_dimension_shadow,
+            "table_context_terms": [
                 term["text"] for term in source_terms if term.get("role") == "report"
             ] if role_aware_dimension_shadow else (),
+        }
+        if not monthly_contract:
+            resolver_kwargs["release_bound_mode"] = release_bound_mode
+        top50 = resolver(
+            core, reranked, profile_provider_for_binding,
+            **resolver_kwargs,
         )
-        if failure_recovery_shadow and failure_recovery["retry_budget"]["used"] == 0:
+        if not target_continuation and failure_recovery_shadow and failure_recovery["retry_budget"]["used"] == 0:
             failure_recovery = plan_failure_recovery(row, top50)
             if failure_recovery.get("action") == "CORRECTIVE_RETRIEVAL":
                 try:
                     correction_query = corrective_claim_query(claim_query, failure_recovery)
-                    round1, round1_audit = retrieve_parallel(
+                    round1, round1_audit = _retrieve_with_request_cache(
                         correction_query,
                         search_channels,
                         release_sha256_by_channel=release_sha256_by_channel,
                         path_top_k=20,
                         union_top_k=100,
+                        retrieval_cache=retrieval_cache,
+                        register_kind="corrective",
                     )
                     union = merge_candidate_rounds(candidates, round1, limit=100)
-                    correction_records = (
-                        candidate_record_provider([candidate.table_key for candidate in union])
-                        if candidate_record_provider is not None else catalog_records
-                    )
-                    correction_passages = build_candidate_passages(union, correction_records)
-                    corrected_reranked = rerank_top50(rerank_text, union, correction_passages, reranker)
+                    if release_bound_mode:
+                        corrected_reranked = _rrf_only_order(union)
+                    else:
+                        correction_records = (
+                            candidate_record_provider([candidate.table_key for candidate in union])
+                            if candidate_record_provider is not None else catalog_records
+                        )
+                        correction_passages = build_candidate_passages(union, correction_records)
+                        corrected_reranked = rerank_top50(rerank_text, union, correction_passages, reranker)
                     if callable(prefetch):
                         prefetch(candidate.table_key for candidate in corrected_reranked)
+                    corrected_resolver_kwargs = {
+                        "profile_transform": infer_profile_units if role_aware_dimension_shadow else None,
+                        "allow_unqualified_nationwide": role_aware_dimension_shadow,
+                        "table_context_terms": [
+                            term["text"] for term in source_terms if term.get("role") == "report"
+                        ] if role_aware_dimension_shadow else (),
+                    }
+                    if not monthly_contract:
+                        corrected_resolver_kwargs["release_bound_mode"] = release_bound_mode
                     corrected_top50 = resolver(
                         core,
                         corrected_reranked,
                         profile_provider,
-                        profile_transform=infer_profile_units if role_aware_dimension_shadow else None,
-                        allow_unqualified_nationwide=role_aware_dimension_shadow,
-                        table_context_terms=[
-                            term["text"] for term in source_terms if term.get("role") == "report"
-                        ] if role_aware_dimension_shadow else (),
+                        **corrected_resolver_kwargs,
                     )
                     recovered = corrected_top50.resolution.outcome == "QUERY_READY"
                     failure_recovery = {
@@ -1989,8 +4062,16 @@ def run_new_articles_v2(
                         "round1_resolution": asdict(corrected_top50.resolution),
                         "recovered": recovered,
                     }
-                    if recovered:
-                        candidates, reranked, top50 = union, corrected_reranked, corrected_top50
+                    candidates, reranked, top50 = union, corrected_reranked, corrected_top50
+                    retrieval_audit = {
+                        **retrieval_audit,
+                        "retrieval_rounds": [retrieval_audit, round1_audit],
+                        "candidate_membership": [candidate.table_key for candidate in candidates],
+                        "retrieval_semantic_sha256": _binding_sha({
+                            "rounds": [retrieval_audit, round1_audit],
+                            "candidate_membership": [candidate.table_key for candidate in candidates],
+                        }),
+                    }
                 except Exception as exc:
                     failure_recovery = {
                         **failure_recovery,
@@ -2001,7 +4082,7 @@ def run_new_articles_v2(
                             "exception_type": type(exc).__name__,
                         },
                     }
-        elif failure_recovery_shadow:
+        if failure_recovery_shadow and failure_recovery.get("retry_budget", {}).get("used") == 1:
             post_retry = plan_failure_recovery(row, top50)
             failure_recovery = {
                 **failure_recovery,
@@ -2011,8 +4092,76 @@ def run_new_articles_v2(
             if post_retry.get("action") == "ASK_USER":
                 failure_recovery["action"] = "ASK_USER_AFTER_CORRECTION"
                 failure_recovery["question"] = post_retry["question"]
+        if hasattr(top50, "retrieval_rounds"):
+            top50 = replace(
+                top50,
+                retrieval_rounds=((0, 1) if failure_recovery.get("retry_budget", {}).get("used") else (0,)),
+                query_register_version=str(retrieval_audit.get("query_register_version") or QUERY_REGISTER_VERSION),
+                query_register_sha256=retrieval_audit.get("query_register_sha256"),
+                query_register_contract_sha256=retrieval_audit.get("query_register_contract_sha256"),
+            )
+        if failure_recovery_shadow and os.getenv("PIPELINE_CLARIFICATION_OPTIONS_ENABLED", "true").strip().lower() == "true":
+            clarification_plan = build_post_binding_clarification_plan(
+                top50,
+                target_id=target_id,
+                corrective_plan_sha256=(
+                    str(failure_recovery.get("state_sha256") or "")
+                    if int(failure_recovery.get("retry_budget", {}).get("used") or 0) else None
+                ),
+                corrective_round=int(failure_recovery.get("retry_budget", {}).get("used") or 0),
+                query_register_identity_payload=retrieval_audit.get("query_register_identity_payload"),
+            )
+            if clarification_plan is not None:
+                question = dict(clarification_plan.get("question") or {})
+                failure_recovery = {
+                    **failure_recovery,
+                    "contract_version": "clarification-plan-v2",
+                    "action": "ASK_USER",
+                    "reason": clarification_plan.get("reason") or "CLARIFICATION_REQUIRED",
+                    "question": question,
+                    "clarification_plan": clarification_plan,
+                    "cell_values_used": False,
+                }
+                append_target_ledger({
+                    "article_idx": row.get("article_idx"), "target_id": target_id,
+                    "value_span_id": row.get("value_span_id"),
+                    "retrieval": retrieval_audit,
+                    "candidate_membership": list(top50.candidate_membership),
+                    "resolution": "CLARIFICATION_REQUIRED",
+                    "clarification_plan": clarification_plan,
+                    "failure_recovery_shadow": failure_recovery,
+                    "user_intent_shadow": user_intent,
+                    "call_ledger": {"cell_api": 0},
+                }, target_call_snapshot=target_call_snapshot, candidate_membership=top50.candidate_membership, retrieval_audit=retrieval_audit)
+                continue
+        # Never allow an unresolved compatible-series tie to escape as an
+        # operational exception.  If complete profiles could not yield a safe
+        # semantic option, report the bounded limitation; no selector, Cell,
+        # or HCX answer call is authorized on this path.
+        if str(top50.resolution.hold_reason or "") == "MULTIPLE_COMPATIBLE_SERIES":
+            packet = build_evidence_packet(
+                verdict="UNVERIFIABLE",
+                claim_source={"sentence": sentence, "value": row.get("value_text")},
+                binding_plan={}, official_cell={}, comparison={},
+                limitation={"reason": "MULTIPLE_COMPATIBLE_SERIES"},
+                placeholders={"CLAIM": sentence, "LIMITATION": "후보 통계표를 하나의 공식 통계열로 안전하게 특정하지 못했습니다."},
+            )
+            answer = {"article_idx": article_id, "target_id": target_id, **answer_for(packet, target_id)}
+            answers.append(answer)
+            append_target_ledger({
+                "article_idx": article_id, "target_id": target_id,
+                "value_span_id": row.get("value_span_id"),
+                "retrieval": retrieval_audit,
+                "candidate_membership": list(top50.candidate_membership),
+                "resolution": {"outcome": "HOLD", "hold_reason": "MULTIPLE_COMPATIBLE_SERIES"},
+                "answer": answer,
+                "call_ledger": {"cell_api": 0, "answer_hcx_shadow": 0},
+            }, target_call_snapshot=target_call_snapshot, candidate_membership=top50.candidate_membership, retrieval_audit=retrieval_audit)
+            continue
         assignment = assignment_for_resolution(top50)
         cell_result: dict[str, Any] = {}
+        cell_calls_before = getattr(cell_fetcher, "calls", None)
+        cell_calls_before = cell_calls_before if isinstance(cell_calls_before, int) else None
         comparison: dict[str, Any] = {}
         inventory_validation: dict[str, Any] = {"status": "NOT_APPLICABLE", "errors": []}
         query_plan = dict(top50.resolution.query_plan or {})
@@ -2020,18 +4169,61 @@ def run_new_articles_v2(
         official_unit = ""
         profile_sha256 = ""
         release_id = os.getenv("KOSIS_RELEASE_ID", "")
+        annual_requery: dict[str, Any] | None = None
+        release_id = str(os.getenv("KOSIS_RELEASE_ID") or "")
+        retrieval_rounds = list(top50.retrieval_rounds or (0,))
+        raw_profile_receipt = [
+            {
+                "table_key": key,
+                "profile_sha256": str(profile.get("profile_sha256") or ""),
+                "release_id": str(profile.get("release_id") or ""),
+            }
+            for key, profile in sorted(top50.pinned_raw_profiles.items())
+            if isinstance(profile, Mapping)
+        ]
+        profile_bundle_sha256 = _binding_sha(raw_profile_receipt)
+        projection_bundle_sha256 = _binding_sha(top50.pinned_projection_profiles)
+        corrective_plan_sha256 = (
+            str(failure_recovery.get("state_sha256") or "")
+            if int(failure_recovery.get("retry_budget", {}).get("used") or 0) else None
+        )
+        candidate_bundle_sha256 = _candidate_bundle_sha256(
+            release_id=release_id,
+            retrieval_rounds=retrieval_rounds,
+            query_register_version=str(top50.query_register_version or QUERY_REGISTER_VERSION),
+            query_register_contract_sha256=str(
+                top50.query_register_contract_sha256 or _binding_sha(query_register_contract())
+            ),
+            query_register_sha256=str(retrieval_audit.get("query_register_sha256") or ""),
+            candidate_membership_sha256=_binding_sha(list(top50.candidate_membership)),
+            profile_bundle_sha256=profile_bundle_sha256,
+            projection_bundle_sha256=projection_bundle_sha256,
+            corrective_plan_sha256=corrective_plan_sha256,
+        )
+        query_selector_sha256 = hashlib.sha256(canonical_bytes(dict(sorted(
+            (str(key), str(value)) for key, value in (query_plan.get("obj_levels") or {}).items()
+        )))).hexdigest()
+        query_period_sha256 = hashlib.sha256(canonical_bytes({
+            "prd_se": str(query_plan.get("prd_se") or ""),
+            "start_prd_de": str(query_plan.get("start_prd_de") or ""),
+            "end_prd_de": str(query_plan.get("end_prd_de") or ""),
+        })).hexdigest()
+        query_ready_receipt = {
+            "state": "QUERY_READY",
+            "query_plan_sha256": hashlib.sha256(canonical_bytes(query_plan)).hexdigest(),
+            "candidate_bundle_sha256": candidate_bundle_sha256,
+            "chosen_table_key": top50.resolution.chosen_table_key,
+            "release_id": release_id,
+            "selector_unique": top50.resolution.outcome == "QUERY_READY" and assignment_for_resolution(top50) is not None,
+            "selector_sha256": query_selector_sha256,
+            "period_sha256": query_period_sha256,
+        }
         if top50.resolution.outcome == "QUERY_READY" and assignment is not None:
             chosen_key = str(top50.resolution.chosen_table_key or "")
-            if evidence_first_statistics_shadow:
-                chosen_profile = top50.pinned_raw_profiles.get(chosen_key)
-                validation_profile = top50.pinned_projection_profiles.get(chosen_key)
-            else:
-                chosen_profile = profile_provider(chosen_key)
-                validation_profile = (
-                    infer_profile_units(chosen_profile)
-                    if role_aware_dimension_shadow and chosen_profile is not None
-                    else chosen_profile
-                )
+            # Both generic and monthly resolutions pin the profiles read for
+            # projection.  Selection must not reread the backing DB/provider.
+            chosen_profile = top50.pinned_raw_profiles.get(chosen_key)
+            validation_profile = top50.pinned_projection_profiles.get(chosen_key)
             inventory_errors = (
                 validate_query_plan_inventory(top50.resolution.query_plan or {}, validation_profile, core)
                 if validation_profile is not None
@@ -2045,30 +4237,102 @@ def run_new_articles_v2(
             }
             unit_binding = next((binding for binding in assignment.bindings if binding.axis_kind == "UNIT"), None)
             official_unit = str(unit_binding.evidence.get("profile_label") if unit_binding else "")
+            if not official_unit and _annual_change_only_row(row):
+                official_unit = _profile_item_unit(validation_profile, query_plan.get("itm_id"))
             profile_sha256 = str(chosen_profile.get("profile_sha256") or "") if chosen_profile else ""
             release_id = str((chosen_profile or {}).get("release_id") or release_id)
             if inventory_errors:
                 verdict, reason = "UNVERIFIABLE", "QUERY_PLAN_INVENTORY_INVALID"
             else:
+                cell_call_ledger = {"cell_api": 0}
                 if budget_ledger is not None:
                     cell_result = budget_ledger.execute(
                         budget_run_id or "audit", "cell",
-                        lambda: fetch_exact_single_cell(query_plan, cell_fetcher),
-                        target_id=target_id,
+                        lambda: fetch_exact_single_cell(
+                            query_plan,
+                            cell_fetcher,
+                            query_ready_receipt=query_ready_receipt,
+                            candidate_bundle_sha256=candidate_bundle_sha256,
+                            target_call_ledger=cell_call_ledger,
+                        ),
+                        target_id=_cell_budget_target_id(target_id, query_plan),
                     )
                 else:
-                    cell_result = fetch_exact_single_cell(query_plan, cell_fetcher)
+                    cell_result = fetch_exact_single_cell(
+                        query_plan,
+                        cell_fetcher,
+                        query_ready_receipt=query_ready_receipt,
+                        candidate_bundle_sha256=candidate_bundle_sha256,
+                        target_call_ledger=cell_call_ledger,
+                    )
             if not inventory_errors and cell_result["status"] == "CELL_RESOLVED":
-                comparison = compare_official_cell(
-                    str(row.get("value_text") or ""), str(row.get("value_unit") or ""),
-                    cell_result["cell"], official_unit,
-                )
-                verdict = comparison["verdict"]
-                reason = comparison.get("reason")
+                if _annual_change_only_row(row):
+                    # A CHANGE_RATE claim is not a LEVEL claim.  The current
+                    # cell is only an endpoint for the annual two-cell
+                    # operation below; compare the computed rate there.
+                    verdict, reason = "UNVERIFIABLE", "ANNUAL_REQUERY_PENDING"
+                    comparison = {}
+                else:
+                    comparison = compare_official_cell(
+                        str(row.get("value_text") or ""), str(row.get("value_unit") or ""),
+                        cell_result["cell"], official_unit,
+                    )
+                    verdict = comparison["verdict"]
+                    reason = comparison.get("reason")
             elif not inventory_errors:
                 verdict, reason = "UNVERIFIABLE", cell_result["status"]
         else:
             verdict, reason = "UNVERIFIABLE", top50.resolution.hold_reason or "NO_COMPATIBLE_SERIES"
+        cell_calls_after = getattr(cell_fetcher, "calls", None)
+        cell_calls_after = cell_calls_after if isinstance(cell_calls_after, int) else None
+        current_cell_calls = (
+            max(0, cell_calls_after - cell_calls_before)
+            if cell_calls_before is not None and cell_calls_after is not None
+            else 0
+        )
+        if (
+            release_bound_mode
+            and os.getenv("ANNUAL_REQUERY_SHADOW_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+            and cell_result.get("status") == "CELL_RESOLVED"
+            and assignment is not None
+            and _annual_claim_contract(row, query_plan)
+        ):
+            annual_rows = [
+                _release_bound_annual_period_row(candidate_row)
+                for candidate_row in routed_evidence_snapshot
+                if str(candidate_row.get("article_idx") or "") == article_id
+            ] if evidence_first_statistics_shadow else [
+                _release_bound_annual_period_row(candidate_row)
+                for candidate_row in routed
+                if str(candidate_row.get("article_idx") or "") == article_id
+            ]
+            def annual_cell_fetcher(query: dict[str, Any]) -> list[dict[str, Any]] | dict[str, Any]:
+                if budget_ledger is None:
+                    return cell_fetcher(query)
+                return budget_ledger.execute(
+                    budget_run_id or "audit", "cell", lambda: cell_fetcher(query),
+                    target_id=_cell_budget_target_id(target_id, query),
+                )
+            try:
+                annual_requery = verify_annual_requery(
+                    rows=annual_rows,
+                    current_plan=query_plan,
+                    current_cell_result=cell_result,
+                    current_target_id=str(row.get("value_span_id") or ""),
+                    cell_fetcher=annual_cell_fetcher,
+                    official_unit=official_unit,
+                    candidate_bundle_sha256=candidate_bundle_sha256,
+                )
+                comparison = {**comparison, "annual_requery": annual_requery}
+                verdict = str(annual_requery.get("verdict") or verdict)
+                reason = "ANNUAL_REQUERY_EVALUATED"
+            except AnnualRequeryError as exc:
+                # Annual evidence is additive.  A missing/ambiguous sibling
+                # must not turn a resolved current cell into a fabricated claim.
+                annual_requery = {
+                    "status": "not_evaluated",
+                    "reason": _bounded_annual_requery_reason(exc),
+                }
         binding_payload = asdict(assignment) if assignment is not None else {}
         nationwide_assumption = bool(
             assignment is not None
@@ -2086,6 +4350,13 @@ def run_new_articles_v2(
         if nationwide_assumption:
             limitation_payload["assumption"] = "지역이 명시되지 않아 전국 기준으로 해석했습니다."
             limitation_text = "지역이 명시되지 않아 전국 기준으로 해석했습니다."
+        if _annual_range_claim(sentence) and _annual_claim_contract(row, query_plan):
+            limitation_payload["annual_range"] = (
+                "연간 역사적 범위·순위 주장은 이번 단계에서 지원 범위를 벗어나 별도로 확인하지 않았습니다."
+            )
+            limitation_text = (
+                f"{limitation_text} {limitation_payload['annual_range']}"
+            ).strip()
         if verdict == "UNVERIFIABLE":
             limitation_payload["reason"] = reason
         packet = build_evidence_packet(
@@ -2108,11 +4379,37 @@ def run_new_articles_v2(
         )
         answer = answer_for(packet, target_id, rag=rag_reasoner, use_rag=use_rag)
         answer = {"article_idx": article_id, "target_id": target_id, **answer}
+        if annual_requery and annual_requery.get("verdict"):
+            answer["evidence_answer"] = {
+                "contract_version": annual_requery.get("contract_version"),
+                "text": annual_requery.get("answer"),
+                "verdict": annual_requery.get("verdict"),
+                "annual_requery": annual_requery,
+            }
         if user_intent is not None:
             answer["user_intent"] = user_intent
+        # Seal only authoritative evidence.  Generated wording is deliberately
+        # excluded so a verbalizer retry cannot mutate the evidence identity.
+        final_evidence_sha256 = _final_evidence_sha256(
+            target_id=target_id,
+            release_id=release_id,
+            candidate_bundle_sha256=candidate_bundle_sha256,
+            profile_sha256=profile_sha256,
+            query_plan=query_plan,
+            query_ready_receipt=query_ready_receipt,
+            cell_response_sha256=cell_result.get("response_sha256"),
+            cell_status=str(cell_result.get("status") or ""),
+            official_unit=official_unit,
+            evidence_packet_sha256=packet.packet_sha256,
+            answer_packet_sha256=answer.get("packet_sha256"),
+            comparison=comparison,
+            annual_requery=annual_requery,
+        )
+        answer["final_evidence_sha256"] = final_evidence_sha256
         answers.append(answer)
         execution_ledger = {
             "article_idx": row.get("article_idx"),
+            "target_id": target_id,
             "value_span_id": row.get("value_span_id"),
             "retrieval": retrieval_audit,
             "role_aware_shadow": {
@@ -2121,6 +4418,7 @@ def run_new_articles_v2(
                 "reranker_query": rerank_text,
                 "unqualified_region_assumption": "NATIONWIDE" if role_aware_dimension_shadow else None,
             },
+            "ranking_mode": RRF_ORDER_RERANKER_DISABLED if release_bound_mode else "MODEL_RERANKER",
             "failure_recovery_shadow": failure_recovery,
             "user_intent_shadow": user_intent or {
                 "contract_version": "user-intent-router-shadow-v1", "status": "DISABLED",
@@ -2137,15 +4435,32 @@ def run_new_articles_v2(
             "official_unit": official_unit,
             "profile_sha256": profile_sha256,
             "release_id": release_id,
+            "selected_table": {
+                "table_key": top50.resolution.chosen_table_key,
+                "send_de": _release_bound_send_de(chosen_profile),
+                "release_id": release_id,
+                "profile_sha256": profile_sha256,
+                "query_plan_sha256": hashlib.sha256(canonical_bytes(query_plan)).hexdigest(),
+            },
+            "call_ledger": {"cell_api": current_cell_calls},
             "assignment_provenance": binding_payload,
+            "final_evidence_sha256": final_evidence_sha256,
             "answer": answer,
         }
+        if annual_requery is not None:
+            execution_ledger["annual_requery"] = annual_requery
         if evidence_first_statistics_shadow:
-            execution_ledger["target_id"] = target_id
-            execution_ledger["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
-            execution_ledger["profile_receipts"] = list(top50.profile_receipts)
-            execution_ledger["membership_receipt_sha256"] = top50.membership_receipt_sha256
-        ledgers.append(execution_ledger)
+            execution_ledger.update(_evidence_first_ledger_projection(
+                top50,
+                target_id=target_id,
+                article_date_limitation=ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H,
+            ))
+        append_target_ledger(
+            execution_ledger,
+            target_call_snapshot=target_call_snapshot,
+            candidate_membership=top50.candidate_membership,
+            retrieval_audit=retrieval_audit,
+        )
     for article_id in sorted(ready_ids - represented_articles):
         set_article_phase(article_id)
         article = article_index[article_id]
@@ -2157,6 +4472,17 @@ def run_new_articles_v2(
         answer = {"article_idx": article_id, "target_id": f"article:{article_id}", **answer_for(packet, f"article:{article_id}", rag=rag_reasoner, use_rag=use_rag)}
         answers.append(answer)
         ledgers.append({"article_idx": article_id, "resolution": "NO_ROUTED_TARGETS", "answer": answer})
+    target_ids_by_span = {
+        (str(row.get("article_idx") or ""), str(row.get("value_span_id") or "")): _target_id(row)
+        for row in routed
+    }
+    for ledger in ledgers:
+        if ledger.get("target_id"):
+            continue
+        key = (str(ledger.get("article_idx") or ""), str(ledger.get("value_span_id") or ""))
+        target_id = target_ids_by_span.get(key)
+        if target_id:
+            ledger["target_id"] = target_id
     evidence_results: list[dict[str, Any]] = []
     if evidence_first_statistics_shadow:
         for article in articles:
@@ -2181,23 +4507,28 @@ def run_new_articles_v2(
                     target_id=f"{_article_id}:evidence:{period}",
                 )
 
-            evidence_result = synthesize_same_series_evidence(
-                article=article,
-                routed_rows=article_routed,
-                ledgers=article_ledgers,
-                answers=article_answers,
-                cell_fetcher=evidence_cell_fetcher,
-                exact_fetcher=fetch_exact_single_cell,
-                feature_enabled=True,
-                release_id=os.getenv("KOSIS_RELEASE_ID", ""),
-            )
-            evidence_result["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
-            evidence_text = str(evidence_result.get("text") or "").strip()
-            if evidence_text and ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H not in evidence_text:
-                evidence_result["text"] = (
-                    f"{evidence_text} {ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H}"
+            family_groups = _evidence_family_groups(article_routed)
+            if not family_groups:
+                family_groups = {("", None, "", ""): article_routed}
+            for family_key, family_rows in family_groups.items():
+                evidence_result = synthesize_same_series_evidence(
+                    article=article,
+                    routed_rows=family_rows,
+                    ledgers=article_ledgers,
+                    answers=article_answers,
+                    cell_fetcher=evidence_cell_fetcher,
+                    exact_fetcher=fetch_exact_single_cell,
+                    feature_enabled=True,
+                    release_id=os.getenv("KOSIS_RELEASE_ID", ""),
                 )
-            evidence_results.append(evidence_result)
+                evidence_result["indicator_family_key"] = family_key[2] or None
+                evidence_result["article_date_limitation"] = ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H
+                evidence_text = str(evidence_result.get("text") or "").strip()
+                if evidence_text and ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H not in evidence_text:
+                    evidence_result["text"] = (
+                        f"{evidence_text} {ARTICLE_DATE_CLIENT_ASSERTION_LIMITATION_V2H}"
+                    )
+                evidence_results.append(evidence_result)
     l2_output = l2["manifest"]
     if precomputed_l2 is not None:
         l2_output = {
@@ -2326,14 +4657,14 @@ def _discover_precomputed_manifest(manifest_path: Path, *, stage: str, article_p
         cursor = 0
         for row in result_rows:
             status = row.get("status")
-            if status not in {"L2_READY", "L2_UNAVAILABLE"}:
+            if status not in CANONICAL_L2_STATUSES:
                 raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
             if not isinstance(row.get("prediction_row_start"), int) or not isinstance(row.get("prediction_row_end"), int):
                 raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
             start, end = row["prediction_row_start"], row["prediction_row_end"]
             if start != cursor or start < 0 or end < start or end > len(predictions):
                 raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
-            if status == "L2_UNAVAILABLE":
+            if status not in DOWNSTREAM_L2_ELIGIBLE_STATUSES:
                 if start != end:
                     raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
                 selected: list[dict[str, Any]] = []
@@ -2398,6 +4729,7 @@ def run_live_from_files(
     audit_expected_articles: int = 12,
     precomputed_l2_manifest_path: str | Path | None = None,
     precomputed_routed_manifest_path: str | Path | None = None,
+    clarification_context_path: str | Path | None = None,
     pilot_metadata_limit_override: int | None = None,
     role_aware_dimension_shadow: bool = False,
     claim_query: str | None = None,
@@ -2405,8 +4737,12 @@ def run_live_from_files(
     failure_recovery_shadow: bool = False,
     user_intent_shadow: bool = False,
     deterministic_answer_only: bool = False,
+    planning_only: bool = False,
+    binding_continuation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Construct every approved live adapter and execute a new article file."""
+    timing = MonotonicTimingRecorder()
+    retrieval_cache = RequestScopedRetrievalCache()
     config_path = Path(config_path).resolve()
     article_path = Path(article_path).resolve()
     output_root = Path(output_root).resolve()
@@ -2422,7 +4758,24 @@ def run_live_from_files(
     # Article and predecessor validation is deliberately before dotenv/service
     # preflight or adapter construction: malformed trace inputs must be zero-call.
     precomputed_l2 = precomputed_routed = None
-    local_articles = load_live_articles(article_path)
+    local_articles = _load_articles_for_clarification(article_path, clarification_context_path)
+    binding_continuation = None
+    binding_query_register_identity_payload = None
+    if binding_continuation_path is not None:
+        try:
+            continuation_path = Path(binding_continuation_path).resolve()
+            binding_continuation = _read_json(continuation_path)
+            plan_path = continuation_path.with_name("clarification_plan.json")
+            plan = _read_json(plan_path)
+            if isinstance(plan, Mapping):
+                candidate_payload = plan.get("query_register_identity_payload")
+                if not isinstance(candidate_payload, Mapping):
+                    binding = plan.get("binding_continuation")
+                    candidate_payload = binding.get("query_register_identity_payload") if isinstance(binding, Mapping) else None
+                if isinstance(candidate_payload, Mapping):
+                    binding_query_register_identity_payload = dict(candidate_payload)
+        except Exception as exc:
+            raise OperationalPipelineError("RESUME_ARTIFACT_STALE") from exc
     expected_article_ids = [str(row.get("article_idx") or "") for row in local_articles]
     if precomputed_l2_manifest_path is not None:
         precomputed_l2 = _discover_precomputed_manifest(Path(precomputed_l2_manifest_path).resolve(), stage="02", article_path=article_path, expected_article_ids=expected_article_ids)
@@ -2437,20 +4790,62 @@ def run_live_from_files(
         if predecessor_sha and predecessor_sha != l2_sha:
             raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
     config = _read_json(config_path)
-    root = config_path.parent.parent
     try:
         from dotenv import load_dotenv
-        load_dotenv(root / ".env", override=False)
+        load_dotenv(config_path.parent.parent / ".env", override=False)
     except ImportError:
         pass
-    preflight_kwargs = {
-        "check_service": True,
-        "service_urls_override": service_urls_override,
-        "ignore_env": ignore_env,
-    }
-    if deterministic_answer_only:
-        preflight_kwargs["allow_deterministic_answer_only"] = True
-    gate = preflight(config_path, **preflight_kwargs)
+    try:
+        answer_mode = "DETERMINISTIC_ONLY" if deterministic_answer_only else answer_render_mode()
+    except RuntimeError as exc:
+        raise OperationalPipelineError(str(exc)) from None
+    try:
+        hcx_timeout_seconds = float(os.getenv("PIPELINE_HCX_ANSWER_TIMEOUT_SECONDS", "3.0"))
+    except ValueError:
+        raise OperationalPipelineError("HCX_ANSWER_TIMEOUT_INVALID") from None
+    if not 0.5 <= hcx_timeout_seconds <= 10.0:
+        raise OperationalPipelineError("HCX_ANSWER_TIMEOUT_INVALID")
+    try:
+        speculative_deadline_ms = int(os.getenv("PIPELINE_SPECULATIVE_DEADLINE_MS", "2500"))
+    except ValueError:
+        raise OperationalPipelineError("SPECULATIVE_DEADLINE_INVALID") from None
+    if not 500 <= speculative_deadline_ms <= 3000:
+        raise OperationalPipelineError("SPECULATIVE_DEADLINE_INVALID")
+    for gate_name in (
+        "PIPELINE_EARLY_CLARIFICATION_ENABLED",
+        "PIPELINE_CLARIFICATION_OPTIONS_ENABLED",
+        "PIPELINE_REQUEST_CACHE_ENABLED",
+        "PIPELINE_SPECULATIVE_RETRIEVAL_ENABLED",
+        "PIPELINE_TIMING_RECEIPT_ENABLED",
+    ):
+        gate_value = os.getenv(gate_name)
+        if gate_value is not None and gate_value.strip().lower() not in {"true", "false"}:
+            raise OperationalPipelineError("FEATURE_GATE_INVALID:" + gate_name)
+    request_cache_enabled = os.getenv("PIPELINE_REQUEST_CACHE_ENABLED", "true").strip().lower() == "true"
+    root = config_path.parent.parent
+    release_bound_mode = release_runtime_enabled()
+    release_runtime = None
+    if release_bound_mode:
+        try:
+            release_runtime = build_release_bound_runtime()
+            preflight_started = __import__("time").monotonic_ns()
+            gate = release_runtime.preflight()
+            timing.observe("preflight", preflight_started)
+        except BackendError as exc:
+            raise OperationalPipelineError(f"RELEASE_RUNTIME_PREFLIGHT_BLOCKED:{exc.code}") from None
+        if service_urls_override is not None or ignore_env:
+            raise OperationalPipelineError("RELEASE_RUNTIME_SERVICE_OVERRIDE_UNSUPPORTED")
+    else:
+        preflight_kwargs = {
+            "check_service": True,
+            "service_urls_override": service_urls_override,
+            "ignore_env": ignore_env,
+        }
+        if deterministic_answer_only:
+            preflight_kwargs["allow_deterministic_answer_only"] = True
+        preflight_started = __import__("time").monotonic_ns()
+        gate = preflight(config_path, **preflight_kwargs)
+        timing.observe("preflight", preflight_started)
     if gate["status"] != "READY":
         raise OperationalPipelineError("LIVE_PREFLIGHT_BLOCKED:" + ",".join(gate["blockers"]))
     articles = local_articles
@@ -2474,78 +4869,141 @@ def run_live_from_files(
         )
         budget_ledger.startup_recover()
         budget_ledger.set_phase(audit_run_id or output_root.name, audit_phase or "pilot")
-    encoder_inner: Any = HttpQueryEncoderClient(service_urls["query_encoder"])
-    reranker_inner: Any = HttpRerankerClient(service_urls["reranker"])
-    encoder_call: Any = encoder_inner.encode
-    reranker_call: Any = reranker_inner.rerank
+    encoder_inner: Any = None
+    reranker_inner: Any = None
+    if release_bound_mode:
+        assert release_runtime is not None
+        encoder_call = release_runtime.encoder.encode
+        reranker_call = None
+    else:
+        encoder_inner = HttpQueryEncoderClient(service_urls["query_encoder"])
+        reranker_inner = HttpRerankerClient(service_urls["reranker"])
+        encoder_call = encoder_inner.encode
+        reranker_call = reranker_inner.rerank
     if budget_ledger is not None:
         phase_provider = lambda: budget_ledger.current_phase(audit_run_id or output_root.name)
         encoder_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", encoder_call, phase_provider=phase_provider)
-        reranker_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", reranker_call, phase_provider=phase_provider)
-    encoder = CountingEncoder(encoder_call)
-    reranker = CountingReranker(reranker_call)
-    qdrant_client_module = __import__("qdrant_client", fromlist=["QdrantClient"])
-    qdrant_timeout = float(config.get("limits", {}).get("qdrant_query_timeout_seconds", 90))
-    if not 30 <= qdrant_timeout <= 300:
-        raise OperationalPipelineError("QDRANT_QUERY_TIMEOUT_INVALID")
-    qdrant = qdrant_client_module.QdrantClient(
-        url=service_urls["qdrant"], timeout=qdrant_timeout,
-    )
-    bm25_index = (root / config["assets"]["v6_bm25_index"]).resolve()
-    passage_store = V6CatalogPassageStore(bm25_index)
+        if reranker_call is not None:
+            reranker_call = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", reranker_call, phase_provider=phase_provider)
+    encoder = RequestScopedEncoder(encoder_call) if request_cache_enabled else CountingEncoder(encoder_call)
+    reranker = None if release_bound_mode else CountingReranker(reranker_call)
+    passage_store = None
+    seed_cache_path: Path | None = None
+    seed_cache_sha_before: str | None = None
     official_inner: Any = OfficialKosisSearchChannel(os.environ["KOSIS_API_KEY"])
     if budget_ledger is not None:
         official_inner = BudgetedCallable(budget_ledger, audit_run_id or output_root.name, "metadata", official_inner, phase_provider=lambda: budget_ledger.current_phase(audit_run_id or output_root.name))
     official = CountingAdapter(official_inner)
-    bm25 = CountingAdapter(V6Bm25Channel(bm25_index))
-    dense = CountingAdapter(V6DenseChannel(
-        qdrant,
-        config["services"]["qdrant_collection"],
-        encoder,
-        vector_name=config["services"]["qdrant_vector_name"],
-    ))
-    seed_cache_path = (
-        Path(profile_seed_override).resolve()
-        if profile_seed_override is not None
-        else (root / config["assets"]["profile_cache"]).resolve()
-    )
-    if profile_seed_override is not None and not seed_cache_path.is_file():
-        raise OperationalPipelineError("PROFILE_CACHE_SEED_UNAVAILABLE")
-    seed_cache_sha_before = sha256_file(seed_cache_path)
-    operational_cache_path = Path(operational_cache_override).resolve() if operational_cache_override is not None else (root / config["assets"]["operational_profile_cache"]).resolve()
-    snapshot_root_path = Path(snapshot_root_override).resolve() if snapshot_root_override is not None else (root / config["assets"]["operational_profile_snapshots"]).resolve()
-    profile_provider = OperationalProfileProvider(
-        seed_cache_path,
-        operational_cache_path,
-        snapshot_root_path,
-        max_age_seconds=float(config["limits"]["profile_max_age_seconds"]),
-        delay_seconds=float(config["limits"]["metadata_delay_seconds"]),
-        budget_ledger=budget_ledger,
-        budget_run_id=audit_run_id or output_root.name,
-        budget_phase="pilot" if budget_ledger is not None else "batch",
-    )
+    if release_bound_mode:
+        assert release_runtime is not None
+        release_channels = release_runtime.channels(encoder)
+        bm25 = CountingAdapter(release_channels["bm25"])
+        dense = CountingAdapter(release_channels["dense"])
+        profile_provider = release_runtime.metadata
+    else:
+        qdrant_client_module = __import__("qdrant_client", fromlist=["QdrantClient"])
+        qdrant_timeout = float(config.get("limits", {}).get("qdrant_query_timeout_seconds", 90))
+        if not 30 <= qdrant_timeout <= 300:
+            raise OperationalPipelineError("QDRANT_QUERY_TIMEOUT_INVALID")
+        qdrant = qdrant_client_module.QdrantClient(
+            url=service_urls["qdrant"], timeout=qdrant_timeout,
+        )
+        bm25_index = (root / config["assets"]["v6_bm25_index"]).resolve()
+        passage_store = V6CatalogPassageStore(bm25_index)
+        bm25 = CountingAdapter(V6Bm25Channel(bm25_index))
+        dense = CountingAdapter(V6DenseChannel(
+            qdrant,
+            config["services"]["qdrant_collection"],
+            encoder,
+            vector_name=config["services"]["qdrant_vector_name"],
+        ))
+        seed_cache_path = (
+            Path(profile_seed_override).resolve()
+            if profile_seed_override is not None
+            else (root / config["assets"]["profile_cache"]).resolve()
+        )
+        if profile_seed_override is not None and not seed_cache_path.is_file():
+            raise OperationalPipelineError("PROFILE_CACHE_SEED_UNAVAILABLE")
+        seed_cache_sha_before = sha256_file(seed_cache_path)
+        operational_cache_path = Path(operational_cache_override).resolve() if operational_cache_override is not None else (root / config["assets"]["operational_profile_cache"]).resolve()
+        snapshot_root_path = Path(snapshot_root_override).resolve() if snapshot_root_override is not None else (root / config["assets"]["operational_profile_snapshots"]).resolve()
+        profile_provider = OperationalProfileProvider(
+            seed_cache_path,
+            operational_cache_path,
+            snapshot_root_path,
+            max_age_seconds=float(config["limits"]["profile_max_age_seconds"]),
+            delay_seconds=float(config["limits"]["metadata_delay_seconds"]),
+            budget_ledger=budget_ledger,
+            budget_run_id=audit_run_id or output_root.name,
+            budget_phase="pilot" if budget_ledger is not None else "batch",
+        )
+    if request_cache_enabled:
+        profile_provider = RequestScopedProfileProvider(profile_provider)
     from src.news_verification.runtime.kosis_client import get_data_from_query
     # run_new_articles_v2 applies target-scoped cell/answer reservations at
     # the exact call sites.  Keep these inner transports unwrapped here to
     # avoid double-counting one network attempt.
     cell_fetcher = FailClosedCellFetcher(get_data_from_query)
     answerer = (
-        None
-        if deterministic_answer_only
-        else CountingAnswerer(Hcx007AnswerClient(os.environ["NCP_CLOVASTUDIO_API_KEY"]))
+        CountingAnswerer(Hcx007AnswerClient(
+            os.environ["NCP_CLOVASTUDIO_API_KEY"],
+            timeout_seconds=hcx_timeout_seconds,
+        ))
+        if answer_mode == "HCX_SHADOW_SYNC"
+        else None
     )
-    release_sha = {
-        "official": "KOSIS_LIVE",
-        "bm25": str(gate["v6_bm25_manifest"]["index_sha256"]),
-        "dense": str(gate["v6_dense_manifest"]["zip_sha256"]),
-    }
+    release_sha = (
+        {
+            "official": "KOSIS_LIVE",
+            "bm25": str(gate["release_binding_sha256"]),
+            "dense": str(gate["release_binding_sha256"]),
+        }
+        if release_bound_mode else
+        {
+            "official": "KOSIS_LIVE",
+            "bm25": str(gate["v6_bm25_manifest"]["index_sha256"]),
+            "dense": str(gate["v6_dense_manifest"]["zip_sha256"]),
+        }
+    )
+    # Gate A invokes the same release-bound adapters as the live path, but its
+    # authority ends at an option proposal.  It intentionally never reaches
+    # Late Binding, Cell API, comparator, or answer rendering.
+    if planning_only:
+        if precomputed_routed is None:
+            raise OperationalPipelineError("SPECULATIVE_PRECOMPUTED_REQUIRED")
+        routed_rows = list(precomputed_routed.get("rows") or [])
+        row = next((item for item in routed_rows if isinstance(item, Mapping) and _missing_high_impact_role(item.get("retrieval_fields") if isinstance(item.get("retrieval_fields"), Mapping) else {}) is not None), None)
+        if row is None:
+            raise OperationalPipelineError("SPECULATIVE_NOT_REQUIRED")
+        article = next((item for item in local_articles if str(item.get("article_idx") or "") == str(row.get("article_idx") or "")), None)
+        if article is None:
+            raise OperationalPipelineError("PRECOMPUTED_PARTITION_MISMATCH")
+        speculative_started = time.monotonic_ns()
+        plan, audit = _speculative_clarification_plan(
+            row, article_text=str(article.get("article_text") or ""),
+            search_channels={"official": official, "bm25": bm25, "dense": dense},
+            release_sha256_by_channel=release_sha, profile_provider=profile_provider,
+            retrieval_cache=retrieval_cache if request_cache_enabled else None,
+            deadline_ms=speculative_deadline_ms,
+        )
+        timing.observe("speculative_retrieval", speculative_started)
+        return {
+            "planning_only": True, "clarification_plan": plan,
+            "speculative_retrieval": audit,
+            "api_calls": {"official_search": official.calls, "bm25": bm25.calls,
+                          "query_encoder": encoder.calls, "qdrant_dense": dense.calls,
+                          "metadata_api": profile_provider.metadata_api_calls,
+                          "cell_api": 0, "hcx_answer": 0},
+            "timing": timing.snapshot(),
+        }
+    live_started = __import__("time").monotonic_ns()
     result = run_new_articles_v2(
         articles,
         l2_api_key="" if deterministic_answer_only else os.environ["NCP_CLOVASTUDIO_API_KEY"],
         search_channels={"official": official, "bm25": bm25, "dense": dense},
         release_sha256_by_channel=release_sha,
         catalog_records=(),
-        candidate_record_provider=passage_store.records_for_tables,
+        candidate_record_provider=None if release_bound_mode else passage_store.records_for_tables,
         reranker=reranker,
         profile_provider=profile_provider,
         cell_fetcher=cell_fetcher,
@@ -2562,15 +5020,26 @@ def run_live_from_files(
         claim_query=claim_query,
         failure_recovery_shadow=failure_recovery_shadow,
         user_intent_shadow=user_intent_shadow,
+        release_bound_mode=release_bound_mode,
+        answer_render_mode_name=answer_mode,
+        retrieval_cache=retrieval_cache if request_cache_enabled else None,
+        timing=timing,
+        binding_continuation=binding_continuation,
+        binding_query_register_identity_payload=binding_query_register_identity_payload,
     )
+    timing.observe("live", live_started)
     article_call_snapshot = {
         "metadata_api": profile_provider.metadata_api_calls,
         "cell_api": cell_fetcher.calls,
         "hcx_answer": 0 if answerer is None else answerer.calls,
     }
     canary_call_delta = {"metadata_api": 0, "cell_api": 0, "hcx_answer": 0}
-    canary_manifest: dict[str, Any] = {"enabled": False} if not include_technical_canary else {}
-    if include_technical_canary:
+    canary_manifest: dict[str, Any] = (
+        {"enabled": False, "reason": "RELEASE_BOUND_POSTGRES_PROFILE"}
+        if release_bound_mode else
+        ({"enabled": False} if not include_technical_canary else {})
+    )
+    if include_technical_canary and not release_bound_mode:
         canary_path = (root / config["assets"]["technical_canary"]).resolve()
         canary_config = _read_json(canary_path)
         technical_canary = run_technical_canary(
@@ -2610,7 +5079,7 @@ def run_live_from_files(
         "bm25": bm25.calls,
         "query_encoder": encoder.calls,
         "qdrant_dense": dense.calls,
-        "reranker": reranker.calls,
+        "reranker": 0 if release_bound_mode else reranker.calls,
         "metadata_api": profile_provider.metadata_api_calls,
         "cell_api": cell_fetcher.calls,
         "hcx_answer": 0 if answerer is None else answerer.calls,
@@ -2621,11 +5090,26 @@ def run_live_from_files(
         **article_call_snapshot,
     }
     result["technical_canary_api_calls"] = canary_call_delta
+    result["timing"] = timing.snapshot()
+    result["timing"]["cache"] = {
+        "retrieval": retrieval_cache.audit() if request_cache_enabled else {"enabled": False},
+        "profile": profile_provider.audit() if request_cache_enabled else {"enabled": False},
+        "query_encoder": encoder.audit() if hasattr(encoder, "audit") else {"enabled": False},
+    }
+    result["ranking"] = {
+        "mode": RRF_ONLY_ORDERING if release_bound_mode else "MODEL_RERANKER",
+        "reason": RRF_ORDER_RERANKER_DISABLED if release_bound_mode else None,
+    }
     result["runtime"] = {
         "status": "COMPLETE",
         "api_calls": calls,
         "profile_cache": profile_provider.audit(),
-        "passage_store": {"calls": passage_store.calls, "rows_read": passage_store.rows_read},
+        "passage_store": (
+            {"enabled": False, "reason": "RELEASE_BOUND_POSTGRES_PROFILE"}
+            if release_bound_mode else
+            {"calls": passage_store.calls, "rows_read": passage_store.rows_read}
+        ),
+        "release_runtime": dict(gate) if release_bound_mode else {"enabled": False},
         "preflight_blockers": [],
         "silent_fallback": False,
     }
@@ -2638,11 +5122,21 @@ def run_live_from_files(
         "config": {"path": str(config_path), "sha256": sha256_file(config_path)},
         "gpu_receipts": gate["gpu_receipts"],
         "services": service_urls,
-        "qdrant": {
-            "collection": config["services"]["qdrant_collection"],
-            "points": gate["qdrant_health"]["points_count"],
-            "indexed_vectors": gate["qdrant_health"]["indexed_vectors_count"],
-        },
+        "qdrant": (
+            {
+                "collection": gate["qdrant"]["collection"],
+                "vector_size": gate["qdrant"]["vector_size"],
+                "receipt_sha256": gate["qdrant"]["receipt_sha256"],
+            }
+            if release_bound_mode else
+            {
+                "collection": config["services"]["qdrant_collection"],
+                "points": gate["qdrant_health"]["points_count"],
+                "indexed_vectors": gate["qdrant_health"]["indexed_vectors_count"],
+            }
+        ),
+        "release_runtime": dict(gate) if release_bound_mode else {"enabled": False},
+        "ranking_mode": RRF_ONLY_ORDERING if release_bound_mode else "MODEL_RERANKER",
         "release_sha256_by_channel": release_sha,
         "api_calls": calls,
         "article_api_calls": result["article_api_calls"],
@@ -2654,8 +5148,12 @@ def run_live_from_files(
         "role_aware_dimension_shadow": role_aware_dimension_shadow,
         "claim_query": claim_query,
         "deterministic_answer_only": deterministic_answer_only,
+        "answer_render_mode": answer_mode,
+        "timing": result["timing"],
     }
-    if not include_technical_canary or audit_run_id or operational_cache_override is not None or snapshot_root_override is not None:
+    if release_bound_mode:
+        manifest["seed_cache"] = {"enabled": False, "reason": "RELEASE_BOUND_POSTGRES_PROFILE"}
+    elif not include_technical_canary or audit_run_id or operational_cache_override is not None or snapshot_root_override is not None:
         manifest.update({
             "audit_run_id": audit_run_id,
             "seed_cache_sha256_before": seed_cache_sha_before,

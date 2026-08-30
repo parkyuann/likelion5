@@ -253,6 +253,22 @@ def _claim_provenance(
     return result
 
 
+def _attach_user_clarification(
+    provenance: dict[str, Any], row: Mapping[str, Any], role: str,
+) -> None:
+    clarifications = row.get("user_clarifications")
+    if not isinstance(clarifications, Mapping):
+        return
+    answer = clarifications.get(role)
+    if isinstance(answer, Mapping) and str(answer.get("source") or "") == "USER_CLARIFICATION":
+        provenance["user_clarification"] = {
+            "source": "USER_CLARIFICATION",
+            "question_id": str(answer.get("question_id") or ""),
+            "role": role,
+            "answer_sha256": str(answer.get("answer_sha256") or ""),
+        }
+
+
 def _atom(role: str, surface: Any, status: str, provenance: dict[str, Any]) -> ClaimAtom:
     return ClaimAtom(role, surface, status, provenance)
 
@@ -436,10 +452,22 @@ def build_claim_core_v2(routed_value: Mapping[str, Any]) -> ClaimCore:
             region_span = None
     else:
         region_span = None
-    region_status = "EXPLICIT" if region_evidence and region_surface and region_span and region_sentence_id is not None else "UNKNOWN"
+    region_status = (
+        "AMBIGUOUS"
+        if region_evidence and region_evidence.get("status") == "AMBIGUOUS"
+        else "EXPLICIT"
+        if region_evidence and region_surface and region_span and region_sentence_id is not None
+        else "UNKNOWN"
+    )
     region_prov = _claim_provenance(row, sentence_id=region_sentence_id, span=region_span, span_path="region_evidence.span" if region_span else None)
     if region_sentence:
         region_prov["sentence_text"] = region_sentence
+
+    for role, provenance in (
+        ("indicator", indicator_prov), ("unit", unit_prov), ("period", period_prov),
+        ("population", population_prov), ("region", region_prov),
+    ):
+        _attach_user_clarification(provenance, row, role)
 
     measurement = fields.get("measurement_type")
     measurement_status = "EXPLICIT" if measurement in {"LEVEL", "CHANGE_RATE", "CHANGE_POINT"} else "UNKNOWN"
@@ -468,6 +496,14 @@ def build_claim_core_v2(routed_value: Mapping[str, Any]) -> ClaimCore:
         "article_sentence_id": article_sentence_id,
         "value_span_id": row.get("value_span_id"),
     }
+    clarifications = row.get("user_clarifications")
+    if isinstance(clarifications, Mapping):
+        provenance["user_clarifications"] = {
+            str(role): dict(answer)
+            for role, answer in clarifications.items()
+            if str(role) in {"article_date", "period", "region", "population", "indicator", "unit"}
+            and isinstance(answer, Mapping)
+        }
     data = {
         "atoms": {name: asdict(atom) for name, atom in atoms.items()},
         "proposal_view": proposal,
@@ -528,7 +564,9 @@ def _monthly_structured_period_v2h(row: Mapping[str, Any]) -> str:
     return value if re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", value) else ""
 
 
-def _monthly_anchor_v2h(raw_text: str, article_date: str) -> tuple[str, dict[str, Any], str | None]:
+def _monthly_anchor_v2h(
+    raw_text: str, article_date: str, *, date_source: str = "client_asserted",
+) -> tuple[str, dict[str, Any], str | None]:
     anchor = date.fromisoformat(article_date)
     anchor_month = (anchor.year, anchor.month)
     normalized = re.sub(r"\s+", " ", raw_text).strip()
@@ -567,7 +605,7 @@ def _monthly_anchor_v2h(raw_text: str, article_date: str) -> tuple[str, dict[str
         "contract_version": "monthly-period-anchor-v2h",
         "raw_text": raw_text,
         "article_date": article_date,
-        "date_source": "client_asserted",
+        "date_source": date_source,
         "rule_id": rule_id,
         "calculation_branch": branch,
         "structured_period": structured,
@@ -587,12 +625,22 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
         hashlib.sha256(article_text.encode("utf-8")).hexdigest()
         if isinstance(article_text, str) else None
     )
+    legacy_date_provenance = (
+        isinstance(date_receipt, Mapping)
+        and date_receipt.get("date_source") == "client_asserted"
+        and date_receipt.get("source_path") in {"terminal_argument", "backend_request"}
+    )
+    clarification_date_provenance = (
+        isinstance(date_receipt, Mapping)
+        and date_receipt.get("date_source") == "user_feedback"
+        and date_receipt.get("source_path") == "clarification_context"
+        and bool(re.fullmatch(r"[0-9a-fA-F]{64}", str(date_receipt.get("answer_sha256") or "")))
+    )
     date_valid = (
         isinstance(article_text, str)
         and bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", article_date))
         and isinstance(date_receipt, Mapping)
-        and date_receipt.get("date_source") == "client_asserted"
-        and date_receipt.get("source_path") in {"terminal_argument", "backend_request"}
+        and (legacy_date_provenance or clarification_date_provenance)
         and date_receipt.get("date_field") == "date"
         and date_receipt.get("article_text_sha256") == article_sha
         and bool(re.fullmatch(r"[0-9a-f]{64}", str(date_receipt.get("article_text_sha256") or "")))
@@ -661,12 +709,19 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
         while relative_subject_start < len(source_text) and source_text[relative_subject_start].isspace():
             relative_subject_start += 1
         subject_end = relative_subject_start + len(subject)
-        expected_indicator = re.sub(r"\s+", " ", f"{subject} 수").strip()
+        normalized_subject = re.sub(r"\s+", " ", subject).strip()
+        expected_indicator = re.sub(r"\s+", " ", f"{normalized_subject} 수").strip()
+        normalized_indicator_text = re.sub(r"\s+", " ", normalized_indicator).strip()
+        normalization_branch = None
+        if normalized_indicator_text == normalized_subject:
+            normalization_branch = "source_subject"
+        elif normalized_indicator_text in {expected_indicator, expected_indicator.replace(" ", "")}:
+            normalization_branch = "count_normalized_subject"
         value_occurrences = [match.span() for match in re.finditer(re.escape(value_surface), source_text)] if value_surface else []
         subject_occurrences = [match.span() for match in re.finditer(re.escape(subject), source_text)] if subject else []
         if (
             subject and len(subject_occurrences) == 1 and len(value_occurrences) == 1
-            and re.sub(r"\s+", " ", normalized_indicator).strip() in {expected_indicator, expected_indicator.replace(" ", "")}
+            and normalization_branch is not None
         ):
             indicator_receipt = {
                 "contract_version": "monthly-indicator-receipt-v2h",
@@ -678,7 +733,9 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
                 "removed_particle": subject_match.group(2),
                 "added_count_suffix": "수",
                 "model_indicator_label": model_label,
-                "normalized_indicator": normalized_indicator,
+                "normalized_indicator": expected_indicator,
+                "input_normalized_indicator": normalized_indicator,
+                "normalization_branch": normalization_branch,
             }
     if indicator_receipt is None:
         raise MonthlyClaimProvenanceError(
@@ -690,7 +747,8 @@ def build_claim_core_monthly_v2h(routed_value: Mapping[str, Any]) -> ClaimCore:
 
     structured_period = _monthly_structured_period_v2h(row)
     calculated_period, anchor_receipt, anchor_error = _monthly_anchor_v2h(
-        period_evidence["text"], article_date
+        period_evidence["text"], article_date,
+        date_source=str(date_receipt.get("date_source") or "client_asserted"),
     )
     if anchor_error:
         raise MonthlyClaimProvenanceError(

@@ -15,8 +15,30 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 
-CONTRACT_VERSION = "operational-retrieval-v2"
+CONTRACT_VERSION = "operational-retrieval-v4-isolated-registers"
+QUERY_REGISTER_VERSION = "six-path-v2"
+DISABLED_PATHS = (
+    {"path": "sentence:official", "reason": "DISABLED_ZERO_YIELD_BASELINE"},
+)
 RRF_K = 60
+
+
+def query_register_contract() -> dict[str, Any]:
+    """Return the immutable shape of the active default register.
+
+    Query text is request-specific, but the enabled path contract is runtime
+    state.  Continuation artifacts attest both so a forged path identity cannot
+    be accepted merely because its self-reported hash is well formed.
+    """
+    return {
+        "version": QUERY_REGISTER_VERSION,
+        "kind": "default",
+        "enabled_paths": [
+            "indicator:official", "indicator:bm25", "indicator:dense",
+            "item:bm25", "item:dense", "sentence:dense",
+        ],
+        "disabled": list(DISABLED_PATHS),
+    }
 
 
 def _canonical(value: Any) -> bytes:
@@ -25,6 +47,20 @@ def _canonical(value: Any) -> bytes:
 
 def _sha(value: Any) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def query_register_identity_payload(
+    register: Sequence["QuerySpec"],
+    *,
+    register_kind: str,
+) -> dict[str, Any]:
+    """Return the canonical payload whose digest binds a register to a run."""
+    return {
+        "version": QUERY_REGISTER_VERSION,
+        "kind": str(register_kind),
+        "enabled": [query.__dict__ for query in register],
+        "disabled": list(DISABLED_PATHS),
+    }
 
 
 @dataclass(frozen=True)
@@ -76,7 +112,12 @@ class Reranker(Protocol):
 
 
 def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
-    """Build the approved three-role query register from explicit text only."""
+    """Build only the approved default six-path register.
+
+    Source/report context and corrective terms are deliberately excluded here.
+    They have separate registers and can only affect a candidate set through an
+    explicitly receipted union in the orchestrator.
+    """
     indicator = str(claim.get("indicator") or "").strip()
     item = str(claim.get("item") or indicator).strip()
     sentence = str(claim.get("sentence") or "").strip()
@@ -85,8 +126,7 @@ def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
     sentence = re.sub(r"[+-]?\d[\d,.]*(?:조|억|천만|백만|만|천)?(?:원|달러|명|가구|개|%p|%)?", " ", sentence)
     sentence = re.sub(r"\s+", " ", sentence).strip()
     queries: list[QuerySpec] = []
-    corrective_only = claim.get("_corrective_only") is True
-    if indicator and not corrective_only:
+    if indicator:
         queries.append(QuerySpec(
             "indicator", "indicator", indicator,
             ("official", "bm25", "dense"),
@@ -96,23 +136,26 @@ def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
                 "dense": ("TITLE", "CATEGORY", "ITEM", "DIMENSION_AXIS"),
             },
         ))
-    if item and not corrective_only:
+    if item:
         queries.append(QuerySpec(
             "item", "item", item,
             ("bm25", "dense"),
             {"bm25": ("ITEM",), "dense": ("ITEM",)},
         ))
-    if sentence and not corrective_only:
+    if sentence:
         queries.append(QuerySpec(
             "sentence", "sentence", sentence,
-            ("official", "dense"),
-            {"official": ("TITLE", "CATEGORY"), "dense": ("TITLE", "CATEGORY")},
+            ("dense",),
+            {"dense": ("TITLE", "CATEGORY")},
         ))
-    # Opt-in article-body shadow callers may preserve source/report context as
-    # separate paths.  Keeping each term separate avoids the FTS5 record-level
-    # AND trap when an agency is stored in CATEGORY and a survey name in TITLE.
+    return tuple(queries)
+
+
+def build_context_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
+    """Build source/report context paths; never include them in base six-path."""
+    queries: list[QuerySpec] = []
     source_terms = claim.get("source_terms")
-    if not corrective_only and isinstance(source_terms, Sequence) and not isinstance(source_terms, (str, bytes)):
+    if isinstance(source_terms, Sequence) and not isinstance(source_terms, (str, bytes)):
         seen_context: set[tuple[str, str]] = set()
         for index, value in enumerate(source_terms):
             if not isinstance(value, Mapping):
@@ -131,6 +174,12 @@ def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
                     "bm25": ("TITLE", "CATEGORY", "ITEM", "DIMENSION_AXIS"),
                 },
             ))
+    return tuple(queries)
+
+
+def build_corrective_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
+    """Build the one bounded corrective register, isolated from default paths."""
+    queries: list[QuerySpec] = []
     corrective_terms = claim.get("corrective_terms")
     if isinstance(corrective_terms, Sequence) and not isinstance(corrective_terms, (str, bytes)):
         seen_corrective: set[tuple[str, str]] = set()
@@ -156,6 +205,13 @@ def build_query_register(claim: Mapping[str, Any]) -> tuple[QuerySpec, ...]:
     return tuple(queries)
 
 
+_REGISTER_BUILDERS: Mapping[str, Callable[[Mapping[str, Any]], tuple[QuerySpec, ...]]] = {
+    "default": build_query_register,
+    "context": build_context_query_register,
+    "corrective": build_corrective_query_register,
+}
+
+
 def _normalize_path_hits(
     query: QuerySpec,
     channel: str,
@@ -172,9 +228,17 @@ def _normalize_path_hits(
         table_key = str(row.get("table_key") or "").strip()
         record_id = str(row.get("record_id") or table_key).strip()
         field_name = str(row.get("field") or "TITLE").strip().upper()
+        row_release = row.get("release_sha256")
+        if row_release not in (None, "") and str(row_release) != str(release_sha256):
+            raise ValueError("RETRIEVAL_RELEASE_MISMATCH")
         if not table_key or field_name not in allowed:
-            continue
+            raise ValueError("RETRIEVAL_PATH_CONTRACT_INVALID")
         score_value = row.get("score")
+        if score_value is not None:
+            try:
+                score_value = float(score_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("RETRIEVAL_PATH_CONTRACT_INVALID") from exc
         normalized.append(RetrievalHit(
             query.query_id,
             query.role,
@@ -183,7 +247,7 @@ def _normalize_path_hits(
             record_id,
             field_name,
             source_rank,
-            None if score_value is None else float(score_value),
+            score_value,
             release_sha256,
         ))
     # One child hit per (query, channel, table), with deterministic record tie-break.
@@ -200,27 +264,68 @@ def retrieve_parallel(
     release_sha256_by_channel: Mapping[str, str],
     path_top_k: int = 20,
     union_top_k: int = 100,
+    timeout_seconds: float | None = None,
+    channel_allowlist: frozenset[str] | None = None,
+    register_kind: str = "default",
 ) -> tuple[tuple[RrfCandidate, ...], dict[str, Any]]:
-    """Execute all approved paths concurrently and flat-RRF their table hits."""
-    register = build_query_register(claim)
-    jobs = [(query, channel) for query in register for channel in query.channels]
+    """Execute one isolated register concurrently and flat-RRF its table hits."""
+    builder = _REGISTER_BUILDERS.get(str(register_kind))
+    if builder is None:
+        raise ValueError("RETRIEVAL_REGISTER_KIND_INVALID")
+    register = builder(claim)
+    jobs = [
+        (query, channel) for query in register for channel in query.channels
+        if channel_allowlist is None or channel in channel_allowlist
+    ]
+    if not jobs:
+        raise RuntimeError("SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED")
     missing = sorted({channel for _, channel in jobs if channel not in channels})
-    if missing:
-        raise RuntimeError(f"SEARCH_CHANNEL_UNAVAILABLE:{','.join(missing)}")
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise RuntimeError("SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED")
     path_results: dict[tuple[str, str], tuple[RetrievalHit, ...]] = {}
+    path_status: dict[str, str] = {}
+    path_errors: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as executor:
-        pending = {
-            executor.submit(channels[channel], query, query.fields_by_channel[channel], path_top_k): (query, channel)
-            for query, channel in jobs
-        }
+        pending = {}
+        for query, channel in jobs:
+            path_key = f"{query.query_id}:{channel}"
+            if channel in missing:
+                path_status[path_key] = "FAILED_TRANSPORT"
+                path_errors[path_key] = "SEARCH_CHANNEL_UNAVAILABLE"
+                continue
+            callback = getattr(channels[channel], "speculative", None) if timeout_seconds is not None else channels[channel]
+            if timeout_seconds is not None and not callable(callback):
+                path_status[path_key] = "FAILED_TIMEOUT"
+                path_errors[path_key] = "SPECULATIVE_NATIVE_TIMEOUT_UNSUPPORTED"
+                continue
+            pending[executor.submit(
+                callback,
+                query,
+                query.fields_by_channel[channel],
+                path_top_k,
+                **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
+            )] = (query, channel)
         for future in as_completed(pending):
             query, channel = pending[future]
-            rows = future.result()
-            path_results[(query.query_id, channel)] = _normalize_path_hits(
-                query, channel, rows,
-                release_sha256=str(release_sha256_by_channel.get(channel) or ""),
-                top_k=path_top_k,
-            )
+            path_key = f"{query.query_id}:{channel}"
+            try:
+                rows = future.result()
+                path_results[(query.query_id, channel)] = _normalize_path_hits(
+                    query, channel, rows,
+                    release_sha256=str(release_sha256_by_channel.get(channel) or ""),
+                    top_k=path_top_k,
+                )
+            except TimeoutError:
+                path_status[path_key] = "FAILED_TIMEOUT"
+                path_errors[path_key] = "TIMEOUT"
+            except (ValueError, TypeError, KeyError) as exc:
+                path_status[path_key] = "FAILED_CONTRACT"
+                path_errors[path_key] = str(exc.args[0]) if exc.args else "RETRIEVAL_PATH_CONTRACT_INVALID"
+            except Exception as exc:  # noqa: BLE001 - path isolation boundary
+                path_status[path_key] = "FAILED_TRANSPORT"
+                path_errors[path_key] = type(exc).__name__
+            else:
+                path_status[path_key] = "OK" if path_results[(query.query_id, channel)] else "EMPTY"
 
     grouped: dict[str, list[RetrievalHit]] = {}
     for path in sorted(path_results):
@@ -236,19 +341,48 @@ def retrieve_parallel(
         for table_key, hits in grouped.items()
     ]
     ordered = tuple(sorted(candidates, key=lambda row: (-row.rrf_score, row.best_rank, row.table_key))[:union_top_k])
+    register_identity_payload = query_register_identity_payload(register, register_kind=register_kind)
     audit = {
         "contract_version": CONTRACT_VERSION,
+        "query_register_version": QUERY_REGISTER_VERSION,
+        "query_register_kind": register_kind,
+        "disabled_paths": list(DISABLED_PATHS),
         "authority": "CANDIDATE_GENERATION_ONLY",
         "dimension_value_evidence": False,
         "dimension_completeness_evidence": False,
         "path_top_k": path_top_k,
         "union_top_k": union_top_k,
-        "query_register_sha256": _sha([query.__dict__ for query in register]),
+        "query_register_sha256": _sha(register_identity_payload),
+        "query_register_contract_sha256": _sha({
+            **query_register_contract(),
+            "kind": register_kind,
+        }) if register_kind == "default" else _sha({
+            "version": QUERY_REGISTER_VERSION,
+            "kind": register_kind,
+            "enabled_paths": [f"{query.query_id}:{channel}" for query, channel in jobs],
+            "disabled": list(DISABLED_PATHS),
+        }),
+        "query_register_payload": [query.__dict__ for query in register],
+        "query_register_identity_payload": register_identity_payload,
         "paths": {
-            f"{query_id}:{channel}": len(path_results[(query_id, channel)])
-            for query_id, channel in sorted(path_results)
+            f"{query.query_id}:{channel}": len(path_results.get((query.query_id, channel), ()))
+            for query, channel in sorted(jobs, key=lambda item: (item[0].query_id, item[1]))
         },
+        "path_status": {key: path_status[key] for key in sorted(path_status)},
+        "path_errors": {key: path_errors[key] for key in sorted(path_errors)},
+        "successful_path_count": sum(status in {"OK", "EMPTY"} for status in path_status.values()),
+        "failed_path_count": sum(status.startswith("FAILED_") for status in path_status.values()),
+        "all_paths_failed": bool(jobs) and not any(status in {"OK", "EMPTY"} for status in path_status.values()),
     }
+    audit["retrieval_semantic_sha256"] = _sha({
+        "contract_version": CONTRACT_VERSION,
+        "query_register_kind": register_kind,
+        "query_register_sha256": audit["query_register_sha256"],
+        "release_sha256_by_channel": dict(sorted((str(k), str(v)) for k, v in release_sha256_by_channel.items())),
+        "paths": audit["paths"],
+        "path_status": audit["path_status"],
+        "candidate_membership": [candidate.table_key for candidate in ordered],
+    })
     return ordered, audit
 
 
@@ -309,8 +443,7 @@ def rerank_top50(
 
 
 __all__ = [
-    "CONTRACT_VERSION", "QuerySpec", "RetrievalHit", "RerankedCandidate", "RrfCandidate",
-    "build_candidate_passages", "build_query_register", "rerank_top50", "retrieve_parallel",
+    "CONTRACT_VERSION", "QUERY_REGISTER_VERSION", "DISABLED_PATHS", "query_register_contract", "QuerySpec", "RetrievalHit", "RerankedCandidate", "RrfCandidate",
+    "build_candidate_passages", "build_query_register", "build_context_query_register",
+    "build_corrective_query_register", "rerank_top50", "retrieve_parallel",
 ]
-
-

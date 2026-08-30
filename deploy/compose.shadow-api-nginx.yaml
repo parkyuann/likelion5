@@ -1,0 +1,9 @@
+# Shadow validation overlay only.
+#
+# Start only `api nginx` with `--no-deps`; the already attested main BGE query
+# encoder is reused over the external Docker network.  This prevents a second
+# GPU model process from being started during an API/Nginx-only validation.
+networks:
+  encoder_internal:
+    external: true
+    name: "${BGE_QUERY_ENCODER_EXTERNAL_NETWORK:?set the existing encoder Docker network name}"

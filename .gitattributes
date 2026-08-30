@@ -1,0 +1,3 @@
+# The materialized pipeline closure is byte-sealed by deploy/pipeline_runtime/manifest.json.
+# Preserve source bytes; trailing blank lines are part of the recorded SHA-256 closure.
+deploy/pipeline_runtime/** -text whitespace=-trailing-space

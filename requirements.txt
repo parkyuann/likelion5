@@ -8,6 +8,7 @@
 #   python -m pip install -r requirements.txt
 
 pandas>=3.0,<4
+numpy>=2.2,<3
 requests>=2.34,<3
 python-dotenv>=1.2,<2
 qdrant-client>=1.14,<2
@@ -20,3 +21,4 @@ argon2-cffi>=25,<26
 python-multipart>=0.0.20,<1
 httpx>=0.28,<1
 Pillow>=11,<12
+beautifulsoup4>=4.13,<5

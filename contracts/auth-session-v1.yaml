@@ -1,0 +1,234 @@
+openapi: 3.1.0
+info:
+  title: KOSIS Application Auth Session API
+  version: 1.0.0
+  description: |
+    Contract for the MVP server-side Redis session endpoints. The browser stores
+    only the opaque session cookie; JWT access/refresh tokens are not used.
+    This contract does not grant any authority over KOSIS release selection,
+    metadata, OpenSearch documents, Qdrant points, or verdicts.
+servers:
+  - url: https://{host}
+    variables:
+      host:
+        default: example.invalid
+paths:
+  /api/auth/signup:
+    post:
+      summary: Create a local email/password account
+      description: |
+        Creates a user and a local auth account. The password is converted to
+        an Argon2id hash server-side and is never returned or persisted in
+        browser storage. Automatic local/social account merging is forbidden.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '201':
+          description: Account created; this contract requires a separate login to issue a session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /api/auth/login:
+    post:
+      summary: Sign in with local email and password
+      description: |
+        On success, creates a fixed 604800-second Redis server session. The
+        response sets __Host-kosis_session with HttpOnly; Secure; Path=/;
+        SameSite=Lax; Max-Age=604800 and no Domain attribute. If this is the
+        sixth active session, the oldest session is deleted atomically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated user; opaque session cookie is set.
+          headers:
+            Set-Cookie:
+              description: HttpOnly Secure opaque session cookie; no JWT or session ID JSON field is returned.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /api/auth/me:
+    get:
+      summary: Return the current authenticated user
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Valid non-expired server session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/auth/logout:
+    post:
+      summary: Log out the current browser session only
+      description: |
+        Requires Origin/Referer and Sec-Fetch-Site validation for cookie-based
+        CSRF defense. Deletes only the current opaque session and clears its
+        cookie.
+      security:
+        - sessionCookie: []
+      responses:
+        '204':
+          description: Current session removed and cookie cleared.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/auth/logout-all:
+    post:
+      summary: Log out every active browser session for the current user
+      description: |
+        Requires the same CSRF origin checks as logout. Deletes every
+        auth:session key referenced by auth:user-sessions:<user-id> and clears
+        the current browser cookie.
+      security:
+        - sessionCookie: []
+      responses:
+        '204':
+          description: All known active sessions removed and current cookie cleared.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-kosis_session
+      description: Opaque Redis-backed server session ID, fixed 7-day TTL.
+  schemas:
+    SignupRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, display_name]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          format: password
+          minLength: 12
+          writeOnly: true
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          format: password
+          writeOnly: true
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        primary_email:
+          type: [string, 'null']
+          format: email
+        display_name:
+          type: string
+        status:
+          type: string
+          enum: [active, suspended, withdrawn]
+        created_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type: [string, 'null']
+          format: date-time
+    UserResponse:
+      type: object
+      additionalProperties: false
+      required: [user]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+    AuthSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [user, expires_at]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        expires_at:
+          type: string
+          format: date-time
+          description: Fixed login-time expiry, never extended by /me.
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+  responses:
+    Unauthenticated:
+      description: No session cookie, missing Redis session, invalid session, or expired session.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Valid session but suspended/withdrawn user, insufficient permission, or rejected CSRF origin.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Conflicting local identity or an explicit account-linking requirement.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationError:
+      description: Request does not satisfy the API input contract.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

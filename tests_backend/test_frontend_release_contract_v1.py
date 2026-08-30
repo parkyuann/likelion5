@@ -34,3 +34,26 @@ def test_status_labels_and_compose_build_contract_preserve_one_valid_sha() -> No
     assert ":-unknown" not in compose
     assert "^[0-9a-f]{40}$" in api_dockerfile
     assert "^[0-9a-f]{40}$" in nginx_dockerfile
+
+
+def test_input_surfaces_distinguish_image_urls_and_keep_image_submission_accessible() -> None:
+    chat = (ROOT / "frontend/src/ChatApp.jsx").read_text(encoding="utf-8")
+    landing = (ROOT / "frontend/src/Landing.jsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/ChatApp.css").read_text(encoding="utf-8")
+
+    assert "function urlInputKind(value)" in chat
+    assert "IMAGE_URL_PATH_RE" in chat
+    assert 'sourceType: "image_url"' in chat
+    assert "handleImagePaste" in chat
+    assert "handleImageDrop" in chat
+    assert 'readOnly={pendingImage != null}' in chat
+    assert "sendButtonRef" in chat
+    assert "c-clarification-message" in chat
+
+    assert "previewRef" in landing
+    assert 'aria-label="첨부한 이미지. Enter 키를 누르면 검증을 시작합니다."' in landing
+    assert "onKeyDown={handleKeyDown}" in landing
+    assert "onPaste={onPaste}" in landing
+
+    assert ".c-clarification-message" in styles
+    assert ':root[data-theme="dark"] .c-claim.unverifiable' in styles

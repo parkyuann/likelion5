@@ -22,6 +22,22 @@ def test_relative_period_without_date_asks_after_layers_without_live():
     assert plan["invalidated_stages"] == ["layers", "retrieval", "binding", "cell", "answer"]
 
 
+def test_relative_period_without_routed_projection_still_asks_for_article_date():
+    """A partial routing result must never hide an unfixed relative period."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        plan = _pre_live_clarification_plan(
+            root,
+            body="지난 4월 출생아는 2만4521명이었다.",
+            article_date="",
+        )
+    assert plan is not None
+    assert plan["reason"] == "ARTICLE_DATE_REQUIRED_FOR_RELATIVE_PERIOD"
+    assert plan["question"]["role"] == "article_date"
+    assert plan["resume_from_stage"] == "layers"
+
+
 def test_absolute_period_does_not_ask_for_article_date():
     import tempfile
     with tempfile.TemporaryDirectory() as directory:

@@ -71,6 +71,16 @@ from src.news_verification.runtime.l3_role_assignment import attach_indicator_ev
 from src.news_verification.runtime.adapters.shadow_compat import failure_recovery_api, user_intent_api
 from src.develop.failure_recovery_shadow_v1 import CLARIFICATION_ROLES, build_post_binding_clarification_plan
 
+
+_INDICATOR_CLARIFICATION_PROMPT = (
+    "기사에서 확인하려는 수치를 구체적으로 알려주세요.\n\n"
+    "예:\n"
+    "• 대통령 국정수행 긍정평가 비율\n"
+    "• A정당 정당지지도\n"
+    "• 전국 합계출산율\n"
+    "• 전국 출생아 수"
+)
+
 def corrective_claim_query(*args: Any, **kwargs: Any) -> Any:
     return failure_recovery_api()[0](*args, **kwargs)
 
@@ -592,11 +602,7 @@ def _indicator_failure_recovery(
         "question": {
             "question_id": question_id,
             "role": "indicator",
-            "prompt": (
-                "기사에서 확인하려는 수치를 구체적으로 알려주세요. "
-                "예: ‘대통령 국정수행 긍정평가 비율’, ‘A정당 정당지지도’, "
-                "‘전국 합계출산율’, ‘전국 출생아 수’."
-            ),
+            "prompt": _INDICATOR_CLARIFICATION_PROMPT,
             "input_mode": "FREE_TEXT",
             "allow_direct_input": True,
             "options": [],
@@ -665,11 +671,7 @@ def _speculative_clarification_plan(
             "reason": f"{role.upper()}_REQUIRED",
             "question": {
                 "id": "cq-" + hashlib.sha256(f"speculative:{role}:{row.get('target_id') or row.get('value_span_id') or ''}".encode()).hexdigest()[:24],
-                "role": role, "prompt": (
-                    "기사에서 확인하려는 수치를 구체적으로 알려주세요. "
-                    "예: ‘대통령 국정수행 긍정평가 비율’, ‘A정당 정당지지도’, "
-                    "‘전국 합계출산율’, ‘전국 출생아 수’."
-                ) if role == "indicator" else "어떤 항목 기준인지 알려주세요.",
+                "role": role, "prompt": _INDICATOR_CLARIFICATION_PROMPT if role == "indicator" else "어떤 항목 기준인지 알려주세요.",
                 "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [],
                 "speculative": True,
             },
@@ -700,7 +702,7 @@ def _speculative_clarification_plan(
         ).hexdigest()[:24]
         return {
             "contract_version": "clarification-plan-v2", "reason": f"{role.upper()}_REQUIRED",
-            "question": {"id": question_id, "role": role, "prompt": "기사에서 확인하려는 수치를 구체적으로 알려주세요. 예: ‘대통령 국정수행 긍정평가 비율’, ‘A정당 정당지지도’, ‘전국 합계출산율’, ‘전국 출생아 수’.", "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "speculative": True},
+            "question": {"id": question_id, "role": role, "prompt": _INDICATOR_CLARIFICATION_PROMPT, "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "speculative": True},
             "speculative": True, "resume_from_stage": "retrieval",
             "changed_roles": [role], "invalidated_stages": ["retrieval", "binding", "cell", "answer"],
             "reusable_artifacts": ["l1", "l2", "layers"],

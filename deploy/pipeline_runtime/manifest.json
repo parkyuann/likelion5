@@ -38,8 +38,8 @@
     },
     {
       "path": "develop/failure_recovery_shadow_v1.py",
-      "sha256": "07f7b0aa114ecda45f9d9f2139bbc890ee8973680371efa1ad3303219a3b6e5c",
-      "size": 23241
+      "sha256": "62f240fb9f27131e3e74d9bc9ebad6dedfb5750206b181de4f1ee3a6487a5fa3",
+      "size": 22973
     },
     {
       "path": "develop/hcx_client.py",
@@ -318,8 +318,8 @@
     },
     {
       "path": "news_verification/runtime/run_pipeline_operational_v2.py",
-      "sha256": "c45c8db7accb7be9903b9230baa63e3c6ea50467fc5460a653ec461a9a8a4f59",
-      "size": 261794
+      "sha256": "ab7466f8162b6e75b6610bc8466cb02c982bff922d25ae1f0e0594c049686f12",
+      "size": 261372
     },
     {
       "path": "news_verification/runtime/run_pipeline_replay_v1.py",

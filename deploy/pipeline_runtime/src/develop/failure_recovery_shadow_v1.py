@@ -48,6 +48,14 @@ CLARIFICATION_ROLES = (
     "region", "sex", "age", "classification", "measurement_basis",
 )
 _CLARIFICATION_PRIORITY = CLARIFICATION_ROLES
+_INDICATOR_CLARIFICATION_PROMPT = (
+    "기사에서 확인하려는 수치를 구체적으로 알려주세요.\n\n"
+    "예:\n"
+    "• 대통령 국정수행 긍정평가 비율\n"
+    "• A정당 정당지지도\n"
+    "• 전국 합계출산율\n"
+    "• 전국 출생아 수"
+)
 
 
 @dataclass(frozen=True)
@@ -148,13 +156,13 @@ def _question_for_multiple(projections: Sequence[Any]) -> dict[str, Any]:
         differing = [(role, sorted(values)) for role, values in sorted(option_roles.items()) if values]
     if not differing:
         return {
-            "question_id": "clarify-indicator", "role": "indicator", "prompt": "기사에서 확인하려는 수치를 구체적으로 알려주세요. 예: ‘대통령 국정수행 긍정평가 비율’, ‘A정당 정당지지도’, ‘전국 합계출산율’, ‘전국 출생아 수’.",
+            "question_id": "clarify-indicator", "role": "indicator", "prompt": _INDICATOR_CLARIFICATION_PROMPT,
             "input_mode": "FREE_TEXT", "options": [], "answer": None,
             "internal_ids_exposed": False, "model_prefill": False,
         }
     role, labels = differing[0]
     prompts = {
-        "indicator": "기사에서 확인하려는 수치를 구체적으로 알려주세요. 예: ‘대통령 국정수행 긍정평가 비율’, ‘A정당 정당지지도’, ‘전국 합계출산율’, ‘전국 출생아 수’.", "region": "어느 지역 기준인가요?",
+        "indicator": _INDICATOR_CLARIFICATION_PROMPT, "region": "어느 지역 기준인가요?",
         "population": "어떤 대상 집단 기준인가요?", "period": "어떤 시점·주기 기준인가요?",
         "unit": "어떤 단위 기준인가요?", "item": "어떤 통계 항목 기준인가요?",
         "source": "어느 통계 작성기관 또는 조사 기준인지 알려주세요.",
@@ -347,7 +355,7 @@ def plan_failure_recovery(row: Mapping[str, Any], top50: Any | None) -> dict[str
         role = "indicator" if missing_indicator else "item" if missing_item else "article_date"
         question = _question_for_missing("PERIOD_UNKNOWN" if role == "article_date" else "REGION_UNBOUND", row) if role == "article_date" else {
             "question_id": f"clarify-{role}", "role": role,
-            "prompt": "기사에서 확인하려는 수치를 구체적으로 알려주세요. 예: ‘대통령 국정수행 긍정평가 비율’, ‘A정당 정당지지도’, ‘전국 합계출산율’, ‘전국 출생아 수’." if role == "indicator" else "어떤 통계 항목 기준인지 알려주세요.",
+            "prompt": _INDICATOR_CLARIFICATION_PROMPT if role == "indicator" else "어떤 통계 항목 기준인지 알려주세요.",
             "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "answer": None,
             "internal_ids_exposed": False, "model_prefill": False,
         }

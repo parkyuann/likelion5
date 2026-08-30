@@ -1,9 +1,43 @@
-# Shadow validation overlay only.
+# API/Nginx-only shadow validation overlay.
 #
-# Start only `api nginx` with `--no-deps`; the already attested main BGE query
-# encoder is reused over the external Docker network.  This prevents a second
-# GPU model process from being started during an API/Nginx-only validation.
+# Invoke this file by itself with a unique `--project-name`; `extends` imports
+# the Git-tracked api/nginx definitions from compose.yaml without importing the
+# main service names.  The shadow API gets an `api` alias only on its dedicated
+# network, never on kosis_shadow_internal.  Main Nginx therefore cannot route
+# a production request to this shadow container.
+services:
+  shadow-api:
+    extends:
+      file: compose.yaml
+      service: api
+    depends_on: !reset []
+    environment:
+      KOSIS_RELEASE_DATA_RUNTIME_ENABLED: "true"
+      PIPELINE_URL_ENABLED: "true"
+      AUTH_ALLOWED_ORIGINS: "${SHADOW_AUTH_ALLOWED_ORIGINS:?set the shadow HTTPS origin}"
+      CORS_ALLOWED_ORIGINS: "${SHADOW_AUTH_ALLOWED_ORIGINS:?set the shadow HTTPS origin}"
+    networks: !override
+      shadow_app_internal:
+        aliases: [api]
+      kosis_shadow_internal: {}
+      encoder_internal: {}
+
+  shadow-nginx:
+    extends:
+      file: compose.yaml
+      service: nginx
+    depends_on: !override
+      shadow-api:
+        condition: service_started
+    networks: !override
+      shadow_app_internal: {}
+
 networks:
+  shadow_app_internal:
+    internal: true
+  kosis_shadow_internal:
+    external: true
+    name: kosis_shadow_internal
   encoder_internal:
     external: true
     name: "${BGE_QUERY_ENCODER_EXTERNAL_NETWORK:?set the existing encoder Docker network name}"

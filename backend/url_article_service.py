@@ -1,28 +1,24 @@
 """Release-bound, fail-closed URL article acquisition for the HTTP API.
 
-Only an explicitly approved publisher adapter is exposed. This keeps a
-browser-facing URL from becoming a generic server-side request primitive and
-hands the existing article verification pipeline an ArticleDocument with
-title/date provenance rather than an inferred value.
+Known publishers use an explicit adapter; another public HTTPS article can
+use a guarded generic fallback.  Acquisition keeps SSRF, redirect, size and
+content-type controls at the HTTP boundary, then hands the existing article
+verification pipeline an ArticleDocument with title/date/body provenance.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 import ipaddress
 import socket
-import sys
-from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from backend.errors import BackendError
+from backend.article_extractors import ArticleExtractionError, extract_article_html
 
 
-_RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "pipeline_runtime"
-_ALLOWED_HOSTS = frozenset({"khan.co.kr", "www.khan.co.kr"})
 _MAX_REDIRECTS = 3
 _MAX_HTML_BYTES = 2 * 1024 * 1024
 _TIMEOUT_SECONDS = 15.0
@@ -41,17 +37,28 @@ def _validated_url(value: str) -> str:
     host = (parsed.hostname or "").casefold().rstrip(".")
     if (
         parsed.scheme.casefold() != "https"
-        or host not in _ALLOWED_HOSTS
+        or not host
+        or "." not in host
+        or parsed.hostname is None
+        or _is_ip_literal(parsed.hostname)
         or parsed.username is not None
         or parsed.password is not None
         or (port not in (None, 443))
     ):
         raise _backend_error(
             "URL_NOT_SUPPORTED",
-            "현재는 경향신문(khan.co.kr) HTTPS 기사 URL만 지원합니다.",
+            "공개 HTTPS 기사 URL만 지원합니다.",
             422,
         )
     return parsed.geturl()
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _require_public_dns(host: str) -> None:
@@ -67,20 +74,6 @@ def _require_public_dns(host: str) -> None:
             raise _backend_error("URL_TARGET_BLOCKED", "허용되지 않은 기사 주소입니다.", 403)
     except ValueError as exc:
         raise _backend_error("URL_DNS_FAILED", "기사 주소를 확인할 수 없습니다.", 502) from exc
-
-
-def _load_khan_parser() -> tuple[Any, type[Exception]]:
-    root = str(_RUNTIME_ROOT)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    try:
-        from src.news_verification.runtime.operational_article_acquisition_v2 import (
-            ArticleAcquisitionError,
-            parse_khan_article,
-        )
-    except ImportError as exc:
-        raise _backend_error("URL_ADAPTER_UNAVAILABLE", "URL 기사 추출 모듈을 준비하지 못했습니다.", 503) from exc
-    return parse_khan_article, ArticleAcquisitionError
 
 
 def _fetch_html(source_url: str) -> tuple[bytes, str, str]:
@@ -128,15 +121,11 @@ def prepare_url_article(url: str) -> dict[str, Any]:
     """
 
     raw_html, final_url, content_type = _fetch_html(url)
-    parse_khan_article, acquisition_error = _load_khan_parser()
     try:
-        article, extraction = parse_khan_article(raw_html, source_url=url, final_url=final_url)
-    except acquisition_error as exc:
+        article, extraction = extract_article_html(raw_html, source_url=url, final_url=final_url)
+    except ArticleExtractionError as exc:
         raise _backend_error("URL_EXTRACTION_FAILED", "기사 본문·제목·발행일을 추출하지 못했습니다.", 422) from exc
-    try:
-        published_date = datetime.fromisoformat(str(article["date"]).replace("Z", "+00:00")).date().isoformat()
-    except (KeyError, TypeError, ValueError) as exc:
-        raise _backend_error("URL_DATE_INVALID", "기사 발행일을 확인하지 못했습니다.", 422) from exc
+    published_date = str(article["date"])
     text = str(article.get("article_text") or "").strip()
     title = str(article.get("title") or "").strip()
     if not text or not title:
@@ -146,7 +135,7 @@ def prepare_url_article(url: str) -> dict[str, Any]:
     raw_html_sha256 = hashlib.sha256(raw_html).hexdigest()
     text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
     receipt = {
-        "contract": "release-bound-url-article-adapter-v1",
+        "contract": "release-bound-url-article-adapter-v2",
         "source_url": url,
         "final_url": final_url,
         "content_type": content_type.split(";", 1)[0].strip().lower(),
@@ -165,7 +154,7 @@ def prepare_url_article(url: str) -> dict[str, Any]:
             "text": text,
             "title": title,
             "published_date": published_date,
-            "extractor": "KHAN_ARTICLE_V1",
+            "extractor": str(extraction["adapter"]),
             "content_hash": f"sha256:{text_sha256}",
         },
     }

@@ -76,6 +76,7 @@ function Landing({ onSubmit }) {
   const [demoLeaving, setDemoLeaving] = useState(false);
   const areaRef = useRef(null);
   const fileRef = useRef(null);
+  const previewRef = useRef(null);
 
   const normalizedText = text.trim();
   const detectedSourceType = image
@@ -102,6 +103,12 @@ function Landing({ onSubmit }) {
     }, 680);
     return () => clearTimeout(timer);
   }, [showDemo]);
+
+  // 이미지가 붙여넣어지거나 첨부되면 미리보기로 포커스를 옮긴다. 따라서 첫 화면에서도
+  // Enter 한 번으로 바로 검증을 시작할 수 있다.
+  useEffect(() => {
+    if (image) previewRef.current?.focus();
+  }, [image]);
 
   function changeDemo(direction) {
     setDemoIndex((current) =>
@@ -155,6 +162,7 @@ function Landing({ onSubmit }) {
     if (file) pickImage(file);
   }
   function onPaste(e) {
+    if (e.defaultPrevented) return;
     const file = [...(e.clipboardData?.items || [])]
       .map((it) => (it.kind === "file" ? it.getAsFile() : null))
       .find(isImageFile);
@@ -193,6 +201,7 @@ function Landing({ onSubmit }) {
             }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
+            onPaste={onPaste}
           >
           <div className="landing-composer-head">
             <div>
@@ -201,12 +210,19 @@ function Landing({ onSubmit }) {
             </div>
           </div>
           {image ? (
-            <div className="image-preview">
+            <div
+              ref={previewRef}
+              className="image-preview"
+              tabIndex={0}
+              role="group"
+              aria-label="첨부한 이미지. Enter 키를 누르면 검증을 시작합니다."
+              onKeyDown={handleKeyDown}
+            >
               <img src={image.url} alt="첨부 이미지 미리보기" />
               <div className="image-preview-meta">
                 <span className="image-preview-name">{image.file.name}</span>
                 <span className="image-preview-hint">
-                  이미지 속 수치를 OCR로 읽어 검증합니다
+                  이미지 속 수치를 OCR로 읽어 검증합니다 · Enter로 시작
                 </span>
               </div>
               <button

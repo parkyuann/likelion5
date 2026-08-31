@@ -21,3 +21,4 @@ argon2-cffi>=25,<26
 python-multipart>=0.0.20,<1
 httpx>=0.28,<1
 Pillow>=11,<12
+beautifulsoup4>=4.13,<5

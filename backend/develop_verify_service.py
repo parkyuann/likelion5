@@ -210,6 +210,30 @@ def _pre_live_clarification_plan(
     clarification_history: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Gate expensive retrieval when routed evidence cannot form a cell target."""
+    # A relative period is not an indicator ambiguity.  Without an article
+    # date, its calendar coordinate cannot be fixed, so ask for that evidence
+    # before considering any indicator/item clarification.  Do not depend on
+    # a routed row here: an incomplete L2/L3 projection must not silently turn
+    # this into an unverifiable final result.
+    if not article_date and _RELATIVE_PERIOD_PATTERN.search(body):
+        return {
+            "reason": "ARTICLE_DATE_REQUIRED_FOR_RELATIVE_PERIOD",
+            "question": {
+                "id": "cq-" + hashlib.sha256(
+                    f"article_date:{hashlib.sha256(body.encode('utf-8')).hexdigest()}".encode()
+                ).hexdigest()[:24],
+                "role": "article_date",
+                "prompt": "기사에서 말한 상대 시점을 정확한 통계 시점으로 바꾸려면 기사 발행일이 필요합니다. 기사 발행일을 YYYY-MM-DD 형식으로 알려주세요.",
+                "input_mode": "DATE",
+                "allow_direct_input": True,
+                "options": [],
+                "speculative": False,
+            },
+            "resume_from_stage": "layers",
+            "changed_roles": [],
+            "invalidated_stages": ["layers", "retrieval", "binding", "cell", "answer"],
+            "reusable_artifacts": ["l1", "l2", "layers"],
+        }
     routed = _read_jsonl(out_root / "03_routed.jsonl")
     if not routed:
         return None
@@ -255,7 +279,14 @@ def _pre_live_clarification_plan(
                 "question": {
                     "id": "cq-" + hashlib.sha256(f"{role}:{hashlib.sha256(body.encode('utf-8')).hexdigest()}".encode()).hexdigest()[:24],
                     "role": role,
-                    "prompt": "어떤 통계 지표를 확인할지 알려주세요." if role == "indicator" else "어떤 통계 항목을 확인할지 알려주세요.",
+                    "prompt": (
+                        "기사에서 확인하려는 수치를 구체적으로 알려주세요.\n\n"
+                        "예:\n"
+                        "• 대통령 국정수행 긍정평가 비율\n"
+                        "• A정당 정당지지도\n"
+                        "• 전국 합계출산율\n"
+                        "• 전국 출생아 수"
+                    ) if role == "indicator" else "어떤 통계 항목을 확인할지 알려주세요.",
                     "input_mode": "FREE_TEXT", "allow_direct_input": True, "options": [], "speculative": True,
                 },
                 "resume_from_stage": "retrieval",

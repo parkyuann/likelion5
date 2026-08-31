@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -345,10 +346,32 @@ def _looks_like_url(value: str) -> bool:
     return parsed.scheme.casefold() in {"http", "https"} and bool(parsed.netloc)
 
 
+_DIRECT_IMAGE_PATH_RE = re.compile(r"\.(?:avif|bmp|gif|jpe?g|png|tiff?|webp)$", re.IGNORECASE)
+
+
+def _is_direct_image_url(value: str) -> bool:
+    """Classify only an unambiguous image URL without fetching remote content."""
+
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(value.strip())
+    return (
+        parsed.scheme.casefold() in {"http", "https"}
+        and bool(parsed.netloc)
+        and bool(_DIRECT_IMAGE_PATH_RE.search(parsed.path))
+    )
+
+
 @app.post("/api/v1/analyze", dependencies=[Depends(require_csrf)])
 def analyze(req: AnalyzeRequest, user: dict | None = Depends(optional_user)) -> dict:
     del user
     if req.input_type == "url" or (req.input_type == "auto" and _looks_like_url(req.text)):
+        if _is_direct_image_url(req.text):
+            raise BackendError(
+                "IMAGE_URL_FILE_REQUIRED",
+                "이미지 URL은 서버에서 직접 내려받지 않습니다. 이미지를 붙여넣거나 파일로 첨부해 주세요.",
+                status_code=422,
+            )
         require_pipeline_runtime()
         require_pipeline_url()
         from backend.url_article_service import prepare_url_article

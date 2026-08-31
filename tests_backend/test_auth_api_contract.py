@@ -107,6 +107,21 @@ def test_all_search_routes_fail_closed_before_service_call(monkeypatch):
     assert favorite.json()["code"] == "APPLICATION_PRODUCT_STATE_PENDING"
 
 
+def test_direct_image_url_is_not_sent_to_article_extractor(monkeypatch):
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "http://localhost:5173")
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/api/v1/analyze",
+        headers=CSRF,
+        json={"text": "https://cdn.example.test/chart.png?version=1", "input_type": "url"},
+    )
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "IMAGE_URL_FILE_REQUIRED",
+        "message": "이미지 URL은 서버에서 직접 내려받지 않습니다. 이미지를 붙여넣거나 파일로 첨부해 주세요.",
+    }
+
+
 def test_tables_openapi_declares_candidate_response_contract():
     schema = app_module.app.openapi()
     response_schema = schema["paths"]["/api/v1/tables"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]

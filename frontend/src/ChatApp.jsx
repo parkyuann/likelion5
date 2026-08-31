@@ -17,6 +17,29 @@ const VERDICTS = {
   outofscope: { label: "추가 확인 필요 · 대상 밖", className: "unverifiable" },
 };
 
+const HTTP_URL_RE = /^https?:\/\/\S+$/i;
+const IMAGE_URL_PATH_RE = /\.(?:avif|bmp|gif|jpe?g|png|tiff?|webp)$/i;
+
+function urlInputKind(value) {
+  const raw = (value || "").trim();
+  if (!HTTP_URL_RE.test(raw)) return "none";
+  try {
+    return IMAGE_URL_PATH_RE.test(new URL(raw).pathname) ? "image" : "article";
+  } catch {
+    return "none";
+  }
+}
+
+function isImageFile(file) {
+  return Boolean(file?.type?.startsWith("image/"));
+}
+
+function pastedImageFile(event) {
+  return [...(event.clipboardData?.items || [])]
+    .map((item) => (item.kind === "file" ? item.getAsFile() : null))
+    .find(isImageFile);
+}
+
 // 검증 진행 단계(문장별 진행 로그에 표시)
 const STAGES = [
   "문장을 분석하는 중이에요",
@@ -180,13 +203,14 @@ function UserTextBubble({ text }) {
 
 function SourceInputBubble({ text, sourceType, focusQuestion }) {
   const isUrl = sourceType === "url";
+  const isImageUrl = sourceType === "image_url";
   return (
     <div className="c-bubble user c-source-bubble">
       <span className="c-source-kind">
-        {isUrl ? <LinkIcon /> : <DocIcon />}
-        {isUrl ? "기사 URL" : "기사 본문"}
+        {isImageUrl ? <ImageIcon /> : isUrl ? <LinkIcon /> : <DocIcon />}
+        {isImageUrl ? "이미지 URL" : isUrl ? "기사 URL" : "기사 본문"}
       </span>
-      <strong>{isUrl ? text : `${text.slice(0, 90)}${text.length > 90 ? "…" : ""}`}</strong>
+      <strong>{isUrl || isImageUrl ? text : `${text.slice(0, 90)}${text.length > 90 ? "…" : ""}`}</strong>
       {focusQuestion && (
         <span className="c-source-focus">
           <small>확인할 내용</small>{focusQuestion}
@@ -350,18 +374,22 @@ function ProgressBubble({ progress }) {
   const [openLog, setOpenLog] = useState(false);
   const percent = done ? 100 : Math.round(pct);
   const completion = {
-    completed: { label: "검증 완료", marker: "✓", className: "done" },
-    completed_with_limits: { label: "일부 근거 확인 · 추가 확인 필요", marker: "!", className: "limited" },
-    unverifiable: { label: "공식 통계 근거를 확인하지 못함", marker: "i", className: "limited" },
-    structured_only: { label: "구조화 완료 · 공식 대조 미실행", marker: "i", className: "limited" },
-  }[status] || { label: "검증 완료", marker: "✓", className: "done" };
+    completed: { label: "검증 완료", marker: "✓", className: "done", statusLabel: "검증 완료" },
+    completed_with_limits: { label: "일부 근거 확인 · 추가 확인 필요", marker: "!", className: "limited", statusLabel: "추가 확인 필요" },
+    unverifiable: { label: "추가 정보 필요 · 공식 통계 근거를 확인하지 못함", marker: "?", className: "limited", statusLabel: "추가 정보 필요" },
+    structured_only: { label: "구조화 완료 · 공식 대조 미실행", marker: "!", className: "limited", statusLabel: "공식 대조 미실행" },
+  }[status] || { label: "검증 완료", marker: "✓", className: "done", statusLabel: "검증 완료" };
   // 진행 중엔 항상 보이고, 완료 후엔 토글로 열 때만 보인다.
   const showLog = logs.length > 0 && (!done || openLog);
   return (
     <div className="c-progress">
       <div className="c-progress-top">
-        <div className={`c-ring ${done ? completion.className : "loading"}`} style={{ "--pct": percent }}>
-          <span className="c-ring-num">{done ? completion.marker : `${percent}%`}</span>
+        <div
+          className={`c-ring ${done ? `status ${completion.className}` : "loading"}`}
+          style={done ? undefined : { "--pct": percent }}
+          aria-label={done ? completion.statusLabel : `검증 진행률 ${percent}%`}
+        >
+          <span className="c-ring-num" aria-hidden="true">{done ? completion.marker : `${percent}%`}</span>
         </div>
         <div className="c-progress-meta">
           <strong>{done ? completion.label : "검증 중…"}</strong>
@@ -425,6 +453,7 @@ function ChatApp({
   const [input, setInput] = useState("");
   const [sourceQuestion, setSourceQuestion] = useState("");
   const [pendingImage, setPendingImage] = useState(null); // { file, url }
+  const [draggingImage, setDraggingImage] = useState(false);
   const [pendingClarification, setPendingClarification] = useState(null);
   const [selectedClarificationOption, setSelectedClarificationOption] = useState(null);
   const [clarificationOptionQuery, setClarificationOptionQuery] = useState("");
@@ -432,6 +461,7 @@ function ChatApp({
   const [loading, setLoading] = useState(false);
   const chatBodyRef = useRef(null);
   const fileRef = useRef(null);
+  const sendButtonRef = useRef(null);
   const startedRef = useRef(false);
   const lastRequestRef = useRef(null); // 오류 시 '다시 시도'로 재실행할 마지막 요청
   const [verificationProgress, setVerificationProgress] = useState({
@@ -480,6 +510,12 @@ function ChatApp({
     });
     return () => cancelAnimationFrame(frame);
   }, [messages, loading, pendingImage]);
+
+  // 파일을 고르거나 붙여넣은 직후 Enter를 눌러도 바로 검증할 수 있게 전송 버튼에
+  // 포커스를 둔다. textarea는 이미지가 대기 중인 동안 readOnly로만 유지한다.
+  useEffect(() => {
+    if (pendingImage && !loading) sendButtonRef.current?.focus();
+  }, [pendingImage, loading]);
 
   // 랜딩에서 넘어온 초기 요청 자동 실행
   useEffect(() => {
@@ -603,7 +639,28 @@ function ChatApp({
   } = {}) {
     const text = (rawText || "").trim();
     if (!text || loading) return;
-    const sourceType = inputType === "auto" && /^https?:\/\/\S+$/i.test(text)
+    const detectedUrlKind = urlInputKind(text);
+    // 파일 확장자로 명확히 식별되는 이미지 URL은 기사 본문 추출기로 보내지 않는다.
+    // 현재 서버는 외부 URL의 이미지를 임의로 내려받지 않는다. 이 경계는 SSRF와
+    // 권한 없는 외부 이미지 접근을 막고, 사용자가 직접 제공한 파일만 OCR로 보낸다.
+    if (detectedUrlKind === "image") {
+      setMessages((prev) => [...prev,
+        {
+          role: "user",
+          kind: "source",
+          text,
+          sourceType: "image_url",
+          focusQuestion,
+        },
+        {
+          role: "assistant",
+          kind: "text",
+          text: "이미지 URL로 확인했습니다. 현재는 외부 이미지 URL을 서버에서 직접 내려받지 않으므로, 이미지를 붙여넣거나 파일로 첨부해 주세요.",
+        },
+      ]);
+      return;
+    }
+    const sourceType = inputType === "auto" && detectedUrlKind === "article"
       ? "url"
       : inputType;
     setMessages((prev) => [...prev, {
@@ -804,7 +861,7 @@ function ChatApp({
     lastRequestRef.current = {
       kind: "text", text, inputType, focusQuestion, title, date, dateSource, clarificationAnswers, resumeToken, requestConversationId,
     };
-    const isUrl = inputType === "url" || /^https?:\/\/\S+$/i.test(text.trim());
+    const isUrl = inputType === "url" || urlInputKind(text) === "article";
     const startTs = startNetworkProgress();
     setLoading(true);
     try {
@@ -1071,9 +1128,29 @@ function ChatApp({
     verifyText(example, { inputType: "auto", focusQuestion: "" });
   }
   function pickImage(file) {
-    if (!file || !file.type?.startsWith("image/")) return;
+    if (!isImageFile(file) || loading || pendingClarification) return;
     if (pendingImage?.url) URL.revokeObjectURL(pendingImage.url);
     setPendingImage({ file, url: URL.createObjectURL(file) });
+  }
+  function handleImagePaste(event) {
+    const file = pastedImageFile(event);
+    if (!file) return;
+    event.preventDefault();
+    pickImage(file);
+  }
+  function handleImageDragOver(event) {
+    const includesImage = [...(event.dataTransfer?.items || [])]
+      .some((item) => item.kind === "file" && String(item.type).startsWith("image/"));
+    if (!includesImage) return;
+    event.preventDefault();
+    if (!loading && !pendingClarification) setDraggingImage(true);
+  }
+  function handleImageDrop(event) {
+    const file = [...(event.dataTransfer?.files || [])].find(isImageFile);
+    if (!file) return;
+    event.preventDefault();
+    setDraggingImage(false);
+    pickImage(file);
   }
   function clearPendingImage() {
     if (pendingImage?.url) URL.revokeObjectURL(pendingImage.url);
@@ -1083,9 +1160,12 @@ function ChatApp({
 
   const canSend = pendingImage != null || input.trim().length > 0;
   const trimmedInput = input.trim();
+  const typedUrlKind = urlInputKind(trimmedInput);
   const draftSourceType = pendingImage
     ? "image"
-    : /^https?:\/\/\S+$/i.test(trimmedInput)
+    : typedUrlKind === "image"
+      ? "image_url"
+      : typedUrlKind === "article"
       ? "url"
       : trimmedInput.length >= 400 || trimmedInput.split(/\r?\n/).length >= 3
         ? "article"
@@ -1133,7 +1213,7 @@ function ChatApp({
           if (msg.kind === "clarification_request" || msg.kind === "date_request") {
             return (
               <div key={i} className="c-row assistant">
-                <div className="c-bubble assistant">{msg.text}</div>
+                <div className="c-bubble assistant c-clarification-message">{msg.text}</div>
               </div>
             );
           }
@@ -1222,7 +1302,13 @@ function ChatApp({
         )}
       </div>
 
-      <div className="chat-input-wrap">
+      <div
+        className={`chat-input-wrap ${draggingImage ? "is-dragging-image" : ""}`}
+        onPaste={handleImagePaste}
+        onDragOver={handleImageDragOver}
+        onDragLeave={() => setDraggingImage(false)}
+        onDrop={handleImageDrop}
+      >
         {pendingImage && (
           <div className="chat-attach">
             <img src={pendingImage.url} alt="첨부 미리보기" />
@@ -1354,9 +1440,11 @@ function ChatApp({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
-            disabled={pendingImage != null}
+            readOnly={pendingImage != null}
+            disabled={loading}
           />
           <button
+            ref={sendButtonRef}
             className={`c-send ${loading ? "is-loading" : canSend ? "is-ready" : ""}`}
             onClick={handleSend}
             disabled={loading || !canSend}

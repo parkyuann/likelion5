@@ -890,12 +890,21 @@
 
 /* ── 입력 영역 ────────────────────────────────── */
 .chat-input-wrap {
+  position: relative;
   border: 1px solid var(--line);
   border-bottom: none;
   border-radius: 22px 22px 0 0;
   background: var(--surface);
   padding: 14px 16px 16px;
   box-shadow: 0 -8px 24px -12px rgba(20, 30, 40, 0.14);
+}
+.chat-input-wrap.is-dragging-image {
+  border-color: var(--brand);
+  background: var(--brand-tint);
+  box-shadow: 0 0 0 3px var(--focus-ring), 0 -8px 24px -12px rgba(20, 30, 40, 0.14);
+}
+.c-clarification-message {
+  white-space: pre-line;
 }
 .chat-attach {
   display: flex;
@@ -1204,6 +1213,26 @@
 .c-detail.mismatch .c-detail-verdict { color: var(--red); }
 .c-detail.unverifiable .c-detail-verdict { color: var(--muted); }
 .c-detail-answer { display: block; font-size: 13.5px; line-height: 1.7; color: var(--ink-soft); }
+:root[data-theme="dark"] .c-claim.unverifiable {
+  color: #eef2f4;
+  background: rgba(168, 187, 202, 0.18);
+  text-decoration-color: #b5c5d0;
+}
+:root[data-theme="dark"] .c-sentence {
+  color: #c9d4dc;
+  text-decoration-color: #9cabb6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .c-claim.unverifiable {
+    color: #eef2f4;
+    background: rgba(168, 187, 202, 0.18);
+    text-decoration-color: #b5c5d0;
+  }
+  :root:not([data-theme="light"]) .c-sentence {
+    color: #c9d4dc;
+    text-decoration-color: #9cabb6;
+  }
+}
 .c-calc {
   display: block;
   margin-top: 12px;
@@ -1289,9 +1318,16 @@
   transition: background 0.35s ease;
 }
 .c-ring::before { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--surface); }
-.c-ring.done { background: var(--green); }
+.c-ring.status {
+  background: var(--surface-2);
+  border: 2px solid var(--line-strong);
+}
+.c-ring.status::before { display: none; }
+.c-ring.status.done { background: var(--green-tint); border-color: var(--green); }
+.c-ring.status.limited { background: var(--slate-tint); border-color: var(--slate); }
 .c-ring-num { position: relative; font-size: 12px; font-weight: 800; color: var(--brand); font-variant-numeric: tabular-nums; }
-.c-ring.done .c-ring-num { color: var(--green); }
+.c-ring.status.done .c-ring-num { color: var(--green-ink); }
+.c-ring.status.limited .c-ring-num { color: var(--slate); }
 .c-progress-meta { display: flex; flex-direction: column; gap: 2px; }
 .c-progress-meta strong { font-size: 14px; color: var(--ink); }
 .c-sent-log { display: flex; flex-direction: column; gap: 2px; }

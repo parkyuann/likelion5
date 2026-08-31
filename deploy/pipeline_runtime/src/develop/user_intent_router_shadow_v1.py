@@ -116,7 +116,7 @@ def _measurement_intents(query: str, candidates: Sequence[Mapping[str, Any]]) ->
 
 def _question(slot: str) -> dict[str, Any]:
     prompts = {
-        "indicator": "어떤 통계 지표를 확인할까요?",
+        "indicator": "확인하려는 수치를 구체적으로 알려주세요. 예: ‘대통령 국정수행 긍정평가 비율’, ‘A정당 정당지지도’, ‘전국 합계출산율’, ‘전국 출생아 수’.",
         "period": "확인할 기준 연도 또는 비교할 두 연도를 알려주세요.",
         "change_measure": "증가량·증가율·퍼센트포인트 중 무엇을 확인할까요?",
     }

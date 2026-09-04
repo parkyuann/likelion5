@@ -27,8 +27,8 @@ services:
     restart: unless-stopped
 
   bge-query-encoder:
-    # This EC2 integration image is content-addressed and attested in
-    # encoder-image-receipt-ec2-20260827.json. Mutable tags cannot open this path.
+    # The encoder image is provisioned externally and must be content-addressed.
+    # Its attestation and model assets are supplied out of band; this release does not ship them.
     image: "sha256:666dea4633e530cda4959c2b5682920ff408e8754b58fe728d787256bae9beb3"
     expose: ["8101"]
     environment:

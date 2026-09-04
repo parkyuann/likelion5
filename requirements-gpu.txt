@@ -1,4 +1,0 @@
-# Optional only. Do not install in the default API image.
-torch>=2.7,<3
-sentence-transformers>=5,<6
--r requirements-bge.txt

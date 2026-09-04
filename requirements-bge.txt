@@ -1,5 +1,0 @@
-# Optional local BGE reranker dependencies.
-# Install only for src/run_multiquery_rerank.py --bge.
-FlagEmbedding>=1.3,<2
-# FlagEmbedding 1.4 still calls tokenizer.prepare_for_model, removed in Transformers 5.
-transformers>=4.44.2,<5

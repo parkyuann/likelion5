@@ -43,7 +43,7 @@
 | 공식 근거 | release-pinned PostgreSQL metadata, KOSIS Param API cell lookup |
 | Frontend | React, Vite |
 | 운영 구성 | Docker, Nginx, Redis, OpenSearch |
-| 실험 범위 | BGE reranker (현재 release-bound 경로에서는 지원하지 않음) |
+| 실험 범위 | BGE reranker, DiffuRank(LoRA Fine-Tuning, AIHub + KOSIS 메타데이터) |
 
 ### 핵심 성과
 
@@ -61,7 +61,4 @@ KOSIS·HCX 자격증명, DB·검색 인덱스, encoder 모델 서비스와 모�
 인증서와 키는 별도로 준비해야 합니다. 기본 예시 환경에서는 live stage, URL·이미지
 입력이 opt-in 상태이며, reranker는 현재 release-bound 경로에서 지원되지 않습니다.
 명시적 자연어 `query`와 URL이 아닌 `auto` 입력은 현재 API에서 지원하지 않아
-503으로 닫힙니다. URL을 포함한 `auto` 입력은 별도의 URL 경로 gate를 따릅니다.
-
-이 README는 프로젝트 포트폴리오 개요입니다. 성능 수치, live E2E 성공, 운영
-승격을 주장하지 않으며, 실제 배포에서는 외부 의존성의 별도 검증이 필요합니다.
+503으로 닫힙니다.
